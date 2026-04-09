@@ -1,0 +1,92 @@
+/* TradeForm 样式 */
+
+.trade-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--action-gold);
+}
+
+/* ── 方向切换 ── */
+.direction-toggle {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.direction-btn {
+  flex: 1;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.direction-btn.buy.active {
+  background: var(--up-bg);
+  color: var(--up);
+  border-color: var(--up);
+}
+
+.direction-btn.sell.active {
+  background: var(--down-bg);
+  color: var(--down);
+  border-color: var(--down);
+}
+
+/* ── 表单行 ── */
+.form-row {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.form-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-field label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.amount-display {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+}
+
+/* ── 错误信息 ── */
+.form-error {
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-red-bg);
+  color: var(--warning-red);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+/* ── 提交区 ── */
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-sell {
+  background: var(--down) !important;
+  border-color: var(--down) !important;
+}

@@ -1,0 +1,90 @@
+/* PositionList 样式 */
+
+.position-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-10);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.position-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-4);
+}
+
+.position-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.position-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.position-name {
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+
+.position-code {
+  font-size: var(--text-xs);
+}
+
+/* ── 统计网格 ── */
+.position-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+
+.position-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.position-stat .stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.position-stat .stat-value {
+  font-size: var(--text-sm);
+}
+
+/* ── 仓位权重条 ── */
+.position-weight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.weight-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-base);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.weight-fill {
+  height: 100%;
+  background: var(--action-gold);
+  border-radius: 2px;
+  transition: width var(--transition-slow);
+}
+
+.weight-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-align: right;
+}

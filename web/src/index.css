@@ -1,0 +1,239 @@
+/* CT-OS V4.0 交易教练 — 设计系统 CSS 变量
+ * 对应 DESIGN.md
+ */
+
+:root {
+  /* ── 背景层级 ── */
+  --bg-base: #0a0a0f;
+  --bg-surface: #12131a;
+  --bg-elevated: #1a1b24;
+  --bg-overlay: #22232e;
+
+  /* ── 文字 ── */
+  --text-primary: #e8e9ed;
+  --text-secondary: #8b8d97;
+  --text-tertiary: #5a5c66;
+  --text-inverse: #0a0a0f;
+
+  /* ── A 股色彩 ── */
+  --up: #e74c3c;
+  --up-bg: rgba(231, 76, 60, 0.12);
+  --down: #2ecc71;
+  --down-bg: rgba(46, 204, 113, 0.12);
+
+  /* ── 功能色 ── */
+  --action-gold: #f0b90b;
+  --action-gold-hover: #f8d12f;
+  --action-gold-bg: rgba(240, 185, 11, 0.12);
+  --warning-red: #e74c3c;
+  --warning-red-bg: rgba(231, 76, 60, 0.15);
+  --info-blue: #3498db;
+  --info-blue-bg: rgba(52, 152, 219, 0.12);
+
+  /* ── 边框 ── */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  /* ── 字体 ── */
+  --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --font-cn: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* ── 字号 ── */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+
+  /* ── 间距 ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* ── 圆角 ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* ── 阴影 ── */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* ── 动效 ── */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 350ms ease;
+}
+
+/* ── 全局重置 ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* ── 通用工具类 ── */
+.mono {
+  font-family: var(--font-mono);
+}
+
+.text-up {
+  color: var(--up);
+}
+
+.text-down {
+  color: var(--down);
+}
+
+.text-gold {
+  color: var(--action-gold);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+/* ── 卡片 ── */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  transition: border-color var(--transition-normal);
+}
+
+.card:hover {
+  border-color: var(--border-default);
+}
+
+/* ── 按钮 ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.btn:hover {
+  background: var(--bg-overlay);
+  border-color: var(--border-strong);
+}
+
+.btn-primary {
+  background: var(--action-gold);
+  color: var(--text-inverse);
+  border-color: var(--action-gold);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--action-gold-hover);
+  border-color: var(--action-gold-hover);
+}
+
+.btn-danger {
+  background: var(--warning-red-bg);
+  color: var(--warning-red);
+  border-color: rgba(231, 76, 60, 0.3);
+}
+
+.btn-danger:hover {
+  background: rgba(231, 76, 60, 0.25);
+}
+
+/* ── 输入框 ── */
+.input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  transition: border-color var(--transition-fast);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--action-gold);
+  box-shadow: 0 0 0 2px var(--action-gold-bg);
+}
+
+.input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ── 动画 ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease forwards;
+}
+
+.animate-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
