@@ -47,10 +47,14 @@ async def health():
     return {"status": "healthy"}
 
 
-# API 路由将在后续步骤注册:
-# from server.api import trades, positions, alerts, auth, analysis
-# app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
-# app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
+from server.api import trades, positions, data
+
+app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
+app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
+app.include_router(data.router, prefix="/api/data", tags=["data"])
+
+# Phase 2+:
+# from server.api import alerts, auth, analysis
 # app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])
 # app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 # app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
