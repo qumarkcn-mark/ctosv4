@@ -31,12 +31,15 @@ INFO:     127.0.0.1:54124 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:54286 - "GET /api/positions/overview HTTP/1.1" 200 OK
 INFO:     127.0.0.1:54288 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:54289 - "GET /api/positions/overview HTTP/1.1" 200 OK
-00 OK"
-2026-04-10 15:32:53,792 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:54127 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
-2026-04-10 15:32:54,049 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
-2026-04-10 15:32:54,053 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
-2026-04-10 15:32:54,058 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54350 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54349 - "GET /api/positions/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54355 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54356 - "GET /api/positions/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55414 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55413 - "GET /api/positions/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55415 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55416 - "GET /api/positions/overview HTTP/1.1" 200 OK
+ps://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
 2026-04-10 15:32:54,059 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
 2026-04-10 15:32:54,064 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
 INFO:     127.0.0.1:54127 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
@@ -84,3 +87,310 @@ INFO:     127.0.0.1:54294 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:54294 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
 2026-04-10 15:40:15,860 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
 INFO:     127.0.0.1:54301 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 15:42:14,950 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54331 - "GET /api/data/klines/sz000001?interval=m30&count=200 HTTP/1.1" 200 OK
+2026-04-10 15:42:20,972 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54335 - "GET /api/data/klines/sz000001?interval=m5&count=200 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54344 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54344 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+2026-04-10 15:42:43,514 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,518 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,519 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,529 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,534 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54344 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
+2026-04-10 15:42:43,703 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54363 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 15:42:43,711 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,725 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,726 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,732 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:42:43,733 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54344 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
+2026-04-10 15:42:43,889 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54363 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 15:42:44,059 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54344 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:10:31,136 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54635 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:10:37,338 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54638 - "GET /api/data/klines/sz000001?interval=m60&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:10:38,661 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54638 - "GET /api/data/klines/sz000001?interval=m5&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:10:48,069 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54642 - "GET /api/data/klines/sz000001?interval=m5&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:45,389 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=m15&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:47,450 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=m5&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:48,257 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=m30&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:48,970 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=m60&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:50,706 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,200,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=day&count=200 HTTP/1.1" 200 OK
+2026-04-10 16:24:51,647 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,200 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54796 - "GET /api/data/klines/sz000001?interval=m5&count=200 HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'server/db/kline_lake.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-10 16:44:20,945 INFO server.workers.price_monitor: 价格监控 Worker 停止
+2026-04-10 16:44:20,945 INFO server.app: 👋 CT-OS V4.0 已关闭
+INFO:     Application shutdown complete.
+INFO:     Finished server process [78575]
+INFO:     Started server process [80866]
+INFO:     Waiting for application startup.
+2026-04-10 16:44:21,182 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 16:44:21,182 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 16:44:21,182 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'server/services/baostock_service.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-10 16:45:03,011 INFO server.workers.price_monitor: 价格监控 Worker 停止
+2026-04-10 16:45:03,012 INFO server.app: 👋 CT-OS V4.0 已关闭
+INFO:     Application shutdown complete.
+INFO:     Finished server process [80866]
+INFO:     Started server process [80891]
+INFO:     Waiting for application startup.
+2026-04-10 16:45:03,245 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 16:45:03,246 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 16:45:03,246 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'server/scripts/backfill_klines.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-10 16:45:23,662 INFO server.workers.price_monitor: 价格监控 Worker 停止
+2026-04-10 16:45:23,662 INFO server.app: 👋 CT-OS V4.0 已关闭
+INFO:     Application shutdown complete.
+INFO:     Finished server process [80891]
+INFO:     Started server process [80905]
+INFO:     Waiting for application startup.
+2026-04-10 16:45:23,887 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 16:45:23,887 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 16:45:23,887 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'server/scripts/__init__.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-10 16:45:30,048 INFO server.workers.price_monitor: 价格监控 Worker 停止
+2026-04-10 16:45:30,048 INFO server.app: 👋 CT-OS V4.0 已关闭
+INFO:     Application shutdown complete.
+INFO:     Finished server process [80905]
+INFO:     Started server process [80914]
+INFO:     Waiting for application startup.
+2026-04-10 16:45:30,275 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 16:45:30,276 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 16:45:30,276 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'server/services/price_service.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-10 16:46:28,985 INFO server.workers.price_monitor: 价格监控 Worker 停止
+2026-04-10 16:46:28,985 INFO server.app: 👋 CT-OS V4.0 已关闭
+INFO:     Application shutdown complete.
+INFO:     Finished server process [80914]
+Process SpawnProcess-8:
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 315, in _bootstrap
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_subprocess.py", line 80, in subprocess_started
+    target(sockets=sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/app.py", line 10, in <module>
+    from server.workers.price_monitor import monitor
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/workers/price_monitor.py", line 8, in <module>
+    from server.services.price_service import get_batch_prices
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/price_service.py", line 14, in <module>
+    from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/baostock_service.py", line 19, in <module>
+    import baostock as bs
+ModuleNotFoundError: No module named 'baostock'
+WARNING:  WatchFiles detected changes in 'server/app.py'. Reloading...
+Process SpawnProcess-9:
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 315, in _bootstrap
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_subprocess.py", line 80, in subprocess_started
+    target(sockets=sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/app.py", line 11, in <module>
+    from server.workers.price_monitor import monitor
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/workers/price_monitor.py", line 8, in <module>
+    from server.services.price_service import get_batch_prices
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/price_service.py", line 14, in <module>
+    from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/baostock_service.py", line 19, in <module>
+    import baostock as bs
+ModuleNotFoundError: No module named 'baostock'
+WARNING:  WatchFiles detected changes in 'server/app.py'. Reloading...
+Process SpawnProcess-10:
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 315, in _bootstrap
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_subprocess.py", line 80, in subprocess_started
+    target(sockets=sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/app.py", line 11, in <module>
+    from server.workers.price_monitor import monitor
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/workers/price_monitor.py", line 8, in <module>
+    from server.services.price_service import get_batch_prices
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/price_service.py", line 14, in <module>
+    from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/baostock_service.py", line 19, in <module>
+    import baostock as bs
+ModuleNotFoundError: No module named 'baostock'
+WARNING:  WatchFiles detected changes in 'server/services/chan_detail_service.py'. Reloading...
+Process SpawnProcess-11:
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 315, in _bootstrap
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_subprocess.py", line 80, in subprocess_started
+    target(sockets=sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/app.py", line 11, in <module>
+    from server.workers.price_monitor import monitor
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/workers/price_monitor.py", line 8, in <module>
+    from server.services.price_service import get_batch_prices
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/price_service.py", line 14, in <module>
+    from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/baostock_service.py", line 19, in <module>
+    import baostock as bs
+ModuleNotFoundError: No module named 'baostock'
+WARNING:  WatchFiles detected changes in 'server/api/chan.py'. Reloading...
+Process SpawnProcess-12:
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 315, in _bootstrap
+    self.run()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_subprocess.py", line 80, in subprocess_started
+    target(sockets=sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 67, in run
+    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/_compat.py", line 60, in asyncio_run
+    return loop.run_until_complete(main)
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 71, in serve
+    await self._serve(sockets)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/server.py", line 78, in _serve
+    config.load()
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/config.py", line 439, in load
+    self.loaded_app = import_from_string(self.app)
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 22, in import_from_string
+    raise exc from None
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/venv/lib/python3.9/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/app.py", line 11, in <module>
+    from server.workers.price_monitor import monitor
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/workers/price_monitor.py", line 8, in <module>
+    from server.services.price_service import get_batch_prices
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/price_service.py", line 14, in <module>
+    from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+  File "/Users/markqu/.gemini/antigravity/scratch/ct-os-v4/server/services/baostock_service.py", line 19, in <module>
+    import baostock as bs
+ModuleNotFoundError: No module named 'baostock'

@@ -1,7 +1,8 @@
-"""行情查询服务 — 腾讯行情 HTTP API
+"""行情查询服务
 
-轻量级方案，不使用 PyTDX 或数据湖。
-每次查询 <50ms，比维护 WebSocket 连接简单可靠。
+优先级策略：
+  1. 本地 SQLite 数据湖（< 5ms，baostock 落盘）
+  2. Fallback: 腾讯行情 HTTP API（冷启动时自动触发 baostock 拉取）
 """
 
 import logging
@@ -9,13 +10,30 @@ import httpx
 from typing import Optional
 
 from server.config import PRICE_API_TIMEOUT
+from server.db.kline_lake import query_klines, count_klines
+from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
 
 logger = logging.getLogger(__name__)
 
-# 腾讯行情 API 基地址
+# 腾讯行情 API 基地址（仅作 fallback）
 _QT_BASE = "https://qt.gtimg.cn/q="
 _QT_KLINE_BASE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
 _QT_MKLINE_BASE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline?param="
+
+# 如果本地缓存少于此数量，触发 BaoStock 拉取
+_MIN_CACHE_ROWS = 100
+
+
+def _tencent_to_baostock_symbol(symbol: str) -> str:
+    """将腾讯格式 (sh600519) 转换为 BaoStock 格式 (sh.600519)"""
+    if symbol.startswith(("sh", "sz")) and "." not in symbol:
+        return f"{symbol[:2]}.{symbol[2:]}"
+    return symbol  # 已经是 baostock 格式
+
+
+def _baostock_to_tencent_symbol(symbol: str) -> str:
+    """将 BaoStock 格式 (sh.600519) 转换为腾讯格式 (sh600519)"""
+    return symbol.replace(".", "")
 
 
 async def get_current_price(symbol: str) -> Optional[dict]:
@@ -49,102 +67,130 @@ async def get_current_price(symbol: str) -> Optional[dict]:
         return None
 
 
-async def get_daily_klines(symbol: str, count: int = 60) -> list[dict]:
+async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
     """
-    获取日线前复权数据，用于 ATR 计算。
-    
+    获取日线前复权数据。
+    优先级：本地 SQLite 数据湖 → BaoStock 拉取 → 腾讯 API fallback
+
     Args:
-        symbol: 股票代码, 如 "sh600519"
+        symbol: 股票代码, 如 "sh600519" 或 "sh.600519"
         count: 需要获取的 K 线根数
-        
+
     Returns:
-        [
-            {
-                "date": "2023-10-01",
-                "open": 100.0,
-                "close": 102.0,
-                "high": 105.0,
-                "low": 98.0,
-                "volume": 12345
-            },
-            ...
-        ] 按日期正序排列（最旧的在前，最新的在后）
+        [{"date", "open", "close", "high", "low", "volume"}, ...] 按日期正序
     """
-    url = f"{_QT_KLINE_BASE}{symbol},day,,,{count},qfq"
-    
+    bs_symbol = _tencent_to_baostock_symbol(symbol)
+
+    # 1️⃣ 尝试从本地数据湖读取
+    cached = query_klines(bs_symbol, "day", limit=count)
+    if len(cached) >= min(count, _MIN_CACHE_ROWS):
+        logger.debug("本地数据湖命中: %s/day (%d 条)", bs_symbol, len(cached))
+        return cached
+
+    # 2️⃣ 本地不足，触发 BaoStock 增量拉取（同步，在协程内通过线程池隔离）
+    logger.info("本地缓存不足 %s/day，触发 BaoStock 拉取...", bs_symbol)
+    try:
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, fetch_klines_sync, bs_symbol, "day")
+        cached = query_klines(bs_symbol, "day", limit=count)
+        if cached:
+            return cached
+    except Exception as e:
+        logger.warning("BaoStock 拉取失败 %s/day: %s, 降级到腾讯 API", bs_symbol, e)
+
+    # 3️⃣ 最后降级：腾讯行情 API
+    logger.warning("降级到腾讯 API: %s/day", symbol)
+    qt_symbol = _baostock_to_tencent_symbol(symbol)
+    url = f"{_QT_KLINE_BASE}{qt_symbol},day,,,{count},qfq"
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            
             if data.get("code") != 0 or not data.get("data"):
                 return []
-                
-            stock_data = data["data"].get(symbol, {})
-            # 优先取前复权数据 qfqday，如果没有则取 day
+            stock_data = data["data"].get(qt_symbol, {})
             klinesraw = stock_data.get("qfqday", stock_data.get("day", []))
-            
             klines = []
             for item in klinesraw:
-                # 格式: [date, open, close, high, low, volume]
                 if len(item) >= 6:
                     klines.append({
-                        "date": item[0],
-                        "open": float(item[1]),
-                        "close": float(item[2]),
-                        "high": float(item[3]),
-                        "low": float(item[4]),
-                        "volume": float(item[5])
+                        "date": item[0], "open": float(item[1]),
+                        "close": float(item[2]), "high": float(item[3]),
+                        "low": float(item[4]), "volume": float(item[5])
                     })
             return klines
     except Exception as e:
-        logger.warning("获取日线失败 %s: %s", symbol, e)
+        logger.warning("腾讯 API 日线失败 %s: %s", symbol, e)
         return []
 
-async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 300) -> list[dict]:
+# 腾讯分钟线 interval -> baostock freq 映射
+_TENCENT_INTERVAL_MAP = {"m60": "60", "m30": "30", "m15": "15", "m5": "5"}
+
+
+async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 1000) -> list[dict]:
     """
     获取分钟级别 K 线数据，用于多级别状态机推演。
-    
+    优先级：本地 SQLite 数据湖 → BaoStock 拉取 → 腾讯 API fallback
+
     Args:
-        symbol: 股票代码, 如 "sh600519"
+        symbol: 股票代码, 如 "sh600519" 或 "sh.600519"
         interval: 周期 ("m60", "m30", "m15", "m5")
         count: 需要获取的 K 线根数
     """
-    url = f"{_QT_MKLINE_BASE}{symbol},{interval},,{count}"
+    bs_symbol = _tencent_to_baostock_symbol(symbol)
+    bs_freq = _TENCENT_INTERVAL_MAP.get(interval, "30")
+
+    # 1️⃣ 本地数据湖
+    cached = query_klines(bs_symbol, bs_freq, limit=count)
+    if len(cached) >= min(count, _MIN_CACHE_ROWS):
+        logger.debug("本地数据湖命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
+        return cached
+
+    # 2️⃣ BaoStock 拉取
+    logger.info("本地缓存不足 %s/%s，触发 BaoStock 拉取...", bs_symbol, bs_freq)
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, fetch_klines_sync, bs_symbol, bs_freq)
+        cached = query_klines(bs_symbol, bs_freq, limit=count)
+        if cached:
+            return cached
+    except Exception as e:
+        logger.warning("BaoStock 拉取失败 %s/%s: %s, 降级到腾讯 API", bs_symbol, bs_freq, e)
+
+    # 3️⃣ 腾讯 API fallback
+    logger.warning("降级到腾讯 API: %s/%s", symbol, interval)
+    qt_symbol = _baostock_to_tencent_symbol(symbol)
+    url = f"{_QT_MKLINE_BASE}{qt_symbol},{interval},,{count}"
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            
             if data.get("code") != 0 or not data.get("data"):
                 return []
-                
-            stock_data = data["data"].get(symbol, {})
+            stock_data = data["data"].get(qt_symbol, {})
             klinesraw = stock_data.get(interval, [])
-            
             klines = []
             for item in klinesraw:
                 if len(item) >= 6:
                     d_str = str(item[0])
-                    # 腾讯分钟线的时间格式通常是 YYYYMMDDhhmm 即 12 位
                     if len(d_str) >= 12:
                         formatted_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]} {d_str[8:10]}:{d_str[10:12]}"
                     else:
                         formatted_date = d_str
-
                     klines.append({
                         "date": formatted_date,
-                        "open": float(item[1]),
-                        "close": float(item[2]),
-                        "high": float(item[3]),
-                        "low": float(item[4]),
+                        "open": float(item[1]), "close": float(item[2]),
+                        "high": float(item[3]), "low": float(item[4]),
                         "volume": float(item[5])
                     })
             return klines
     except Exception as e:
-        logger.warning("获取分钟线失败 %s (%s): %s", symbol, interval, e)
+        logger.warning("腾讯 API 分钟线失败 %s (%s): %s", symbol, interval, e)
         return []
 
 async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:

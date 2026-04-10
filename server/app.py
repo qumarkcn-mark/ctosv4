@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server.config import DEBUG
 from server.db.database import init_db, ensure_default_user
+from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(app: FastAPI):
     """应用生命周期: 启动时初始化数据库，并启动后台任务"""
     init_db()
+    init_lake()
     ensure_default_user()
     monitor.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
