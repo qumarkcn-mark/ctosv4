@@ -2,6 +2,8 @@ import asyncio
 import logging
 from typing import Optional
 
+from fastapi.concurrency import run_in_threadpool
+
 from server.db.database import get_connection
 from server.services.price_service import get_batch_prices
 from server.services.push_service import send_stop_loss_alert
@@ -37,8 +39,7 @@ class PriceMonitor:
             
             await asyncio.sleep(self.interval_seconds)
 
-    async def _check_stop_losses(self):
-        """核心监控逻辑：扫描设置了止损的持仓，对比现价，触发提醒"""
+    def _db_get_positions(self):
         conn = get_connection()
         try:
             # 仅监控持仓数量 > 0 且设置了止损价的仓位
@@ -46,18 +47,14 @@ class PriceMonitor:
             rows = conn.execute(
                 "SELECT user_id, symbol, name, quantity, stop_loss_price, current_price FROM positions WHERE quantity > 0 AND stop_loss_price IS NOT NULL"
             ).fetchall()
-            
-            if not rows:
-                return
+            return [dict(r) for r in rows] if rows else []
+        finally:
+            conn.close()
 
-            positions = [dict(r) for r in rows]
-            symbols = list(set(p["symbol"] for p in positions))
-            
-            # 批量获取最新价格
-            prices = await get_batch_prices(symbols)
-            if not prices:
-                return
-                
+    def _db_update_and_alert(self, positions, prices):
+        conn = get_connection()
+        alerts_to_send = []
+        try:
             for pos in positions:
                 sym = pos["symbol"]
                 if sym not in prices:
@@ -74,20 +71,39 @@ class PriceMonitor:
 
                 # 检查止损击穿
                 if current_price > 0 and current_price <= stop_loss:
-                    # 检查是否已经触发过紧急预警，避免频繁发送 (可选: 依赖 alerts 表状态)
-                    # 这里记录到 alerts 数据库表，并走 push_service 推送
-                    self._trigger_alert(conn, pos, current_price, "STOP_LOSS_BROKEN")
+                    msg = self._trigger_alert_db(conn, pos, current_price, "STOP_LOSS_BROKEN")
+                    if msg: alerts_to_send.append((pos["user_id"], msg))
+                # TODO: 魔法数字 1.03 应改由配置项或个股 ATR 振幅动态决定
                 elif current_price > stop_loss and current_price <= stop_loss * 1.03:
-                    # 接近止损 (距离止损位不到 3%)
-                    self._trigger_alert(conn, pos, current_price, "STOP_LOSS_WARNING")
+                    msg = self._trigger_alert_db(conn, pos, current_price, "STOP_LOSS_WARNING")
+                    if msg: alerts_to_send.append((pos["user_id"], msg))
                     
             conn.commit()
-            
+            return alerts_to_send
         finally:
             conn.close()
 
-    def _trigger_alert(self, conn, pos, current_price: float, alert_type: str):
-        """记录提醒并尝试推送"""
+    async def _check_stop_losses(self):
+        """核心监控逻辑：扫描设置了止损的持仓，对比现价，触发提醒"""
+        positions = await run_in_threadpool(self._db_get_positions)
+        if not positions:
+            return
+
+        symbols = list(set(p["symbol"] for p in positions))
+        
+        # 批量获取最新价格
+        prices = await get_batch_prices(symbols)
+        if not prices:
+            return
+            
+        alerts_to_send = await run_in_threadpool(self._db_update_and_alert, positions, prices)
+        
+        for user_id, msg in alerts_to_send:
+            # 安全地在主事件循环内创建后台发送任务
+            asyncio.create_task(send_stop_loss_alert(user_id, msg))
+
+    def _trigger_alert_db(self, conn, pos, current_price: float, alert_type: str) -> Optional[str]:
+        """记录提醒入库，如果今天已经发过则返回 None"""
         # 1. 检查今日是否已针对此股票发送过同类提醒 (简单防重)
         row = conn.execute(
             """SELECT id FROM alerts 
@@ -97,7 +113,7 @@ class PriceMonitor:
         ).fetchone()
         
         if row:
-            return # 今天已经发过了
+            return None # 今天已经发过了
             
         msg = ""
         if alert_type == "STOP_LOSS_BROKEN":
@@ -113,9 +129,7 @@ class PriceMonitor:
                VALUES (?, ?, ?, ?, ?, ?)""",
             (pos["user_id"], pos["symbol"], alert_type, current_price, 1, msg)
         )
-        
-        # 触发推送 (Phase 2 的 push_service)
-        asyncio.create_task(send_stop_loss_alert(pos["user_id"], msg))
+        return msg
 
 # 单例实例
 monitor = PriceMonitor()

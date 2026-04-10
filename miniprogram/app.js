@@ -2,7 +2,7 @@ App({
   globalData: {
     token: null,
     userInfo: null,
-    // 开发时填本地内网 IP，部署时改域名 (如果要在真机验证，需用机器局域网 IP)
+    // TODO: 开发时填本地内网 IP，部署时改HTTPS域名 (如果要在真机验证，需用当前机器的局域网 IP 如 192.168.x.x)
     apiBase: 'http://127.0.0.1:8001/api'
   },
   
