@@ -30,3 +30,4 @@ Thumbs.db
 # WeChat Mini Program
 miniprogram/miniprogram_npm/
 miniprogram/node_modules/
+.gstack/

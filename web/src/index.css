@@ -219,7 +219,32 @@ body {
   color: var(--text-tertiary);
 }
 
-/* ── 动画 ── */
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8d97' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+select.input option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* ── 焦点可见 ── */
+.btn:focus-visible,
+.nav-tab:focus-visible {
+  outline: 2px solid var(--action-gold);
+  outline-offset: 2px;
+}
+
+/* ── 等宽数字 ── */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

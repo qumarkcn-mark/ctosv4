@@ -90,3 +90,19 @@
   background: var(--down) !important;
   border-color: var(--down) !important;
 }
+
+/* ── 响应式 ── */
+@media (max-width: 768px) {
+  .form-row {
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .direction-toggle {
+    flex-direction: row;
+  }
+
+  .form-field[style] {
+    flex: unset !important;
+  }
+}
