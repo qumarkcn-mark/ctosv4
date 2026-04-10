@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     user_id INTEGER NOT NULL REFERENCES users(id),
     symbol TEXT NOT NULL,
     alert_type TEXT NOT NULL CHECK(alert_type IN
-        ('STOP_LOSS', 'SIGNAL', 'REBUY', 'BREAKEVEN')),
+        ('STOP_LOSS', 'STOP_LOSS_BROKEN', 'STOP_LOSS_WARNING', 'CHAN_THIRD_BUY', 'SIGNAL', 'REBUY', 'BREAKEVEN')),
     trigger_price REAL,
     trigger_direction TEXT CHECK(trigger_direction IN ('ABOVE', 'BELOW')),
     is_triggered INTEGER DEFAULT 0,

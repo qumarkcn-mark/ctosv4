@@ -1,0 +1,8 @@
+INFO:     Started server process [71609]
+INFO:     Waiting for application startup.
+2026-04-10 10:16:13,443 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 10:16:13,444 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 10:16:13,444 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:64500 - "GET /api/positions/overview HTTP/1.1" 200 OK

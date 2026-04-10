@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_positions(user_id: int = 1):
+def list_positions(user_id: int = 1):
     """查询用户所有持仓"""
     conn = get_connection()
     try:
@@ -64,7 +64,7 @@ async def position_overview(user_id: int = 1):
 
 
 @router.get("/{symbol}")
-async def get_position(symbol: str, user_id: int = 1):
+def get_position(symbol: str, user_id: int = 1):
     """查询单只持仓"""
     conn = get_connection()
     try:

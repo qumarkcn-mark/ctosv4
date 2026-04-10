@@ -57,6 +57,8 @@ class TradeResponse(BaseModel):
 @router.post("", response_model=TradeResponse)
 async def create_trade(trade: TradeCreate, user_id: int = 1):
     """创建一笔交易记录"""
+    from fastapi.concurrency import run_in_threadpool
+
     # 校验方向
     if trade.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "direction 必须是 BUY 或 SELL")
@@ -72,47 +74,46 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
     # 成交时间
     traded_at = trade.traded_at or datetime.now().isoformat()
 
-    # 自动计算止损价 (武器2：止损看门狗)
+    # 自动计算止损价 (武器2：止损看门狗) — 需要 await 异步网络请求
     stop_loss_price = trade.stop_loss_price
     if stop_loss_price is None:
         from server.services.atr_service import calculate_stop_loss
         stop_loss_price = await calculate_stop_loss(trade.symbol, trade.price, trade.direction)
 
-    conn = get_connection()
-    try:
-        cursor = conn.execute(
-            """
-            INSERT INTO trades
-                (user_id, symbol, name, direction, price, quantity, amount,
-                 stop_loss_price, reason_text, reason_category,
-                 trend_direction, source, traded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id, trade.symbol, trade.name, trade.direction,
-                trade.price, trade.quantity, amount,
-                stop_loss_price, trade.reason_text, trade.reason_category,
-                trade.trend_direction, trade.source, traded_at,
-            ),
-        )
-        trade_id = cursor.lastrowid
+    # 同步 DB 操作隔离到线程池
+    def _db_insert():
+        conn = get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO trades
+                    (user_id, symbol, name, direction, price, quantity, amount,
+                     stop_loss_price, reason_text, reason_category,
+                     trend_direction, source, traded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id, trade.symbol, trade.name, trade.direction,
+                    trade.price, trade.quantity, amount,
+                    stop_loss_price, trade.reason_text, trade.reason_category,
+                    trade.trend_direction, trade.source, traded_at,
+                ),
+            )
+            trade_id = cursor.lastrowid
+            recalculate_position(conn, user_id, trade.symbol)
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM trades WHERE id = ?", (trade_id,)
+            ).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
 
-        # 交易后重新计算持仓 (与 INSERT 原子提交)
-        recalculate_position(conn, user_id, trade.symbol)
-        conn.commit()
-
-        # 查询返回完整记录
-        row = conn.execute(
-            "SELECT * FROM trades WHERE id = ?", (trade_id,)
-        ).fetchone()
-
-        return dict(row)
-    finally:
-        conn.close()
+    return await run_in_threadpool(_db_insert)
 
 
 @router.get("")
-async def list_trades(
+def list_trades(
     user_id: int = 1,
     symbol: Optional[str] = None,
     direction: Optional[str] = None,
@@ -169,7 +170,7 @@ async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
 
 
 @router.get("/{trade_id}")
-async def get_trade(trade_id: int, user_id: int = 1):
+def get_trade(trade_id: int, user_id: int = 1):
     """查询单笔交易"""
     conn = get_connection()
     try:
@@ -185,7 +186,7 @@ async def get_trade(trade_id: int, user_id: int = 1):
 
 
 @router.delete("/{trade_id}")
-async def delete_trade(trade_id: int, user_id: int = 1):
+def delete_trade(trade_id: int, user_id: int = 1):
     """删除交易记录 (同时重算持仓)"""
     conn = get_connection()
     try:

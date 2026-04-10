@@ -12,7 +12,7 @@ router = APIRouter()
 # ── CSV 导入 ──
 
 @router.post("/import/csv")
-async def import_csv_file(
+def import_csv_file(
     file: UploadFile = File(...),
     broker: str = Query("auto", description="eastmoney/ths/auto"),
     user_id: int = 1,

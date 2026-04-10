@@ -34,7 +34,7 @@ async def _get_access_token() -> str:
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, params=params)
             data = resp.json()
             if "access_token" in data:
@@ -55,16 +55,20 @@ async def send_stop_loss_alert(user_id: int, message: str):
     实际使用中，需要查出 user_id 对应的 openid。
     """
     from server.db.database import get_connection
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT openid FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not row:
-            logger.warning("Push failed: User %s not found", user_id)
-            return False
-            
-        openid = row["openid"]
-    finally:
-        conn.close()
+    from fastapi.concurrency import run_in_threadpool
+
+    def _fetch_openid():
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT openid FROM users WHERE id = ?", (user_id,)).fetchone()
+            return row["openid"] if row else None
+        finally:
+            conn.close()
+
+    openid = await run_in_threadpool(_fetch_openid)
+    if not openid:
+        logger.warning("Push failed: User %s not found", user_id)
+        return False
 
     if openid.startswith("mock_"):
         logger.info("[Mock Push] to %s: %s", openid, message)
@@ -90,7 +94,7 @@ async def send_stop_loss_alert(user_id: int, message: str):
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload)
             data = resp.json()
             if data.get("errcode") == 0:
