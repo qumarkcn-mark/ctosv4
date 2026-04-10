@@ -90,14 +90,12 @@ async def wechat_login(req: LoginRequest):
     user_id, nickname = await run_in_threadpool(_db_register_login, openid)
 
     # 签发 JWT Token
-        expires_delta = timedelta(days=30)
-        expire = datetime.utcnow() + expires_delta
-        to_encode = {"sub": str(user_id), "exp": expire}
-        token = jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
+    expires_delta = timedelta(days=30)
+    expire = datetime.utcnow() + expires_delta
+    to_encode = {"sub": str(user_id), "exp": expire}
+    token = jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
 
-        return {"token": token, "user_id": user_id, "nickname": nickname}
-    finally:
-        conn.close()
+    return {"token": token, "user_id": user_id, "nickname": nickname}
 
 # JWT 鉴权依赖注入 (给后续需要拦截鉴权的接口用)
 # def get_current_user(token: str = Depends(oauth2_scheme)) -> int: ...
