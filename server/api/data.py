@@ -12,21 +12,26 @@ router = APIRouter()
 # ── CSV 导入 ──
 
 @router.post("/import/csv")
-def import_csv_file(
+async def import_csv_file(
     file: UploadFile = File(...),
     broker: str = Query("auto", description="eastmoney/ths/auto"),
     user_id: int = 1,
 ):
     """导入券商交割单 CSV"""
+    from fastapi.concurrency import run_in_threadpool
+
     content = await file.read()
     csv_text = content.decode("utf-8-sig")  # 东方财富 CSV 带 BOM
 
-    conn = get_connection()
-    try:
-        result = import_csv(conn, user_id, csv_text, broker)
-        return result
-    finally:
-        conn.close()
+    def _db_import():
+        conn = get_connection()
+        try:
+            result = import_csv(conn, user_id, csv_text, broker)
+            return result
+        finally:
+            conn.close()
+
+    return await run_in_threadpool(_db_import)
 
 
 # ── 行情查询 ──
