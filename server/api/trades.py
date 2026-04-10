@@ -89,10 +89,9 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
                 trade.trend_direction, trade.source, traded_at,
             ),
         )
-        conn.commit()
         trade_id = cursor.lastrowid
 
-        # 交易后重新计算持仓
+        # 交易后重新计算持仓 (与 INSERT 原子提交)
         recalculate_position(conn, user_id, trade.symbol)
         conn.commit()
 
@@ -124,6 +123,8 @@ async def list_trades(
             query += " AND symbol = ?"
             params.append(symbol)
         if direction:
+            if direction not in ("BUY", "SELL"):
+                raise HTTPException(400, "direction 必须是 BUY 或 SELL")
             query += " AND direction = ?"
             params.append(direction)
 
@@ -146,6 +147,19 @@ async def list_trades(
         }
     finally:
         conn.close()
+
+
+# 注意: /from-text 必须在 /{trade_id} 之前注册，否则会被路径参数捕获
+@router.post("/from-text")
+async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
+    """从文本提取交易信息 (Phase 3: LLM 提取)"""
+    # Phase 3 实现: 调用 LLM 提取结构化数据
+    # 目前返回 placeholder
+    return {
+        "status": "not_implemented",
+        "message": "语音提取功能将在 Phase 3 实现",
+        "raw_text": req.text,
+    }
 
 
 @router.get("/{trade_id}")
@@ -187,15 +201,3 @@ async def delete_trade(trade_id: int, user_id: int = 1):
         return {"ok": True, "deleted_id": trade_id}
     finally:
         conn.close()
-
-
-@router.post("/from-text")
-async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
-    """从文本提取交易信息 (Phase 3: LLM 提取)"""
-    # Phase 3 实现: 调用 LLM 提取结构化数据
-    # 目前返回 placeholder
-    return {
-        "status": "not_implemented",
-        "message": "语音提取功能将在 Phase 3 实现",
-        "raw_text": req.text,
-    }

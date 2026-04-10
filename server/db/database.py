@@ -1,8 +1,11 @@
 """CT-OS V4.0 数据库初始化 — SQLite + 多用户 Ready"""
 
+import logging
 import sqlite3
 from pathlib import Path
 from server.config import DB_PATH
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 -- 用户 (微信 OAuth)
@@ -110,7 +113,7 @@ def init_db():
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
-    print(f"✅ 数据库已初始化: {DB_PATH}")
+    logger.info("数据库已初始化: %s", DB_PATH)
 
 
 def ensure_default_user():
@@ -125,7 +128,7 @@ def ensure_default_user():
             ("dev_user", "开发者"),
         )
         conn.commit()
-        print("✅ 默认用户已创建: dev_user")
+        logger.info("默认用户已创建: dev_user")
     conn.close()
 
 

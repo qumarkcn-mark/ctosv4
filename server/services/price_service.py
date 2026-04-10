@@ -4,10 +4,13 @@
 每次查询 <50ms，比维护 WebSocket 连接简单可靠。
 """
 
+import logging
 import httpx
 from typing import Optional
 
 from server.config import PRICE_API_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 # 腾讯行情 API 基地址
 _QT_BASE = "https://qt.gtimg.cn/q="
@@ -40,7 +43,7 @@ async def get_current_price(symbol: str) -> Optional[dict]:
             resp.raise_for_status()
             return _parse_qt_response(symbol, resp.text)
     except Exception as e:
-        print(f"⚠️ 行情查询失败 {symbol}: {e}")
+        logger.warning("行情查询失败 %s: %s", symbol, e)
         return None
 
 
@@ -79,7 +82,7 @@ async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:
 
         return results
     except Exception as e:
-        print(f"⚠️ 批量行情查询失败: {e}")
+        logger.warning("批量行情查询失败: %s", e)
         return {}
 
 
@@ -118,5 +121,5 @@ def _parse_qt_response(symbol: str, raw: str) -> Optional[dict]:
             "prev_close": prev_close,
         }
     except (ValueError, IndexError) as e:
-        print(f"⚠️ 解析行情数据失败 {symbol}: {e}")
+        logger.warning("解析行情数据失败 %s: %s", symbol, e)
         return None
