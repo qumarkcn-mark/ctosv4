@@ -1,0 +1,10 @@
+/* 全局样式（Dark OS 美学对接） */
+page {
+  background-color: #0b0c10;
+  color: #c5c6c7;
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Helvetica, Segoe UI, Arial, Roboto, 'PingFang SC', 'miui', 'Hiragino Sans GB', 'Microsoft Yahei', sans-serif;
+  font-size: 14px;
+}
+.mono {
+  font-family: 'Space Mono', 'Courier New', Courier, monospace;
+}

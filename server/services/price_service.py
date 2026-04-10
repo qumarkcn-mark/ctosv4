@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # 腾讯行情 API 基地址
 _QT_BASE = "https://qt.gtimg.cn/q="
+_QT_KLINE_BASE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
 
 
 async def get_current_price(symbol: str) -> Optional[dict]:
@@ -46,6 +47,59 @@ async def get_current_price(symbol: str) -> Optional[dict]:
         logger.warning("行情查询失败 %s: %s", symbol, e)
         return None
 
+
+async def get_daily_klines(symbol: str, count: int = 60) -> list[dict]:
+    """
+    获取日线前复权数据，用于 ATR 计算。
+    
+    Args:
+        symbol: 股票代码, 如 "sh600519"
+        count: 需要获取的 K 线根数
+        
+    Returns:
+        [
+            {
+                "date": "2023-10-01",
+                "open": 100.0,
+                "close": 102.0,
+                "high": 105.0,
+                "low": 98.0,
+                "volume": 12345
+            },
+            ...
+        ] 按日期正序排列（最旧的在前，最新的在后）
+    """
+    url = f"{_QT_KLINE_BASE}{symbol},day,,,{count},qfq"
+    
+    try:
+        async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get("code") != 0 or not data.get("data"):
+                return []
+                
+            stock_data = data["data"].get(symbol, {})
+            # 优先取前复权数据 qfqday，如果没有则取 day
+            klinesraw = stock_data.get("qfqday", stock_data.get("day", []))
+            
+            klines = []
+            for item in klinesraw:
+                # 格式: [date, open, close, high, low, volume]
+                if len(item) >= 6:
+                    klines.append({
+                        "date": item[0],
+                        "open": float(item[1]),
+                        "close": float(item[2]),
+                        "high": float(item[3]),
+                        "low": float(item[4]),
+                        "volume": float(item[5])
+                    })
+            return klines
+    except Exception as e:
+        logger.warning("获取日线失败 %s: %s", symbol, e)
+        return []
 
 async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:
     """

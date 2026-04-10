@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server.config import DEBUG
 from server.db.database import init_db, ensure_default_user
+from server.workers.price_monitor import monitor
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -14,11 +15,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期: 启动时初始化数据库"""
+    """应用生命周期: 启动时初始化数据库，并启动后台任务"""
     init_db()
     ensure_default_user()
+    monitor.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
+    monitor.stop()
     logger.info("👋 CT-OS V4.0 已关闭")
 
 
@@ -57,8 +60,10 @@ app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 
+from server.api import auth
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+
 # Phase 2+:
-# from server.api import alerts, auth, analysis
+# from server.api import alerts, analysis
 # app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])
-# app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 # app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])

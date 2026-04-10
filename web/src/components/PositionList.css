@@ -79,7 +79,7 @@
   height: 100%;
   background: var(--action-gold);
   border-radius: 2px;
-  transition: width var(--transition-slow);
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .weight-label {
@@ -87,4 +87,61 @@
   color: var(--text-secondary);
   min-width: 36px;
   text-align: right;
+}
+
+/* ── 止损看门狗 ── */
+.stop-loss-watchdog {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  border-left: 2px solid transparent;
+}
+
+.stop-loss-watchdog.safe { 
+  border-left-color: color-mix(in srgb, var(--text-primary) 15%, transparent); 
+}
+
+.stop-loss-watchdog.warning { 
+  border-left-color: var(--action-gold); 
+  background: color-mix(in srgb, var(--action-gold) 5%, transparent);
+}
+
+.stop-loss-watchdog.danger { 
+  /* A股下跌是绿色，所以破止损用 status-down */
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 5%, transparent);
+}
+
+.watchdog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: var(--text-xs);
+}
+
+.watchdog-header .label {
+  color: var(--text-secondary);
+}
+
+.watchdog-header .value {
+  color: var(--action-gold);
+}
+
+.watchdog-status {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.stop-loss-watchdog.warning .watchdog-status,
+.stop-loss-watchdog.warning .watchdog-header .label { 
+  color: var(--action-gold); 
+}
+
+.stop-loss-watchdog.danger .watchdog-status,
+.stop-loss-watchdog.danger .watchdog-header .label { 
+  color: var(--status-down); 
 }

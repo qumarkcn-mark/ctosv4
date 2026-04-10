@@ -1,0 +1,48 @@
+<view class="container">
+  <view class="header">
+    <text class="title">交易看板</text>
+    <view class="subscribe-btn" bindtap="subscribeAlerts">
+      <text>开启护盘预警</text>
+    </view>
+  </view>
+
+  <view class="overview-cards" wx:if="{{overview}}">
+    <view class="stat-card">
+      <text class="stat-label">总市值</text>
+      <text class="stat-value mono">¥{{overview.total_value}}</text>
+    </view>
+    <view class="stat-card health-card">
+      <text class="stat-label">健康度</text>
+      <text class="stat-value mono {{overview.health_score >= 80 ? 'up' : 'down'}}">{{overview.health_score}}分</text>
+    </view>
+  </view>
+
+  <view class="positions-section">
+    <text class="section-title">我的持仓</text>
+    <view class="position-list">
+      <view class="position-item" wx:for="{{positions}}" wx:key="symbol">
+        <view class="p-header">
+          <text class="p-name">{{item.name}} <text class="p-code mono">{{item.symbol}}</text></text>
+        </view>
+        <view class="p-stats">
+          <view class="p-stat">
+            <text class="l">现价</text>
+            <text class="v mono">{{item.current_price || '—'}}</text>
+          </view>
+          <view class="p-stat">
+            <text class="l">占比</text>
+            <text class="v mono">{{item.weight_pct}}%</text>
+          </view>
+        </view>
+        <!-- ATR 止损看门狗 -->
+        <view class="p-watchdog" wx:if="{{item.stop_loss_price}}">
+          <text class="wd-label">🎯 止损线: ¥{{item.stop_loss_price}}</text>
+        </view>
+      </view>
+      
+      <view class="empty" wx:if="{{positions.length === 0}}">
+        <text>暂无持仓数据</text>
+      </view>
+    </view>
+  </view>
+</view>
