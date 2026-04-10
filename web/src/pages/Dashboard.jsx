@@ -81,11 +81,14 @@ export default function Dashboard() {
               <span className="stat-value">{trades.length} 笔</span>
             </div>
             {overview.health_score !== undefined && (
-              <div className="stat-card">
+              <div className={`stat-card hero-stat-card ${overview.health_score < 60 ? 'animate-pulse' : ''}`}>
                 <span className="stat-label">健康度</span>
-                <span className={`stat-value mono ${overview.health_score >= 80 ? 'text-up' : 'text-down'}`}>
-                  {overview.health_score} 分
-                </span>
+                <div className="health-score-container">
+                  <span className={`stat-value mono ${overview.health_score >= 80 ? 'text-up' : 'text-down'}`}>
+                    {overview.health_score} 
+                  </span>
+                  <span className="health-suffix">分</span>
+                </div>
               </div>
             )}
           </div>

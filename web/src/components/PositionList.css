@@ -79,7 +79,7 @@
   height: 100%;
   background: var(--action-gold);
   border-radius: 2px;
-  transition: width var(--transition-slow);
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .weight-label {
@@ -102,7 +102,7 @@
 }
 
 .stop-loss-watchdog.safe { 
-  border-left-color: var(--text-tertiary); 
+  border-left-color: color-mix(in srgb, var(--text-primary) 15%, transparent); 
 }
 
 .stop-loss-watchdog.warning { 
