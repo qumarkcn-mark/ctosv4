@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: ct-os-v4-backend:latest
+    container_name: ctos_backend
+    restart: unless-stopped
+    ports:
+      # 为了方便直接调试后端 API，映射到 8001
+      - "8001:8001"
+    volumes:
+      # 将本地 data 目录挂载进容器以持久化 SQLite 和配置
+      - ./data:/app/data
+    environment:
+      - DB_PATH=/app/data/ctos.db
+      - HOST=0.0.0.0
+      - PORT=8001
+      - DEBUG=false
+    env_file:
+      - .env
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: ct-os-v4-frontend:latest
+    container_name: ctos_frontend
+    restart: unless-stopped
+    ports:
+      # Vue/React 等单页应用的静态服务器，映射 80 端口提供主访问入口
+      - "80:80"
+      # 可选：如果用 HTTPS 在云端做网关，可以通过负载均衡/Caddy 代理此 80 端口
+    depends_on:
+      - backend
