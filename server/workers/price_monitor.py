@@ -29,9 +29,16 @@ class PriceMonitor:
             logger.info("价格监控 Worker 停止")
 
     async def _monitor_loop(self):
+        self._loop_count = 0
         while self._running:
             try:
                 await self._check_stop_losses()
+                
+                # 每隔 20 个周期 (约 10 分钟) 跑一次低频的缠论长线日线推演 (减少API负担)
+                if self._loop_count % 20 == 0:
+                    await self._check_chan_buys()
+                    
+                self._loop_count += 1
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -102,6 +109,36 @@ class PriceMonitor:
             # 安全地在主事件循环内创建后台发送任务
             asyncio.create_task(send_stop_loss_alert(user_id, msg))
 
+    async def _check_chan_buys(self):
+        """低频轮询：进行缠论日线状态推演，发现三买给予推送"""
+        from server.services.chan_service import analyze_stock_chan_state
+        from chan_engine.fsm import ChanState
+        
+        positions = await run_in_threadpool(self._db_get_positions)
+        if not positions:
+            return
+            
+        symbols = list(set(p["symbol"] for p in positions))
+        alerts_to_send = []
+        conn = get_connection()
+        try:
+            for sym in symbols:
+                try:
+                    state, zs = await analyze_stock_chan_state(sym)
+                    if state == ChanState.THIRD_BUY_CONFIRMED:
+                        users_holding = [p for p in positions if p["symbol"] == sym]
+                        for pos in users_holding:
+                            msg = self._trigger_alert_db(conn, pos, current_price=0.0, alert_type="CHAN_THIRD_BUY")
+                            if msg: alerts_to_send.append((pos["user_id"], msg))
+                except Exception as e:
+                    logger.error(f"处理 {sym} 的缠论解析时发生异常: {e}")
+            conn.commit()
+        finally:
+            conn.close()
+            
+        for user_id, msg in alerts_to_send:
+            asyncio.create_task(send_stop_loss_alert(user_id, msg))
+
     def _trigger_alert_db(self, conn, pos, current_price: float, alert_type: str) -> Optional[str]:
         """记录提醒入库，如果今天已经发过则返回 None"""
         # 1. 检查今日是否已针对此股票发送过同类提醒 (简单防重)
@@ -121,6 +158,9 @@ class PriceMonitor:
             logger.warning(f"[预警触发] {msg}")
         elif alert_type == "STOP_LOSS_WARNING":
             msg = f"【接近止损】{pos['name']} 现价 {current_price} 逼近止损价 {pos['stop_loss_price']}，请持续关注。"
+            logger.info(f"[预警触发] {msg}")
+        elif alert_type == "CHAN_THIRD_BUY":
+            msg = f"【绝佳买点】{pos['name']} 确立日线级别第三类买点！"
             logger.info(f"[预警触发] {msg}")
 
         # 写入 alerts 表
