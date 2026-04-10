@@ -80,6 +80,14 @@ export default function Dashboard() {
               <span className="stat-label">今日交易</span>
               <span className="stat-value">{trades.length} 笔</span>
             </div>
+            {overview.health_score !== undefined && (
+              <div className="stat-card">
+                <span className="stat-label">健康度</span>
+                <span className={`stat-value mono ${overview.health_score >= 80 ? 'text-up' : 'text-down'}`}>
+                  {overview.health_score} 分
+                </span>
+              </div>
+            )}
           </div>
         )}
 

@@ -72,6 +72,12 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
     # 成交时间
     traded_at = trade.traded_at or datetime.now().isoformat()
 
+    # 自动计算止损价 (武器2：止损看门狗)
+    stop_loss_price = trade.stop_loss_price
+    if stop_loss_price is None:
+        from server.services.atr_service import calculate_stop_loss
+        stop_loss_price = await calculate_stop_loss(trade.symbol, trade.price, trade.direction)
+
     conn = get_connection()
     try:
         cursor = conn.execute(
@@ -85,7 +91,7 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
             (
                 user_id, trade.symbol, trade.name, trade.direction,
                 trade.price, trade.quantity, amount,
-                trade.stop_loss_price, trade.reason_text, trade.reason_category,
+                stop_loss_price, trade.reason_text, trade.reason_category,
                 trade.trend_direction, trade.source, traded_at,
             ),
         )

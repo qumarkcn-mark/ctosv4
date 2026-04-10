@@ -52,63 +52,15 @@ async def list_positions(user_id: int = 1):
 @router.get("/overview")
 async def position_overview(user_id: int = 1):
     """仓位透视镜 — 武器 1 的数据源"""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            """
-            SELECT symbol, name, quantity, avg_cost, current_price
-            FROM positions
-            WHERE user_id = ? AND quantity > 0
-            ORDER BY (quantity * avg_cost) DESC
-            """,
-            (user_id,),
-        ).fetchall()
-
-        positions = []
-        total_value = 0
-
-        for r in rows:
-            value = r["quantity"] * (r["current_price"] or r["avg_cost"])
-            total_value += value
-            positions.append({
-                "symbol": r["symbol"],
-                "name": r["name"],
-                "quantity": r["quantity"],
-                "avg_cost": r["avg_cost"],
-                "current_price": r["current_price"],
-                "market_value": round(value, 2),
-            })
-
-        # 计算每只的占比
-        for p in positions:
-            p["weight_pct"] = round(p["market_value"] / total_value * 100, 2) if total_value > 0 else 0
-
-        # 预警检查
-        warnings = []
-        small_positions = [p for p in positions if p["weight_pct"] < 5]
-        if len(small_positions) >= 3:
-            small_total_pct = sum(p["weight_pct"] for p in small_positions)
-            warnings.append({
-                "type": "SCATTERED",
-                "message": f"{len(small_positions)} 只小票合计占 {round(small_total_pct, 1)}%",
-                "severity": "warning" if small_total_pct > 20 else "info",
-            })
-
-        if len(positions) > 5:
-            warnings.append({
-                "type": "TOO_MANY",
-                "message": f"持仓 {len(positions)} 只 (建议 ≤5)",
-                "severity": "warning",
-            })
-
-        return {
-            "total_value": round(total_value, 2),
-            "position_count": len(positions),
-            "positions": positions,
-            "warnings": warnings,
-        }
-    finally:
-        conn.close()
+    from server.services.analysis.concentration import analyze_concentration
+    res = await analyze_concentration(user_id)
+    return {
+        "total_value": res["total_market_value"],
+        "position_count": len(res["positions"]),
+        "health_score": res["health_score"],
+        "positions": res["positions"],
+        "warnings": res["warnings"],
+    }
 
 
 @router.get("/{symbol}")
