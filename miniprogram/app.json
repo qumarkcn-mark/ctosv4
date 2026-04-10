@@ -1,7 +1,8 @@
 {
   "pages": [
     "pages/index/index",
-    "pages/stock_detail/index"
+    "pages/stock_detail/index",
+    "pages/behavior/index"
   ],
   "window": {
     "backgroundTextStyle": "dark",

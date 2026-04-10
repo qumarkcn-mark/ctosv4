@@ -1,0 +1,54 @@
+<view class="container">
+  <view class="header">
+    <text class="title">投资行为体检</text>
+  </view>
+
+  <view class="loading" wx:if="{{loading}}">正在扫描你的交易基因...</view>
+
+  <block wx:if="{{!loading}}">
+    <!-- 纪律评分圆环 -->
+    <view class="score-ring">
+      <view class="ring-bg">
+        <view class="ring-value {{score >= 70 ? 'good' : score >= 40 ? 'warn' : 'bad'}}">
+          <text class="score-number">{{score}}</text>
+          <text class="score-label">纪律评分</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 六维雷达 (纯 CSS SVG) -->
+    <view class="radar-section">
+      <text class="section-title">六维能力图</text>
+      <view class="radar-wrap">
+        <svg viewBox="0 0 100 100" class="radar-svg">
+          <!-- 背景六边形网格 -->
+          <polygon points="50,10 88,30 88,70 50,90 12,70 12,30" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <polygon points="50,20 79,35 79,65 50,80 21,65 21,35" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="0.5"/>
+          <polygon points="50,30 69,40 69,60 50,70 31,60 31,40" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>
+          <!-- 实际数据面 -->
+          <polygon points="{{radarPoints}}" fill="rgba(234,179,8,0.2)" stroke="rgba(234,179,8,0.8)" stroke-width="1"/>
+        </svg>
+        <view class="radar-labels">
+          <text class="rl rl-top">胜率</text>
+          <text class="rl rl-tr">盈亏比</text>
+          <text class="rl rl-br">止损</text>
+          <text class="rl rl-bottom">趋势</text>
+          <text class="rl rl-bl">情绪</text>
+          <text class="rl rl-tl">持仓</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 缺陷诊断卡片 -->
+    <view class="diagnosis-section">
+      <text class="section-title">教练诊断</text>
+      <view class="diag-card {{item.level}}" wx:for="{{diagnosis}}" wx:key="title">
+        <view class="diag-header">
+          <text class="diag-icon">{{item.level === 'critical' ? '🔴' : item.level === 'warning' ? '🟡' : item.level === 'success' ? '🟢' : '🔵'}}</text>
+          <text class="diag-title">{{item.title}}</text>
+        </view>
+        <text class="diag-detail">{{item.detail}}</text>
+      </view>
+    </view>
+  </block>
+</view>
