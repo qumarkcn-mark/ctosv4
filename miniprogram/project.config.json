@@ -1,0 +1,11 @@
+{
+  "miniprogramRoot": "./",
+  "projectname": "ct-os-mobile",
+  "description": "CT-OS V4.0 微信小程序端",
+  "appid": "",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true
+  }
+}

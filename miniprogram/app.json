@@ -1,0 +1,12 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "backgroundTextStyle": "dark",
+    "navigationBarBackgroundColor": "#0b0c10",
+    "navigationBarTitleText": "CT-OS",
+    "navigationBarTextStyle": "white"
+  },
+  "style": "v2"
+}
