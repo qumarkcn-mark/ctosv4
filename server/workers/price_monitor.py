@@ -119,25 +119,40 @@ class PriceMonitor:
             return
             
         symbols = list(set(p["symbol"] for p in positions))
-        alerts_to_send = []
-        conn = get_connection()
-        try:
-            for sym in symbols:
-                try:
-                    state, zs = await analyze_stock_chan_state(sym)
-                    if state == ChanState.THIRD_BUY_CONFIRMED:
-                        users_holding = [p for p in positions if p["symbol"] == sym]
-                        for pos in users_holding:
-                            msg = self._trigger_alert_db(conn, pos, current_price=0.0, alert_type="CHAN_THIRD_BUY")
-                            if msg: alerts_to_send.append((pos["user_id"], msg))
-                except Exception as e:
-                    logger.error(f"处理 {sym} 的缠论解析时发生异常: {e}")
-            conn.commit()
-        finally:
-            conn.close()
+        
+        # 1. 纯粹纯异步网络请求测算形态，释放 event loop
+        chan_signals = []
+        for sym in symbols:
+            try:
+                state, zs = await analyze_stock_chan_state(sym)
+                if state == ChanState.THIRD_BUY_CONFIRMED:
+                    chan_signals.append(sym)
+            except Exception as e:
+                logger.error(f"处理 {sym} 的缠论解析时发生异常: {e}")
+
+        if not chan_signals:
+            return
+            
+        # 2. 将纯同步的 DB 写入扔进线程池，杜绝主事件循环阻塞
+        alerts_to_send = await run_in_threadpool(self._db_save_chan_alerts, chan_signals, positions)
             
         for user_id, msg in alerts_to_send:
             asyncio.create_task(send_stop_loss_alert(user_id, msg))
+
+    def _db_save_chan_alerts(self, chan_signals, positions):
+        """线程池运行的同步DB存入"""
+        conn = get_connection()
+        alerts_to_send = []
+        try:
+            for sym in chan_signals:
+                users_holding = [p for p in positions if p["symbol"] == sym]
+                for pos in users_holding:
+                    msg = self._trigger_alert_db(conn, pos, current_price=0.0, alert_type="CHAN_THIRD_BUY")
+                    if msg: alerts_to_send.append((pos["user_id"], msg))
+            conn.commit()
+            return alerts_to_send
+        finally:
+            conn.close()
 
     def _trigger_alert_db(self, conn, pos, current_price: float, alert_type: str) -> Optional[str]:
         """记录提醒入库，如果今天已经发过则返回 None"""
