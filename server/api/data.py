@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 
 from server.db.database import get_connection
 from server.services.csv_importer import import_csv
-from server.services.price_service import get_current_price, get_batch_prices
+from server.services.price_service import get_current_price, get_batch_prices, get_daily_klines, get_minute_klines
 
 router = APIRouter()
 
@@ -56,3 +56,21 @@ async def query_batch_prices(symbols: str = Query(..., description="逗号分隔
 
     results = await get_batch_prices(symbol_list)
     return {"count": len(results), "prices": results}
+
+
+# ── K 线数据 (给前端图表用) ──
+
+@router.get("/klines/{symbol}")
+async def query_klines(
+    symbol: str,
+    interval: str = Query("day", description="day / m60 / m30 / m15 / m5"),
+    count: int = Query(200, ge=10, le=500)
+):
+    """获取 K 线数据用于前端图表渲染"""
+    if interval == "day":
+        klines = await get_daily_klines(symbol, count=count)
+    else:
+        klines = await get_minute_klines(symbol, interval=interval, count=count)
+    if not klines:
+        raise HTTPException(404, f"无法获取 {symbol} 的 {interval} K 线数据")
+    return {"symbol": symbol, "interval": interval, "count": len(klines), "klines": klines}

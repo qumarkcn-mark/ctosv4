@@ -1,0 +1,25 @@
+.kline-chart-wrapper {
+  margin-bottom: 1.5rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.kline-toolbar {
+  display: flex; gap: 2px; padding: 10px 14px;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--border-color);
+}
+.kline-iv-btn {
+  background: transparent; border: none; color: var(--text-secondary);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  font-size: 0.8rem; transition: all 0.15s;
+}
+.kline-iv-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.kline-iv-btn.active {
+  background: rgba(234,179,8,0.15); color: #EAB308; font-weight: 600;
+}
+.kline-container { width: 100%; }
+.kline-loading {
+  text-align: center; padding: 1rem; color: var(--text-secondary); font-size: 0.8rem;
+}

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import KlineChart from '../components/KlineChart.jsx'
 import './ChanMatrix.css'
 
 const API_BASE = 'http://localhost:8000/api'
@@ -108,6 +109,14 @@ export default function ChanMatrix() {
 
       {loading && <div className="chan-loading">引擎推算中...</div>}
       {error && <div className="chan-error">请求失败: {error}</div>}
+
+      {/* K 线图表 */}
+      {!loading && data && (
+        <KlineChart
+          symbol={symbol}
+          zhongshu={matrix.find(m => m.level === 'day') || null}
+        />
+      )}
 
       {/* 级别卡片 */}
       {!loading && matrix.length > 0 && (
