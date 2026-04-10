@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import jwt
+from fastapi.concurrency import run_in_threadpool
 
 from server.db.database import get_connection
 # from server.config import WECHAT_APP_ID, WECHAT_APP_SECRET, JWT_SECRET
@@ -47,37 +48,48 @@ async def wechat_login(req: LoginRequest):
             "js_code": req.code,
             "grant_type": "authorization_code"
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params=params)
-            data = resp.json()
-            
-            if "errcode" in data and data["errcode"] != 0:
-                logger.error("Wechat login failed: %s", data)
-                raise HTTPException(400, f"微信登录失败: {data.get('errmsg')}")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
                 
-            openid = data.get("openid")
+                if "errcode" in data and data["errcode"] != 0:
+                    logger.error("Wechat login failed: %s", data)
+                    raise HTTPException(400, f"微信登录失败: {data.get('errmsg')}")
+                    
+                openid = data.get("openid")
+        except httpx.HTTPError as e:
+            logger.error("Wechat API connection failed: %s", e)
+            raise HTTPException(502, "无法连接微信授权服务器，请稍后重试")
             
     if not openid:
         raise HTTPException(400, "无法获取 OpenID")
 
-    # DB 注册/登录逻辑
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT id, nickname FROM users WHERE openid = ?", (openid,)).fetchone()
-        if not row:
-            # 新用户注册
-            cursor = conn.execute(
-                "INSERT INTO users (openid, nickname) VALUES (?, ?)", 
-                (openid, "投资人_" + openid[-4:])
-            )
-            user_id = cursor.lastrowid
-            nickname = "投资人_" + openid[-4:]
-            conn.commit()
-        else:
-            user_id = row["id"]
-            nickname = row["nickname"]
+    # DB 注册/登录逻辑隔离到线程池执行
+    def _db_register_login(oid: str) -> tuple[int, str]:
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT id, nickname FROM users WHERE openid = ?", (oid,)).fetchone()
+            if not row:
+                # 新用户注册
+                cursor = conn.execute(
+                    "INSERT INTO users (openid, nickname) VALUES (?, ?)", 
+                    (oid, "投资人_" + oid[-4:])
+                )
+                user_id = cursor.lastrowid
+                nickname = "投资人_" + oid[-4:]
+                conn.commit()
+            else:
+                user_id = row["id"]
+                nickname = row["nickname"]
+            return user_id, nickname
+        finally:
+            conn.close()
 
-        # 签发 JWT Token
+    user_id, nickname = await run_in_threadpool(_db_register_login, openid)
+
+    # 签发 JWT Token
         expires_delta = timedelta(days=30)
         expire = datetime.utcnow() + expires_delta
         to_encode = {"sub": str(user_id), "exp": expire}

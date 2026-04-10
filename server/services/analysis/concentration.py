@@ -1,6 +1,7 @@
 """仓位集中度与透视分析引擎"""
 
 from typing import Dict, Any
+from fastapi.concurrency import run_in_threadpool
 from server.db.database import get_connection
 from server.services.price_service import get_batch_prices
 
@@ -10,19 +11,20 @@ async def analyze_concentration(user_id: int, max_single_weight: float = 0.20, m
     - 检查单只标的是否超配
     - 检查持仓总数是否超标
     """
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT symbol, name, quantity, avg_cost, current_price, stop_loss_price FROM positions WHERE user_id = ? AND quantity > 0",
-            (user_id,)
-        ).fetchall()
-        
-        if not rows:
-            return {"total_market_value": 0, "positions": [], "warnings": [], "health_score": 100}
+    def _fetch_positions():
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT symbol, name, quantity, avg_cost, current_price, stop_loss_price FROM positions WHERE user_id = ? AND quantity > 0",
+                (user_id,)
+            ).fetchall()
+            return [dict(r) for r in rows] if rows else []
+        finally:
+            conn.close()
 
-        positions = [dict(r) for r in rows]
-    finally:
-        conn.close()
+    positions = await run_in_threadpool(_fetch_positions)
+    if not positions:
+        return {"total_market_value": 0, "positions": [], "warnings": [], "health_score": 100}
 
     # 更新最新价格
     symbols = [p["symbol"] for p in positions]
