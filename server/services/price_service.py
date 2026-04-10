@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # 腾讯行情 API 基地址
 _QT_BASE = "https://qt.gtimg.cn/q="
 _QT_KLINE_BASE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
+_QT_MKLINE_BASE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline?param="
 
 
 async def get_current_price(symbol: str) -> Optional[dict]:
@@ -99,6 +100,51 @@ async def get_daily_klines(symbol: str, count: int = 60) -> list[dict]:
             return klines
     except Exception as e:
         logger.warning("获取日线失败 %s: %s", symbol, e)
+        return []
+
+async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 300) -> list[dict]:
+    """
+    获取分钟级别 K 线数据，用于多级别状态机推演。
+    
+    Args:
+        symbol: 股票代码, 如 "sh600519"
+        interval: 周期 ("m60", "m30", "m15", "m5")
+        count: 需要获取的 K 线根数
+    """
+    url = f"{_QT_MKLINE_BASE}{symbol},{interval},,{count}"
+    try:
+        async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get("code") != 0 or not data.get("data"):
+                return []
+                
+            stock_data = data["data"].get(symbol, {})
+            klinesraw = stock_data.get(interval, [])
+            
+            klines = []
+            for item in klinesraw:
+                if len(item) >= 6:
+                    d_str = str(item[0])
+                    # 腾讯分钟线的时间格式通常是 YYYYMMDDhhmm 即 12 位
+                    if len(d_str) >= 12:
+                        formatted_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]} {d_str[8:10]}:{d_str[10:12]}"
+                    else:
+                        formatted_date = d_str
+
+                    klines.append({
+                        "date": formatted_date,
+                        "open": float(item[1]),
+                        "close": float(item[2]),
+                        "high": float(item[3]),
+                        "low": float(item[4]),
+                        "volume": float(item[5])
+                    })
+            return klines
+    except Exception as e:
+        logger.warning("获取分钟线失败 %s (%s): %s", symbol, interval, e)
         return []
 
 async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:
