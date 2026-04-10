@@ -71,5 +71,14 @@ Page({
         console.error('订阅消息失败', err)
       }
     })
+  },
+
+  goToDetail(e) {
+    const symbol = e.currentTarget.dataset.symbol;
+    if (symbol) {
+      wx.navigateTo({
+        url: `/pages/stock_detail/index?symbol=${symbol}`
+      });
+    }
   }
 })

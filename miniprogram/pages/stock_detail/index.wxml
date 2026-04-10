@@ -1,0 +1,32 @@
+<view class="container">
+  <view class="header">
+    <text class="title">{{symbol}} 推演矩阵</text>
+  </view>
+
+  <view class="toggle-group">
+    <view class="toggle-item {{matrixMode === 'A' ? 'active' : ''}}" bindtap="switchMode" data-mode="A">日/30/5 短线</view>
+    <view class="toggle-item {{matrixMode === 'B' ? 'active' : ''}}" bindtap="switchMode" data-mode="B">日/60/15 波段</view>
+  </view>
+
+  <view class="advice-panel" wx:if="{{!loading}}">
+    <text class="advice-text">{{adviceText}}</text>
+  </view>
+
+  <view class="loading" wx:if="{{loading}}">引擎推算中...</view>
+
+  <view class="matrix-board" wx:if="{{!loading && currentMatrix.length > 0}}">
+    <view class="level-card" wx:for="{{currentMatrix}}" wx:key="level">
+      <view class="level-header">
+        <text class="level-name">{{item.level}}</text>
+        <view class="status-indicator {{item.state}}">{{item.state}}</view>
+      </view>
+      
+      <view class="watermark-container">
+        <view class="zg-line">ZG: {{item.zg}}</view>
+        <view class="center-pool" wx:if="{{item.zd > 0}}"></view>
+        <view class="no-center-msg" wx:else>单边脱离中...</view>
+        <view class="zd-line" wx:if="{{item.zd > 0}}">ZD: {{item.zd}}</view>
+      </view>
+    </view>
+  </view>
+</view>

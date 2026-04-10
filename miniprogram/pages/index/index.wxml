@@ -20,7 +20,7 @@
   <view class="positions-section">
     <text class="section-title">我的持仓</text>
     <view class="position-list">
-      <view class="position-item" wx:for="{{positions}}" wx:key="symbol">
+      <view class="position-item" wx:for="{{positions}}" wx:key="symbol" bindtap="goToDetail" data-symbol="{{item.symbol}}">
         <view class="p-header">
           <text class="p-name">{{item.name}} <text class="p-code mono">{{item.symbol}}</text></text>
         </view>
