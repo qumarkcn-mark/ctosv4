@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
+import ChanMatrix from './pages/ChanMatrix.jsx'
+import BehaviorReport from './pages/BehaviorReport.jsx'
 import './App.css'
 
 function App() {
@@ -30,7 +32,6 @@ function App() {
           <button
             className={`nav-tab ${page === 'chan' ? 'active' : ''}`}
             onClick={() => setPage('chan')}
-            disabled
           >
             🔮 缠论看盘
           </button>
@@ -44,21 +45,12 @@ function App() {
       {/* 主内容区 */}
       <main className="main-content">
         {page === 'dashboard' && <Dashboard />}
-        {page === 'analysis' && (
-          <div className="placeholder-page">
-            <h2>📈 行为分析</h2>
-            <p className="text-secondary">Phase 4 实现 — 需要积累交易数据</p>
-          </div>
-        )}
-        {page === 'chan' && (
-          <div className="placeholder-page">
-            <h2>🔮 缠论看盘</h2>
-            <p className="text-secondary">Phase 3 实现 — 从 V3 移植缠论引擎</p>
-          </div>
-        )}
+        {page === 'analysis' && <BehaviorReport />}
+        {page === 'chan' && <ChanMatrix />}
       </main>
     </div>
   )
 }
 
 export default App
+

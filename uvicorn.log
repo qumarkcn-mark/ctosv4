@@ -1,8 +1,40 @@
-INFO:     Started server process [71609]
+INFO:     Will watch for changes in these directories: ['/Users/markqu/.gemini/antigravity/scratch/ct-os-v4']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [77945] using WatchFiles
+INFO:     Started server process [77948]
 INFO:     Waiting for application startup.
-2026-04-10 10:16:13,443 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
-2026-04-10 10:16:13,444 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
-2026-04-10 10:16:13,444 INFO server.app: 🚀 CT-OS V4.0 交易教练已启动
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
-INFO:     127.0.0.1:64500 - "GET /api/positions/overview HTTP/1.1" 200 OK
+2026-04-10 15:18:35,085 INFO server.db.database: 数据库已初始化: /Users/markqu/.gemini/antigravity/scratch/ct-os-v4/data/ctos.db
+2026-04-10 15:18:35,086 INFO server.workers.price_monitor: 价格监控 Worker 启动，轮询间隔 30s
+2026-04-10 15:18:35,086INFO:     127.0.0.1:53875 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53874 - "GET /api/positions/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53878 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53879 - "GET /api/positions/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53885 - "GET /api/trades?limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53884 - "GET INFO:     127.0.0.1:54077 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54077 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+2026-04-10 15:31:45,838 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:45,845 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:45,849 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:45,854 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:45,858 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54104 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
+2026-04-10 15:31:46,022 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+2026-04-10 15:31:46,031 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:46,033 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:46,036 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:31:46,046 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54104 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54124 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54124 - "GET /api/behavior/report?user_id=1 HTTP/1.1" 200 OK
+2026-04-10 15:32:53,688 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+2026-04-10 15:32:53,700 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:53,705 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:53,788 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:53,792 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54127 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
+2026-04-10 15:32:54,049 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m15,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:54,053 INFO httpx: HTTP Request: GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,250,qfq "HTTP/1.1 200 OK"
+2026-04-10 15:32:54,058 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m60,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:54,059 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m30,,320 "HTTP/1.1 200 OK"
+2026-04-10 15:32:54,064 INFO httpx: HTTP Request: GET https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=sz000001,m5,,320 "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54127 - "GET /api/chan/matrix/sz000001 HTTP/1.1" 200 OK
