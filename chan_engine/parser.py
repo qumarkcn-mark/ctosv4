@@ -158,9 +158,9 @@ class ChanParser:
                     start_fx=candidate_fx,
                     end_fx=current_fx
                 )
-                # 检查价格逻辑是否合理（向上笔不仅要求顶的分型，还要求实际价格升高）
-                if (direction == Direction.UP and current_fx.high > candidate_fx.low) or \
-                   (direction == Direction.DOWN and current_fx.low < candidate_fx.high):
+                # 检查价格逻辑是否合理（向上笔不仅要求顶的分型，还要求实际价格高于底分型）
+                if (direction == Direction.UP and current_fx.high > candidate_fx.high and current_fx.low > candidate_fx.low) or \
+                   (direction == Direction.DOWN and current_fx.low < candidate_fx.low and current_fx.high < candidate_fx.high):
                     valid_bis.append(new_bi)
                     candidate_fx = current_fx
             else:
