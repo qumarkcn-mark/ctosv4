@@ -60,8 +60,9 @@ app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 
-from server.api import auth
+from server.api import auth, chan
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(chan.router, prefix="/api/chan", tags=["chan matrix"])
 
 # Phase 2+:
 # from server.api import alerts, analysis
