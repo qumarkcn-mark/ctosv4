@@ -1,6 +1,9 @@
 <view class="container">
   <view class="header">
     <text class="title">交易看板</text>
+    <view class="subscribe-btn" bindtap="subscribeAlerts">
+      <text>开启护盘预警</text>
+    </view>
   </view>
 
   <view class="overview-cards" wx:if="{{overview}}">

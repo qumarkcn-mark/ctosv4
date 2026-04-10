@@ -3,11 +3,25 @@
 }
 .header {
   margin-bottom: 30rpx;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 .title {
   font-size: 40rpx;
   font-weight: bold;
   color: #fff;
+}
+.subscribe-btn {
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid #eab308;
+  padding: 10rpx 20rpx;
+  border-radius: 8rpx;
+}
+.subscribe-btn text {
+  color: #eab308;
+  font-size: 24rpx;
+  font-weight: bold;
 }
 .overview-cards {
   display: flex;

@@ -45,5 +45,31 @@ Page({
         wx.stopPullDownRefresh()
       }
     })
+  },
+
+  subscribeAlerts() {
+    // 这里替换为您真实的微信小程序订阅消息模板 ID
+    const tmplId = "TMPL_STOP_LOSS_123";
+    
+    wx.requestSubscribeMessage({
+      tmplIds: [tmplId],
+      success(res) {
+        if (res[tmplId] === 'accept') {
+          wx.showToast({
+            title: '护盘预警已开启',
+            icon: 'success'
+          })
+          // TODO: 将同意状态上报给后端 api/alerts/subscribe
+        } else {
+          wx.showToast({
+            title: '授权已取消',
+            icon: 'none'
+          })
+        }
+      },
+      fail(err) {
+        console.error('订阅消息失败', err)
+      }
+    })
   }
 })
