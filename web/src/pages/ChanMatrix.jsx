@@ -110,12 +110,9 @@ export default function ChanMatrix() {
       {loading && <div className="chan-loading">引擎推算中...</div>}
       {error && <div className="chan-error">请求失败: {error}</div>}
 
-      {/* K 线图表 */}
-      {!loading && data && (
-        <KlineChart
-          symbol={symbol}
-          zhongshu={matrix.find(m => m.level === 'day') || null}
-        />
+      {/* K 线图表 — 全功能缠论沙盘（笔 / 中枢 / MACD） */}
+      {symbol && (
+        <KlineChart symbol={symbol} />
       )}
 
       {/* 级别卡片 */}
