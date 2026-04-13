@@ -65,6 +65,15 @@ class Bi:
         return min(self.start_fx.low, self.end_fx.low)
 
 @dataclass
+class FeatureElement:
+    """特征序列元素 (提取出的包含特定极值特征的区间)"""
+    bi: Bi
+    high: float
+    low: float
+    # 与前一个元素的包含处理后的原素集合，类似 K线的包含处理
+    elements: List[Bi] = field(default_factory=list)
+
+@dataclass
 class Segment:
     """线段 (由多笔构成)"""
     direction: Direction
@@ -88,27 +97,33 @@ class Segment:
 
 @dataclass
 class ZhongShu:
-    """中枢 (在我们的单级别体系中，由连续三笔重叠构成)"""
-    bis: List[Bi]
+    """中枢 (支持基于笔，或基于线段的多段重叠)"""
+    bis: List[Bi] = field(default_factory=list)
+    segs: List[Segment] = field(default_factory=list)
+    
+    @property
+    def _components(self):
+        """返回构成中枢的基础组件（线段或笔）"""
+        return self.segs if self.segs else self.bis
     
     @property
     def ZG(self) -> float:
-        """中枢高点 (ZhongShu Gao): 构成中枢的前三笔中，向下的高点 / 向上的低点... 
-           标准算法: min(向上笔的高点)"""
-        # 严格算法将在 parser.py 中实现并注入，这里做基础占位
-        up_bis = [b for b in self.bis[:3] if b.direction == Direction.UP]
-        return min(b.high for b in up_bis) if up_bis else 0
+        """中枢高点: min(前三组件的 high)"""
+        comps = self._components[:3]
+        return min(c.high for c in comps) if comps else 0
         
     @property
     def ZD(self) -> float:
-        """中枢低点 (ZhongShu Di)"""
-        down_bis = [b for b in self.bis[:3] if b.direction == Direction.DOWN]
-        return max(b.low for b in down_bis) if down_bis else 0
+        """中枢低点: max(前三组件的 low)"""
+        comps = self._components[:3]
+        return max(c.low for c in comps) if comps else 0
 
     @property
     def GG(self) -> float:
-        return max(b.high for b in self.bis)
+        comps = self._components
+        return max(c.high for c in comps) if comps else 0
         
     @property
     def DD(self) -> float:
-        return min(b.low for b in self.bis)
+        comps = self._components
+        return min(c.low for c in comps) if comps else 0
