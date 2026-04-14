@@ -203,3 +203,100 @@
 @keyframes lake-spin {
   to { transform: rotate(360deg); }
 }
+
+/* 主动拉取表单 */
+.lake-fetch-form {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.lake-fetch-form h4 {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.lake-fetch-inputs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.lake-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+  min-width: 140px;
+}
+
+.lake-input:focus {
+  border-color: var(--info-blue);
+  box-shadow: 0 0 0 1px var(--info-blue-bg);
+}
+
+.lake-date-sep {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.lake-fetch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+
+.lake-freq-checkboxes {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.lake-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.lake-checkbox-label input[type="checkbox"] {
+  accent-color: var(--info-blue);
+}
+
+.lake-fetch-submit {
+  background: var(--info-blue);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.lake-fetch-submit:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.lake-fetch-submit:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  border: 1px solid var(--border-subtle);
+}

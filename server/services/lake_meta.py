@@ -170,3 +170,23 @@ def get_sync_status() -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+def trigger_manual_fetch(symbol: str, freqs: list[str], start_date: Optional[str] = None, end_date: Optional[str] = None) -> dict:
+    """
+    触发手动数据拉取
+    """
+    from server.services.baostock_service import fetch_klines_sync
+    import threading
+    
+    def _fetch_all():
+        for freq in freqs:
+            try:
+                fetch_klines_sync(symbol=symbol, freq=freq, start_date=start_date, end_date=end_date)
+            except Exception as e:
+                logger.error(f"Manual fetch failed for {symbol} {freq}: {e}")
+                
+    # 丢入子线程静默处理
+    t = threading.Thread(target=_fetch_all)
+    t.start()
+    
+    return {"status": "started", "symbol": symbol, "freqs": freqs}

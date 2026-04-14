@@ -1,8 +1,17 @@
 """CT-OS V4.0 数据湖管理 API"""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from pydantic import BaseModel
 
 router = APIRouter()
+
+from typing import Optional, List
+
+class FetchRequest(BaseModel):
+    symbol: str
+    freqs: List[str]
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 
 @router.get("/overview")
@@ -34,3 +43,14 @@ async def sync_status():
     """获取同步元信息"""
     from server.services.lake_meta import get_sync_status
     return get_sync_status()
+
+@router.post("/fetch")
+async def manual_fetch_stocks(req: FetchRequest):
+    """手动触发拉取股票历史数据"""
+    from server.services.lake_meta import trigger_manual_fetch
+    return trigger_manual_fetch(
+        symbol=req.symbol, 
+        freqs=req.freqs, 
+        start_date=req.start_date, 
+        end_date=req.end_date
+    )

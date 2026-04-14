@@ -14,6 +14,13 @@ export default function DataLakePanel() {
   const [cleaning, setCleaning] = useState(false)
   const [deleting, setDeleting] = useState(null)
 
+  // 主动拉取表单状态
+  const [fetchSymbol, setFetchSymbol] = useState('')
+  const [fetchStart, setFetchStart] = useState('')
+  const [fetchEnd, setFetchEnd] = useState('')
+  const [fetchFreqs, setFetchFreqs] = useState(['day', '60', '30', '15', '5'])
+  const [fetching, setFetching] = useState(false)
+
   const fetchOverview = useCallback(async () => {
     setLoading(true)
     try {
@@ -57,7 +64,47 @@ export default function DataLakePanel() {
     }
   }
 
-  if (loading) {
+  const toggleFreq = (f) => {
+    setFetchFreqs(prev => 
+      prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]
+    )
+  }
+
+  const handleFetch = async () => {
+    if (!fetchSymbol) {
+      alert("请输入股票代码")
+      return
+    }
+    if (fetchFreqs.length === 0) {
+      alert("请至少选择一个周期")
+      return
+    }
+    setFetching(true)
+    try {
+      const payload = {
+        symbol: fetchSymbol,
+        freqs: fetchFreqs,
+        start_date: fetchStart || null,
+        end_date: fetchEnd || null
+      }
+      await fetch(`${API_BASE}/lake/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      // 不需要 await 等待太久，后台会慢慢去下
+      alert("拉取指令已提交后台，可多次刷新概览查看入库进度。")
+      setFetchSymbol('')
+      setTimeout(() => fetchOverview(), 2000)
+    } catch (e) {
+      console.error('[Manual Fetch Error]', e)
+      alert("发送拉取请求失败")
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  if (loading && !data) {
     return (
       <div className="lake-loading">
         <div className="lake-spinner"></div>
@@ -92,10 +139,57 @@ export default function DataLakePanel() {
           </div>
           <div className="lake-stat-label">孤儿文件</div>
           {data.orphan_files > 0 && (
-            <button className="lake-cleanup-btn" onClick={handleCleanup} disabled={cleaning} aria-label="清理孤儿文件">
+            <button className="lake-cleanup-btn" onClick={handleCleanup} disabled={cleaning}>
               {cleaning ? '清理中…' : '[ 一键清理 ]'}
             </button>
           )}
+        </div>
+      </div>
+
+      {/* 初始化主动拉取工具 */}
+      <div className="lake-fetch-form">
+        <h4>主动回填数据中心</h4>
+        <div className="lake-fetch-inputs">
+          <input 
+              type="text" 
+              className="lake-input"
+              placeholder="股票代码 (如 sh.600519)" 
+              value={fetchSymbol}
+              onChange={e => setFetchSymbol(e.target.value)}
+          />
+          <input 
+              type="date"
+              className="lake-input"
+              value={fetchStart}
+              onChange={e => setFetchStart(e.target.value)}
+              title="可选: 起始日期"
+          />
+          <span className="lake-date-sep">至</span>
+          <input 
+              type="date"
+              className="lake-input"
+              value={fetchEnd}
+              onChange={e => setFetchEnd(e.target.value)}
+              title="可选: 结束日期"
+          />
+        </div>
+        
+        <div className="lake-fetch-actions">
+          <div className="lake-freq-checkboxes">
+             {FREQ_ORDER.map(f => (
+                 <label key={f} className="lake-checkbox-label">
+                     <input 
+                       type="checkbox" 
+                       checked={fetchFreqs.includes(f)} 
+                       onChange={() => toggleFreq(f)} 
+                     />
+                     {FREQ_LABELS[f]}
+                 </label>
+             ))}
+          </div>
+          <button className="lake-fetch-submit" onClick={handleFetch} disabled={fetching || !fetchSymbol}>
+              {fetching ? '发送请求中...' : '一键拉取'}
+          </button>
         </div>
       </div>
 
@@ -104,8 +198,8 @@ export default function DataLakePanel() {
         <span className="lake-toolbar-label">
           LAKE · {data.total_stocks} symbols · {FREQ_ORDER.length} periods
         </span>
-        <button className="lake-refresh-btn" onClick={fetchOverview} aria-label="刷新数据湖概览">
-          [ 🔄 刷新 ]
+        <button className="lake-refresh-btn" onClick={fetchOverview}>
+          [ 🔄 刷新面板 ]
         </button>
       </div>
 
@@ -148,7 +242,6 @@ export default function DataLakePanel() {
                     className="lake-delete-btn"
                     onClick={() => handleDelete(stock.symbol)}
                     disabled={deleting === stock.symbol}
-                    aria-label={`删除 ${stock.symbol} 缓存`}
                     title={`删除 ${stock.symbol} 的所有缓存数据`}
                   >
                     {deleting === stock.symbol ? '…' : '🗑'}
@@ -159,7 +252,7 @@ export default function DataLakePanel() {
           </tbody>
         </table>
         {data.stocks.length === 0 && (
-          <div className="lake-empty-msg">数据湖为空，请先添加自选股</div>
+          <div className="lake-empty-msg">数据湖为空，请先添加自选股或主动拉取数据</div>
         )}
       </div>
     </div>

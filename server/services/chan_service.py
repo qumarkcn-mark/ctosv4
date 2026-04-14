@@ -93,7 +93,9 @@ async def _analyze_single_level(symbol: str, level: str) -> dict:
     """单级别分析：调用 chan_detail_service 获取结构，再推导状态。"""
     
     freq = _LEVEL_TO_FREQ.get(level, level)
-    count = 250 if level == "day" else 320
+    # 同步前端 K 线的默认请求条数 500，确保缠论引擎初始解析起点完全一致。
+    # 起点如果不一致将导致前面划分不同的笔，进而出现蝴蝶效应导致后面中枢全错位。
+    count = 500
     
     try:
         detail = await get_chan_detail(symbol, freq, count)
