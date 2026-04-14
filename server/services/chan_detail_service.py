@@ -349,4 +349,9 @@ async def get_chan_detail(
     通过 run_in_threadpool 将 CPU 密集型计算偏移到线程池，
     确保不阻塞 asyncio event loop。
     """
-    return await run_in_threadpool(_parse_chan_detail_sync, symbol, freq, count)
+    # ★ 统一 symbol 格式：sh600519 → sh.600519（BaoStock/kline_lake 要求）
+    symbol_bs = symbol.replace("-", ".")
+    if len(symbol_bs) > 2 and symbol_bs[2] != ".":
+        symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
+
+    return await run_in_threadpool(_parse_chan_detail_sync, symbol_bs, freq, count)
