@@ -111,8 +111,7 @@ class PriceMonitor:
 
     async def _check_chan_buys(self):
         """低频轮询：进行缠论日线状态推演，发现三买给予推送"""
-        from server.services.chan_service import analyze_stock_chan_state
-        from chan_engine.fsm import ChanState
+        from server.services.chan_service import analyze_stock_chan_state, ChanState
         
         positions = await run_in_threadpool(self._db_get_positions)
         if not positions:
