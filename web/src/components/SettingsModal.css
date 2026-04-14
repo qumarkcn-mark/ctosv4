@@ -33,23 +33,24 @@
 .settings-tabs {
   display: flex;
   gap: 2px;
-  padding: 6px 16px 0;
+  padding: var(--space-1) var(--space-4) 0;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .settings-tab {
   flex: 1;
-  padding: 10px 16px;
-  font-size: 13px;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-tertiary);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.2s;
-  border-radius: 6px 6px 0 0;
+  transition: all var(--transition-normal);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  font-family: var(--font-body);
 }
 
 .settings-tab:hover {
@@ -59,7 +60,7 @@
 
 .settings-tab.active {
   color: var(--text-primary);
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--action-gold);
   background: rgba(255,255,255,0.05);
 }
 
