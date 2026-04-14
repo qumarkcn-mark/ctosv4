@@ -200,24 +200,70 @@ class ChanParser:
         current_dir = bis[0].direction
 
         while seg_start_idx < len(bis) - 2:
-            result = ChanParser._find_segment_end(bis, seg_start_idx, current_dir)
-            
-            if result is None:
-                break
+            end_idx = ChanParser._find_segment_end(bis, seg_start_idx, current_dir)
 
-            end_idx = result
-            seg_bis = bis[seg_start_idx : end_idx + 1]
-            segments.append(Segment(direction=current_dir, bis=seg_bis))
+            if end_idx is not None and end_idx - seg_start_idx >= 2:
+                seg_bis = bis[seg_start_idx : end_idx + 1]
+                segments.append(Segment(direction=current_dir, bis=seg_bis))
+                seg_start_idx = end_idx + 1
+                current_dir = Direction.DOWN if current_dir == Direction.UP else Direction.UP
+                continue
 
-            seg_start_idx = end_idx
-            current_dir = Direction.DOWN if current_dir == Direction.UP else Direction.UP
+            # _find_segment_end 失败：收集所有剩余笔作为一个段
+            break
 
-        # 处理最后未封闭的线段（至少3笔）
+        # 处理剩余笔
         remaining = bis[seg_start_idx:]
         if len(remaining) >= 3:
-            segments.append(Segment(direction=current_dir, bis=remaining))
+            segments.append(Segment(direction=current_dir, bis=remaining, is_sure=False))
+
+        # ★ 后处理：修正方向 + 合并同向相邻段
+        # 当特征序列算法在极端行情中产生「算法方向 ≠ 实际价格方向」的段时，
+        # 将其与相邻同向段合并，确保视觉一致性。
+        segments = ChanParser._postprocess_segments(segments)
 
         return segments
+
+    @staticmethod
+    def _get_seg_actual_direction(seg: 'Segment') -> Direction:
+        """从段的实际端点价格推导方向"""
+        first_bi = seg.bis[0]
+        last_bi = seg.bis[-1]
+        if first_bi.direction == Direction.UP:
+            y0 = first_bi.start_fx.low
+        else:
+            y0 = first_bi.start_fx.high
+        if last_bi.direction == Direction.UP:
+            y1 = last_bi.end_fx.high
+        else:
+            y1 = last_bi.end_fx.low
+        return Direction.UP if y1 >= y0 else Direction.DOWN
+
+    @staticmethod
+    def _postprocess_segments(segments: List['Segment']) -> List['Segment']:
+        """后处理：合并实际方向相同的相邻段"""
+        if len(segments) <= 1:
+            return segments
+
+        merged = [segments[0]]
+        merged[0].direction = ChanParser._get_seg_actual_direction(merged[0])
+
+        for i in range(1, len(segments)):
+            seg = segments[i]
+            actual_dir = ChanParser._get_seg_actual_direction(seg)
+            seg.direction = actual_dir
+
+            prev = merged[-1]
+            if prev.direction == seg.direction:
+                # 同向：合并（扩展前一段的 bis，继承 is_sure）
+                prev.bis = prev.bis + seg.bis
+                prev.is_sure = prev.is_sure and seg.is_sure
+                # 更新方向（合并后可能变化）
+                prev.direction = ChanParser._get_seg_actual_direction(prev)
+            else:
+                merged.append(seg)
+
+        return merged
 
     @staticmethod
     def _find_segment_end(bis: List[Bi], start_idx: int, seg_dir: Direction):
@@ -227,14 +273,16 @@ class ChanParser:
         返回结束笔的索引，找不到返回 None。
         """
         feat_dir = Direction.DOWN if seg_dir == Direction.UP else Direction.UP
-        
+
         # 提取特征序列元素
+        # 对于 UP 线段（检查 DOWN 笔）：用 DOWN bi 的终点（bi.low）
+        # 对于 DOWN 线段（检查 UP 笔）：用 UP bi 的终点（bi.high）
         feat_elements = []
         for i in range(start_idx, len(bis)):
             if bis[i].direction == feat_dir:
                 feat_elements.append({
                     'high': bis[i].high,
-                    'low': bis[i].low,
+                    'low':  bis[i].low,
                     'bi_idx': i,
                 })
         
@@ -263,31 +311,27 @@ class ChanParser:
 
             if is_fx:
                 has_gap = ChanParser._check_feature_gap(f1, f2, seg_dir)
-                
+
                 if not has_gap:
-                    # 第一类（无缺口）：线段结束在顶分型前的那笔（f1对应的笔）
+                    # 第一类（无缺口）：线段结束于 f1 对应的那笔
+                    # 注意：需要满足笔数条件（end_idx - start_idx >= 2）才算有效
                     f1_bi_idx = f1['bi_idx']
-                    end_bi_idx = f1_bi_idx - 1 if f1_bi_idx > start_idx else f1_bi_idx
-                    if end_bi_idx - start_idx >= 2:
-                        return end_bi_idx
+                    if f1_bi_idx - start_idx >= 2:
+                        return f1_bi_idx
+                    # f1 太近，继续找后续分型
                 else:
                     # 第二类（有缺口）：需二次确认
-                    # 向上线段有缺口后，需找到比第一笔(f1)更低的向下笔才确认结束
-                    # 向下线段有缺口后，需找到比第一笔(f1)更高的向上笔才确认结束
+                    # 向上线段有缺口后，需找到比 f1 更低的向下笔才确认结束
+                    # 向下线段有缺口后，需找到比 f1 更高的向上笔才确认结束
                     feat_bi_idx = f2['bi_idx']
                     for j in range(feat_bi_idx + 1, len(bis)):
                         if seg_dir == Direction.UP:
                             if bis[j].direction == Direction.DOWN and bis[j].low < f1['low']:
-                                end_bi_idx = feat_bi_idx - 1 if feat_bi_idx > start_idx else feat_bi_idx
-                                if end_bi_idx - start_idx >= 2:
-                                    return end_bi_idx
-                                break
+                                return feat_bi_idx
                         else:
                             if bis[j].direction == Direction.UP and bis[j].high > f1['high']:
-                                end_bi_idx = feat_bi_idx - 1 if feat_bi_idx > start_idx else feat_bi_idx
-                                if end_bi_idx - start_idx >= 2:
-                                    return end_bi_idx
-                                break
+                                return feat_bi_idx
+                    # 缺口确认失败，继续找下一个分型
         
         return None
 
@@ -307,8 +351,7 @@ class ChanParser:
             e = elements[i]
             prev = merged[-1]
             
-            is_include = ((e['high'] <= prev['high'] and e['low'] >= prev['low']) or
-                          (e['high'] >= prev['high'] and e['low'] <= prev['low']))
+            is_include = (e['high'] <= prev['high'] and e['low'] >= prev['low'])
             
             if is_include:
                 if seg_dir == Direction.UP:

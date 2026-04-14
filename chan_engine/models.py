@@ -78,15 +78,16 @@ class Segment:
     """线段 (由多笔构成)"""
     direction: Direction
     bis: List[Bi]
-    
+    is_sure: bool = True
+
     @property
     def high(self) -> float:
         return max(b.high for b in self.bis) if self.bis else 0
-        
+
     @property
     def low(self) -> float:
         return min(b.low for b in self.bis) if self.bis else 0
-        
+
     @property
     def start_date(self) -> str:
         return self.bis[0].start_fx.date if self.bis else ""

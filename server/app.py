@@ -9,6 +9,7 @@ from server.config import DEBUG
 from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
+from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -20,10 +21,21 @@ async def lifespan(app: FastAPI):
     init_db()
     init_lake()
     ensure_default_user()
+
+    # 数据湖孤儿文件清理（静默）
+    try:
+        from server.services.lake_meta import cleanup_orphan_files
+        result = cleanup_orphan_files()
+        if result.get("cleaned", 0) > 0:
+            logger.info(f"🧹 已清理 {result['cleaned']} 个孤儿文件")
+    except Exception as e:
+        logger.warning(f"孤儿清理失败: {e}")
+
     monitor.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
+    shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
 
@@ -62,10 +74,16 @@ app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 
-from server.api import auth, chan, behavior
+from server.api import auth, chan, behavior, search, sand_table, agent
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chan.router, prefix="/api/chan", tags=["chan matrix"])
 app.include_router(behavior.router, prefix="/api/behavior", tags=["behavior coach"])
+app.include_router(search.router, prefix="/api/data", tags=["search"])
+app.include_router(sand_table.router, prefix="/api/sand-table", tags=["sand table"])
+app.include_router(agent.router, prefix="/api/agent", tags=["agent engine"])
+
+from server.api import lake
+app.include_router(lake.router, prefix="/api/lake", tags=["data lake"])
 
 # Phase 2+:
 # from server.api import alerts, analysis

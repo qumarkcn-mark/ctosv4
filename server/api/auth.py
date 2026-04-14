@@ -97,5 +97,44 @@ async def wechat_login(req: LoginRequest):
 
     return {"token": token, "user_id": user_id, "nickname": nickname}
 
+# ── 设置持久化 ──
+
+@router.get("/user/{user_id}/settings")
+async def get_user_settings(user_id: int):
+    """获取用户全局配置，例如 DeepSeek API Key"""
+    import json
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        settings = json.loads(row["settings_json"] or "{}")
+        return {"settings": settings}
+    finally:
+        conn.close()
+
+class SettingsUpdate(BaseModel):
+    settings: dict
+
+@router.post("/user/{user_id}/settings")
+async def update_user_settings(user_id: int, req: SettingsUpdate):
+    """全量/增量保存用户全局配置"""
+    import json
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        
+        current_settings = json.loads(row["settings_json"] or "{}")
+        current_settings.update(req.settings)
+        new_json_str = json.dumps(current_settings, ensure_ascii=False)
+        
+        conn.execute("UPDATE users SET settings_json = ? WHERE id = ?", (new_json_str, user_id))
+        conn.commit()
+        return {"status": "ok", "settings": current_settings}
+    finally:
+        conn.close()
+
 # JWT 鉴权依赖注入 (给后续需要拦截鉴权的接口用)
 # def get_current_user(token: str = Depends(oauth2_scheme)) -> int: ...

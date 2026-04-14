@@ -22,7 +22,7 @@ LAKE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS klines (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol   TEXT    NOT NULL,    -- e.g. "sh.600519"
-    freq     TEXT    NOT NULL,    -- "day" / "60" / "30" / "15" / "5"
+    freq     TEXT    NOT NULL,    -- "day" / "60" / "30" / "15" / "5" / "1"
     date     TEXT    NOT NULL,    -- "2024-01-02" 或 "2024-01-02 09:30:00"
     open     REAL    NOT NULL,
     high     REAL    NOT NULL,

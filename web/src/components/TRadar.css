@@ -1,0 +1,130 @@
+.tradar {
+  background: var(--bg-surface, #12131a);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-radius: var(--radius-lg, 8px);
+  overflow: hidden;
+}
+
+.tradar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.04));
+  transition: background 0.1s;
+}
+
+.tradar-header:hover {
+  background: var(--bg-elevated, #1a1b24);
+}
+
+.tradar-icon {
+  font-size: 14px;
+}
+
+.tradar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #e8e9ed);
+  flex: 1;
+}
+
+.tradar-mode-switch {
+  display: flex;
+  gap: 2px;
+}
+
+.mode-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  color: var(--text-tertiary, #5a5c66);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-btn.active {
+  background: var(--action-gold-bg, rgba(240,185,11,0.12));
+  border-color: rgba(240,185,11,0.4);
+  color: var(--action-gold, #f0b90b);
+}
+
+.tradar-collapse-icon {
+  font-size: 9px;
+  color: var(--text-tertiary, #5a5c66);
+}
+
+.tradar-body {
+  padding: 8px 14px 12px;
+}
+
+.tradar-loading {
+  font-size: 11px;
+  color: var(--text-tertiary, #5a5c66);
+  padding: 8px 0;
+}
+
+.tradar-advice {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 4px);
+  margin-bottom: 8px;
+}
+
+.tradar-advice.neutral {
+  background: var(--info-blue-bg, rgba(52,152,219,0.12));
+  color: var(--info-blue, #3498db);
+}
+
+.tradar-advice.success {
+  background: rgba(34,197,94,0.12);
+  color: #22c55e;
+}
+
+.tradar-advice.danger {
+  background: var(--warning-red-bg, rgba(231,76,60,0.15));
+  color: var(--warning-red, #e74c3c);
+}
+
+.tradar-advice.fire {
+  background: rgba(240,185,11,0.12);
+  color: var(--action-gold, #f0b90b);
+  font-weight: 600;
+}
+
+.tradar-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.03));
+}
+
+.tradar-level:last-child {
+  border-bottom: none;
+}
+
+.level-dot {
+  font-size: 10px;
+}
+
+.level-name {
+  font-size: 12px;
+  color: var(--text-secondary, #8b8d97);
+  min-width: 60px;
+}
+
+.level-state {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 60px;
+}
+
+.level-zs {
+  font-size: 10px;
+  color: var(--text-tertiary, #5a5c66);
+  margin-left: auto;
+}

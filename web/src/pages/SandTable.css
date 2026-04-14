@@ -1,0 +1,202 @@
+.sand-table {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-base, #0a0a0f);
+  color: var(--text-primary, #e8e9ed);
+  position: relative;
+}
+
+/* ★ 盲测模式：CSS 强制隐藏 klinecharts 的日期/时间信息 */
+.sand-table .kline-main-wrapper [class*="candle-tooltip"] > span:first-child,
+.sand-table .kline-main-wrapper [class*="tooltip-title"],
+.sand-table .kline-main-wrapper [class*="x-axis"] {
+  display: none !important;
+}
+
+.st-idle-panel, .st-loading-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 20px;
+  text-align: center;
+}
+
+.st-idle-panel p {
+  color: var(--text-secondary, #9fa1b2);
+  margin-bottom: 30px;
+}
+
+.st-pool-selection {
+  display: flex;
+  gap: 20px;
+}
+
+.st-main-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.st-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  background: var(--bg-elevated, #1a1b24);
+  border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.1));
+}
+
+.st-topbar h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--action-gold, #f0b90b);
+}
+
+.st-action-panel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  background: var(--bg-elevated, #1a1b24);
+  border-top: 1px solid var(--border-default, rgba(255,255,255,0.1));
+  height: 80px;
+}
+
+.st-stats {
+  display: flex;
+  gap: 30px;
+}
+
+.stat-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-group span:first-child {
+  font-size: 0.85rem;
+  color: var(--text-tertiary, #5a5c66);
+}
+
+.stat-group span:last-child {
+  font-size: 1.1rem;
+  font-family: var(--font-mono, monospace);
+}
+
+.stat-group .strong {
+  color: var(--action-gold, #f0b90b);
+  font-weight: 600;
+}
+
+.st-controls {
+  display: flex;
+  gap: 15px;
+}
+
+.st-btn-buy {
+  background: rgba(225, 41, 61, 0.2);
+  color: #e1293d;
+  border-color: rgba(225, 41, 61, 0.4);
+}
+.st-btn-buy:hover:not(:disabled) {
+  background: rgba(225, 41, 61, 0.4);
+}
+
+.st-btn-sell {
+  background: rgba(43, 175, 115, 0.2);
+  color: #2baf73;
+  border-color: rgba(43, 175, 115, 0.4);
+}
+.st-btn-sell:hover:not(:disabled) {
+  background: rgba(43, 175, 115, 0.4);
+}
+
+.st-btn-advance {
+  min-width: 160px;
+}
+
+.st-result-modal {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.st-result-card {
+  background: var(--bg-elevated, #1a1b24);
+  padding: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+  min-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.st-result-card h2 {
+  margin: 0;
+  text-align: center;
+  color: var(--action-gold, #f0b90b);
+}
+
+.score-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  background: var(--bg-overlay, #2a2b36);
+  padding: 20px;
+  border-radius: 8px;
+}
+
+.score-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.score-item label {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #9fa1b2);
+}
+
+.score-item span {
+  font-size: 1.5rem;
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+
+.st-trades-log {
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-base, #0a0a0f);
+  padding: 15px;
+  border-radius: 6px;
+}
+
+.st-trades-log h4 {
+  margin: 0 0 10px 0;
+  color: var(--text-secondary, #9fa1b2);
+}
+
+.st-trades-log ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.st-trades-log li {
+  font-size: 0.9rem;
+  font-family: var(--font-mono, monospace);
+}

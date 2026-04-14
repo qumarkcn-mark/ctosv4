@@ -1,0 +1,194 @@
+/* DataLakePanel.css — 数据湖概览面板 */
+
+.lake-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 统计卡片 */
+.lake-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.lake-stat-card {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.5);
+  border-radius: 12px;
+  padding: 14px 10px;
+  text-align: center;
+}
+
+.lake-stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.lake-stat-value.blue { color: #60a5fa; }
+.lake-stat-value.green { color: #34d399; }
+.lake-stat-value.purple { color: #a78bfa; }
+.lake-stat-value.amber { color: #fbbf24; }
+.lake-stat-value.muted { color: #64748b; }
+
+.lake-stat-label {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.lake-cleanup-btn {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: #fbbf24;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.lake-cleanup-btn:hover { color: #fcd34d; }
+.lake-cleanup-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 工具栏 */
+.lake-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.lake-toolbar-label {
+  font-size: 11px;
+  color: #64748b;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.lake-refresh-btn {
+  font-size: 12px;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.lake-refresh-btn:hover { color: #fff; }
+
+/* 表格 */
+.lake-table-wrap {
+  background: rgba(30, 41, 59, 0.3);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.lake-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.lake-table thead tr {
+  border-bottom: 1px solid rgba(71, 85, 105, 0.5);
+}
+
+.lake-table th {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+.lake-table th.left { text-align: left; padding-left: 16px; }
+.lake-table th.center { text-align: center; }
+.lake-table th.right { text-align: right; padding-right: 16px; }
+
+.lake-table tbody tr {
+  border-bottom: 1px solid rgba(71, 85, 105, 0.2);
+  transition: background 0.15s;
+}
+.lake-table tbody tr:hover {
+  background: rgba(71, 85, 105, 0.2);
+}
+
+.lake-table td {
+  padding: 10px 8px;
+}
+
+.lake-table td.symbol {
+  padding-left: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #e2e8f0;
+  font-size: 13px;
+}
+
+.lake-table td.center { text-align: center; }
+.lake-table td.right { text-align: right; padding-right: 16px; }
+
+.lake-bar-count {
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #34d399;
+}
+
+.lake-bar-date {
+  font-size: 9px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.lake-empty-period {
+  color: #475569;
+}
+
+.lake-disk-size {
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #94a3b8;
+}
+
+.lake-delete-btn {
+  font-size: 12px;
+  color: rgba(248, 113, 113, 0.5);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  transition: color 0.15s;
+}
+.lake-delete-btn:hover { color: #f87171; }
+.lake-delete-btn:disabled { opacity: 0.3; cursor: not-allowed;}
+
+.lake-empty-msg {
+  padding: 40px;
+  text-align: center;
+  color: #64748b;
+}
+
+.lake-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  gap: 10px;
+  color: #94a3b8;
+}
+
+.lake-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(96, 165, 250, 0.3);
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

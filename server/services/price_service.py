@@ -11,7 +11,7 @@ from typing import Optional
 
 from server.config import PRICE_API_TIMEOUT
 from server.db.kline_lake import query_klines, count_klines
-from server.services.baostock_service import fetch_klines_sync, FREQ_MAP
+from server.services.baostock_service import fetch_klines_sync, fetch_klines_quick, FREQ_MAP, _executor as bs_executor
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +87,12 @@ async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
         logger.debug("本地数据湖命中: %s/day (%d 条)", bs_symbol, len(cached))
         return cached
 
-    # 2️⃣ 本地不足，触发 BaoStock 增量拉取（同步，在协程内通过线程池隔离）
-    logger.info("本地缓存不足 %s/day，触发 BaoStock 拉取...", bs_symbol)
+    # 2️⃣ 本地不足，触发 BaoStock 快速拉取（通过共享线程池隔离）
+    logger.info("本地缓存不足 %s/day，触发 BaoStock 快速拉取...", bs_symbol)
     try:
         import asyncio
-        from concurrent.futures import ThreadPoolExecutor
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, fetch_klines_sync, bs_symbol, "day")
+        await loop.run_in_executor(bs_executor, fetch_klines_quick, bs_symbol, "day")
         cached = query_klines(bs_symbol, "day", limit=count)
         if cached:
             return cached
@@ -149,12 +148,12 @@ async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 100
         logger.debug("本地数据湖命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
         return cached
 
-    # 2️⃣ BaoStock 拉取
-    logger.info("本地缓存不足 %s/%s，触发 BaoStock 拉取...", bs_symbol, bs_freq)
+    # 2️⃣ BaoStock 快速拉取
+    logger.info("本地缓存不足 %s/%s，触发 BaoStock 快速拉取...", bs_symbol, bs_freq)
     try:
         import asyncio
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, fetch_klines_sync, bs_symbol, bs_freq)
+        await loop.run_in_executor(bs_executor, fetch_klines_quick, bs_symbol, bs_freq)
         cached = query_klines(bs_symbol, bs_freq, limit=count)
         if cached:
             return cached
