@@ -60,10 +60,11 @@ async def infer_scenarios(request: InferenceRequest):
         current_close = raw_klines[-1].get("close", 0) if raw_klines else 0
         
         # In V4, time is already timestamp or string, we need a numeric value for phantom.py
+        # 必须使用 UTC+8 时区，与前端 toTimestamp() 保持一致
         current_ts = raw_klines[-1].get("time") if raw_klines else 0
         if isinstance(current_ts, str):
             import pandas as pd
-            current_ts = int(pd.Timestamp(current_ts).timestamp() * 1000)
+            current_ts = int(pd.Timestamp(current_ts, tz="Asia/Shanghai").timestamp() * 1000)
 
         atr = 0
         if len(raw_klines) > 14:

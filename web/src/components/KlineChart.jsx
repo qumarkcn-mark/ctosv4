@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { init, dispose, registerOverlay } from 'klinecharts'
 import { renderChanOverlays } from '../plugins/chanOverlay.js'
-import { phantomOverlay } from '../plugins/phantom_overlay.js'
+import { phantomOverlay, renderPhantomOverlays } from '../plugins/phantom_overlay.js'
 import { API_BASE } from '../config.js'
 import { toTimestamp } from '../utils.js'
 import './KlineChart.css'
@@ -296,12 +296,8 @@ export default function KlineChart({ symbol, layerVisibility }) {
         throw new Error('推演结果为空')
       }
 
-      chart.createOverlay({
-        name: 'phantom_wave',
-        extendData: { scenarios: data.scenarios },
-        id: 'phantom_overlay_id',
-        groupId: 'phantom_group',
-      }, 'candle_pane')
+      // 使用批量渲染函数，长线系统与 chanOverlay 一致
+      renderPhantomOverlays(chart, data.scenarios)
 
     } catch (e) {
       console.error(e)
