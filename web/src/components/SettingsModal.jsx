@@ -48,7 +48,7 @@ export default function SettingsModal({ onClose }) {
 
   return (
     <div className="settings-overlay">
-      <div className="settings-modal flex flex-col" style={{ maxWidth: 680, width: '90vw' }}>
+      <div className="settings-modal flex flex-col">
         <div className="settings-header">
           <h2>系统设置</h2>
           <button className="settings-close" onClick={onClose}>×</button>
@@ -70,7 +70,7 @@ export default function SettingsModal({ onClose }) {
           </button>
         </div>
         
-        <div className="settings-body" style={{ minHeight: 300 }}>
+        <div className="settings-body">
           {/* Tab 1: 基础设置 */}
           {activeTab === 'settings' && (
             <>

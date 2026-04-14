@@ -97,6 +97,9 @@
 .settings-body {
   padding: var(--space-6) var(--space-5);
   background: var(--bg-surface);
+  min-height: 280px;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .settings-loading {
