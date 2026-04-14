@@ -24,6 +24,7 @@ class ChanState:
     DOWNWARD_LEAVING   = "DOWNWARD_LEAVING"
     WAITING_FOR_PULLBACK = "WAITING_FOR_PULLBACK"
     THIRD_BUY_CONFIRMED = "THIRD_BUY_CONFIRMED"
+    TREND_EXTENDING    = "TREND_EXTENDING"  # 有笔但无中枢，趋势延伸中
 
 
 def _deduce_state_from_structures(bis: list, zhongshus: list) -> Tuple[str, dict]:
@@ -34,8 +35,12 @@ def _deduce_state_from_structures(bis: list, zhongshus: list) -> Tuple[str, dict
       bis: [{x0, y0, x1, y1, is_up, ...}, ...]
       zhongshus: [{begin_date, end_date, zg, zd, gg, dd}, ...]
     """
-    if not bis or not zhongshus:
+    if not bis:
         return ChanState.UNKNOWN, {}
+    
+    if not zhongshus:
+        # 有笔但无中枢 → 趋势延伸（单边走势尚未形成中枢）
+        return ChanState.TREND_EXTENDING, {}
     
     last_zs = zhongshus[-1]
     zg = last_zs["zg"]

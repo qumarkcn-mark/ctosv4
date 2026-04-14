@@ -8,6 +8,7 @@ const STATE_CONFIG = {
   IN_CENTER_OSC: { label: '中枢震荡', color: '#3b82f6', emoji: '🔵' },
   DOWNWARD_LEAVING: { label: '向下离开', color: '#ef4444', emoji: '🔴' },
   UPWARD_LEAVING: { label: '向上离开', color: '#22c55e', emoji: '🟢' },
+  TREND_EXTENDING: { label: '趋势延伸', color: '#f59e0b', emoji: '🟡' },
   UNKNOWN: { label: '数据不足', color: '#666', emoji: '⚪' },
 }
 
@@ -24,6 +25,10 @@ function computeAdvice(matrix) {
     return { text: '🔥 主级别离开段 + 次级别三买共振', level: 'fire' }
   if (l1.state === 'THIRD_BUY_CONFIRMED')
     return { text: '🚀 大级别三买已确立', level: 'success' }
+  if (l1.state === 'UPWARD_LEAVING')
+    return { text: '🚀 大级别向上离开中枢', level: 'success' }
+  if (l1.state === 'TREND_EXTENDING')
+    return { text: '📈 趋势延伸中，等待中枢形成', level: 'neutral' }
   if (l1.state === 'IN_CENTER_OSC')
     return { text: '⚖️ 中枢震荡中', level: 'neutral' }
   return { text: '观望等待结构明朗', level: 'neutral' }
