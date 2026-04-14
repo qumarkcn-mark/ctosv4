@@ -179,13 +179,20 @@ def _serialize_zhongshus(zs_list, ctime_to_date_str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 PERIOD_MAP = {
-    "1M": KL_TYPE.K_1M,
-    "5M": KL_TYPE.K_5M,
+    # 纯数字格式（kline_lake / 前端 / chan_service 使用）
+    "1":   KL_TYPE.K_1M,
+    "5":   KL_TYPE.K_5M,
+    "15":  KL_TYPE.K_15M,
+    "30":  KL_TYPE.K_30M,
+    "60":  KL_TYPE.K_60M,
+    "day": KL_TYPE.K_DAY,
+    # XM 格式（兼容）
+    "1M":  KL_TYPE.K_1M,
+    "5M":  KL_TYPE.K_5M,
     "15M": KL_TYPE.K_15M,
     "30M": KL_TYPE.K_30M,
     "60M": KL_TYPE.K_60M,
-    "day": KL_TYPE.K_DAY,
-    "W": KL_TYPE.K_WEEK,
+    "W":   KL_TYPE.K_WEEK,
 }
 
 def _parse_chan_detail_sync(
