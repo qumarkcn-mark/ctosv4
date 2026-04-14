@@ -13,7 +13,12 @@ async def get_chan_matrix(symbol: str):
     - matrix_a: 日线 + 30分钟 + 5分钟
     - matrix_b: 日线 + 60分钟 + 15分钟
     """
-    matrix_data = await analyze_matrix_state(symbol)
+    # 兼容多种股票代码格式：sh600519 / sh.600519 / sh-600519
+    symbol_bs = symbol.replace("-", ".")
+    if len(symbol_bs) > 2 and symbol_bs[2] != ".":
+        symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
+
+    matrix_data = await analyze_matrix_state(symbol_bs)
     return {"status": "success", "data": matrix_data}
 
 
