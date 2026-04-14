@@ -8,7 +8,9 @@ import traceback
 from server.services.chan_detail_service import get_chan_detail
 from server.services.llm_service import LLMService
 from server.prompts.czsc_agent import CZSC_SYSTEM_PROMPT
+from server.prompts.chan_radar_prompt import RADAR_SYSTEM_PROMPT
 from chan_engine.phantom import generate_phantom_klines
+from server.services.chan_service import analyze_matrix_state
 
 logger = logging.getLogger("AgentAPI")
 router = APIRouter()
@@ -96,3 +98,31 @@ async def infer_scenarios(request: InferenceRequest):
             status_code=500,
             detail=f"Agent 推演失败: {str(e)}"
         )
+
+
+@router.post("/radar_deduce")
+async def radar_deduce(request: InferenceRequest):
+    """
+    接收股票代码，调用 chan_service 跑一边最新的矩阵状态（包含形态 Patterns），
+    然后发给大语言模型，生成多级别走势推理总结。
+    """
+    symbol = request.symbol
+    try:
+        # 获取矩阵（里面包含 level, state, zd, zg, patterns 等增强数据）
+        matrix_data = await analyze_matrix_state(symbol)
+        
+        # 组装 Prompt Context
+        context_json = json.dumps({
+            "symbol": symbol,
+            "matrix_data": matrix_data
+        }, ensure_ascii=False)
+        
+        # 直接调用底层的 infer_czsc_scenarios 接口来解析 JSON
+        # 直接调用底层的 infer_radar_deduction 接口来解析 Radar JSON
+        result = await _llm_service.infer_radar_deduction(RADAR_SYSTEM_PROMPT, context_json)
+        
+        return {"status": "success", "data": result}
+        
+    except Exception as e:
+        logger.error(f"Radar deduction failed for {symbol}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"雷达推演失败: {str(e)}")

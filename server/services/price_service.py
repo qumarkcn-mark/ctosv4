@@ -23,6 +23,26 @@ _QT_MKLINE_BASE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline?param="
 # 如果本地缓存少于此数量，触发 BaoStock 拉取
 _MIN_CACHE_ROWS = 100
 
+# 缓存新鲜度阈值（天）：超过此天数的缓存视为过期，强制刷新
+_STALE_DAYS = 2
+
+
+def _is_data_stale(rows: list, stale_days: int = _STALE_DAYS) -> bool:
+    """检查缓存数据的最后一条是否过期。
+    
+    如果最后一条数据的日期距今超过 stale_days 个日历日，则视为过期。
+    这防止了矩阵状态机使用数年前的陈旧数据计算中枢。
+    """
+    if not rows:
+        return True
+    from datetime import datetime, timedelta
+    last_date_str = str(rows[-1].get("date", "")).split(" ")[0]  # 取日期部分
+    try:
+        last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+        return (datetime.now() - last_date) > timedelta(days=stale_days)
+    except (ValueError, TypeError):
+        return True
+
 
 def _tencent_to_baostock_symbol(symbol: str) -> str:
     """将腾讯格式 (sh600519) 转换为 BaoStock 格式 (sh.600519)"""
@@ -83,9 +103,12 @@ async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
 
     # 1️⃣ 尝试从本地数据湖读取
     cached = query_klines(bs_symbol, "day", limit=count)
-    if len(cached) >= min(count, _MIN_CACHE_ROWS):
+    if len(cached) >= min(count, _MIN_CACHE_ROWS) and not _is_data_stale(cached):
         logger.debug("本地数据湖命中: %s/day (%d 条)", bs_symbol, len(cached))
         return cached
+    
+    if _is_data_stale(cached):
+        logger.info("本地缓存过期 %s/day，最后日期: %s，触发增量拉取", bs_symbol, cached[-1]["date"] if cached else "N/A")
 
     # 2️⃣ 本地不足，触发 BaoStock 快速拉取（通过共享线程池隔离）
     logger.info("本地缓存不足 %s/day，触发 BaoStock 快速拉取...", bs_symbol)
@@ -142,11 +165,14 @@ async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 100
     bs_symbol = _tencent_to_baostock_symbol(symbol)
     bs_freq = _TENCENT_INTERVAL_MAP.get(interval, "30")
 
-    # 1️⃣ 本地数据湖
+    # 1️⃣ 本地数据湖（含新鲜度检查）
     cached = query_klines(bs_symbol, bs_freq, limit=count)
-    if len(cached) >= min(count, _MIN_CACHE_ROWS):
+    if len(cached) >= min(count, _MIN_CACHE_ROWS) and not _is_data_stale(cached):
         logger.debug("本地数据湖命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
         return cached
+    
+    if _is_data_stale(cached):
+        logger.info("本地缓存过期 %s/%s，最后日期: %s，触发增量拉取", bs_symbol, bs_freq, cached[-1]["date"] if cached else "N/A")
 
     # 2️⃣ BaoStock 快速拉取
     logger.info("本地缓存不足 %s/%s，触发 BaoStock 快速拉取...", bs_symbol, bs_freq)

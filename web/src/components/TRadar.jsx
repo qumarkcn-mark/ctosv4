@@ -35,9 +35,14 @@ export default function TRadar({ symbol }) {
   const [collapsed, setCollapsed] = useState(false)
   const [loading, setLoading] = useState(false)
 
+  // AI 推演相关状态
+  const [deducing, setDeducing] = useState(false)
+  const [aiReport, setAiReport] = useState(null)
+
   useEffect(() => {
     if (!symbol) return
     setLoading(true)
+    setAiReport(null) // 切换股票时清空上一次的战报
     fetch(`${API_BASE}/chan/matrix/${symbol}`)
       .then((r) => r.json())
       .then((json) => {
@@ -49,6 +54,30 @@ export default function TRadar({ symbol }) {
 
   const matrix = data ? (mode === 'A' ? data.matrix_a : data.matrix_b) : []
   const advice = computeAdvice(matrix)
+
+  // 触发 AI 推演
+  const handleAIDeduce = async () => {
+    if (!symbol) return
+    setDeducing(true)
+    try {
+      const res = await fetch(`${API_BASE}/agent/radar_deduce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol })
+      })
+      const result = await res.json()
+      if (result.status === 'success') {
+        const rawBody = result.data.scenarios || result.data
+        // Fallback for string vs object response
+        const reportObj = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody
+        setAiReport(reportObj)
+      }
+    } catch (e) {
+      console.error("AI Deduction failed", e)
+    } finally {
+      setDeducing(false)
+    }
+  }
 
   return (
     <div className={`tradar ${collapsed ? 'collapsed' : ''}`}>
@@ -76,10 +105,35 @@ export default function TRadar({ symbol }) {
         <div className="tradar-body">
           {loading && <div className="tradar-loading">推算中...</div>}
 
-          {/* 建议 banner */}
+          {/* AI 深度推演面板 */}
           {!loading && matrix.length > 0 && (
-            <div className={`tradar-advice ${advice.level}`}>
-              {advice.text}
+            <div className="tradar-ai-section">
+              {!aiReport ? (
+                <>
+                  <div className={`tradar-advice ${advice.level}`}>
+                    {advice.text}
+                  </div>
+                  <button 
+                    className="tradar-ai-btn" 
+                    onClick={handleAIDeduce} 
+                    disabled={deducing}
+                  >
+                    {deducing ? '🧠 正在进行多级别逻辑推演...' : '⚡ 请求 AI 深度走势推演'}
+                  </button>
+                </>
+              ) : (
+                <div className="tradar-ai-report">
+                  <div className="report-summary">{aiReport.summary}</div>
+                  <ul className="report-list">
+                    {(aiReport.deduction_process || []).map((step, idx) => (
+                      <li key={idx}>▸ {step}</li>
+                    ))}
+                  </ul>
+                  <button className="tradar-ai-refresh" onClick={() => setAiReport(null)}>
+                    收起战报
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -95,6 +149,16 @@ export default function TRadar({ symbol }) {
                   <span className="level-zs mono">
                     ZG:{item.zg.toFixed(2)} ZD:{item.zd.toFixed(2)}
                   </span>
+                )}
+                {/* 渲染形态标签 (Patterns) */}
+                {item.patterns && item.patterns.length > 0 && (
+                  <div className="level-patterns">
+                    {item.patterns.map((pt, i) => (
+                      <span key={i} className={`pattern-tag ${pt.includes('危') || pt.includes('背驰') ? 'warn' : ''}`}>
+                        {pt}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             )
