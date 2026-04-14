@@ -92,8 +92,8 @@ export default function DataLakePanel() {
           </div>
           <div className="lake-stat-label">孤儿文件</div>
           {data.orphan_files > 0 && (
-            <button className="lake-cleanup-btn" onClick={handleCleanup} disabled={cleaning}>
-              {cleaning ? '清理中...' : '[ 一键清理 ]'}
+            <button className="lake-cleanup-btn" onClick={handleCleanup} disabled={cleaning} aria-label="清理孤儿文件">
+              {cleaning ? '清理中…' : '[ 一键清理 ]'}
             </button>
           )}
         </div>
@@ -104,7 +104,7 @@ export default function DataLakePanel() {
         <span className="lake-toolbar-label">
           LAKE · {data.total_stocks} symbols · {FREQ_ORDER.length} periods
         </span>
-        <button className="lake-refresh-btn" onClick={fetchOverview}>
+        <button className="lake-refresh-btn" onClick={fetchOverview} aria-label="刷新数据湖概览">
           [ 🔄 刷新 ]
         </button>
       </div>
@@ -148,8 +148,10 @@ export default function DataLakePanel() {
                     className="lake-delete-btn"
                     onClick={() => handleDelete(stock.symbol)}
                     disabled={deleting === stock.symbol}
+                    aria-label={`删除 ${stock.symbol} 缓存`}
+                    title={`删除 ${stock.symbol} 的所有缓存数据`}
                   >
-                    {deleting === stock.symbol ? '...' : '🗑'}
+                    {deleting === stock.symbol ? '…' : '🗑'}
                   </button>
                 </td>
               </tr>
