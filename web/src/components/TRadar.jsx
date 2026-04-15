@@ -4,6 +4,7 @@ import './TRadar.css'
 
 const STATE_CONFIG = {
   THIRD_BUY_CONFIRMED: { label: '三买确立', color: '#22c55e', emoji: '🟢' },
+  THIRD_SELL_CONFIRMED: { label: '三卖确立', color: '#ef4444', emoji: '🛑' },
   WAITING_FOR_PULLBACK: { label: '等待回踩', color: '#3b82f6', emoji: '🔵' },
   IN_CENTER_OSC: { label: '中枢震荡', color: '#3b82f6', emoji: '🔵' },
   DOWNWARD_LEAVING: { label: '向下离开', color: '#ef4444', emoji: '🔴' },
@@ -21,6 +22,8 @@ function computeAdvice(matrix) {
   const [l1, l2] = matrix
   if (l1.state === 'DOWNWARD_LEAVING' && l2.state !== 'THIRD_BUY_CONFIRMED')
     return { text: '⚠️ 主级别向下破位，极度弱势', level: 'danger' }
+  if (l1.state === 'THIRD_SELL_CONFIRMED')
+    return { text: '🛑 大级别三卖已确立，逢高离场', level: 'danger' }
   if (l1.state === 'WAITING_FOR_PULLBACK' && l2.state === 'THIRD_BUY_CONFIRMED')
     return { text: '🔥 主级别离开段 + 次级别三买共振', level: 'fire' }
   if (l1.state === 'THIRD_BUY_CONFIRMED')

@@ -6,6 +6,7 @@ from typing import Optional
 import traceback
 
 from server.services.chan_detail_service import get_chan_detail
+from server.db.database import get_connection
 from server.services.llm_service import LLMService
 from server.prompts.czsc_agent import CZSC_SYSTEM_PROMPT
 from server.prompts.chan_radar_prompt import RADAR_SYSTEM_PROMPT
@@ -121,8 +122,58 @@ async def radar_deduce(request: InferenceRequest):
         # 直接调用底层的 infer_radar_deduction 接口来解析 Radar JSON
         result = await _llm_service.infer_radar_deduction(RADAR_SYSTEM_PROMPT, context_json)
         
+        # 将结果入库保存 (留存推演快照)
+        try:
+            conn = get_connection()
+            summary = result.get("summary", "")
+            ai_deduction_json = json.dumps(result.get("deduction_process", []), ensure_ascii=False)
+            
+            # 使用 dev_user 默认 ID=1
+            conn.execute(
+                """INSERT INTO radar_deductions 
+                   (user_id, symbol, matrix_state_json, ai_summary, ai_deduction_json) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (1, symbol, json.dumps(matrix_data, ensure_ascii=False), summary, ai_deduction_json)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as db_e:
+            logger.error(f"Failed to save radar deduction to history: {db_e}")
+            # 不阻塞主流程返回
+        
         return {"status": "success", "data": result}
         
     except Exception as e:
         logger.error(f"Radar deduction failed for {symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"雷达推演失败: {str(e)}")
+
+@router.get("/radar_history/{symbol}")
+async def get_radar_history(symbol: str, limit: int = Query(10, ge=1, le=50)):
+    """获取指定股票雷达推演的历史记录"""
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            """SELECT id, created_at, ai_summary, matrix_state_json, ai_deduction_json 
+               FROM radar_deductions 
+               WHERE user_id = ? AND symbol = ? 
+               ORDER BY created_at DESC 
+               LIMIT ?""",
+            (1, symbol, limit)
+        ).fetchall()
+        
+        history = []
+        for r in rows:
+            history.append({
+                "id": r["id"],
+                "created_at": r["created_at"],
+                "summary": r["ai_summary"],
+                "matrix_data": json.loads(r["matrix_state_json"]),
+                "deduction_process": json.loads(r["ai_deduction_json"])
+            })
+            
+        conn.close()
+        return {"status": "success", "data": history}
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch radar history for {symbol}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"获取推演历史记录失败: {str(e)}")

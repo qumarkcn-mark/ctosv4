@@ -24,6 +24,7 @@ class ChanState:
     DOWNWARD_LEAVING   = "DOWNWARD_LEAVING"
     WAITING_FOR_PULLBACK = "WAITING_FOR_PULLBACK"
     THIRD_BUY_CONFIRMED = "THIRD_BUY_CONFIRMED"
+    THIRD_SELL_CONFIRMED = "THIRD_SELL_CONFIRMED"
     TREND_EXTENDING    = "TREND_EXTENDING"  # 有笔但无中枢，趋势延伸中
 
 
@@ -56,20 +57,13 @@ def _deduce_state_from_structures(bis: list, zhongshus: list) -> Tuple[str, dict
         if bi_is_up:
             state = ChanState.UPWARD_LEAVING
         else:
-            state = ChanState.WAITING_FOR_PULLBACK
+            # 向下的回调笔，但不破中枢上沿 ZG -> 三买
+            state = ChanState.THIRD_BUY_CONFIRMED
     elif bi_end_price < zd:
         # 价格在中枢下方
         if bi_is_up:
-            # 从下方向上拉，可能是三买前站
-            # 检查是否有前一个中枢 && 这个中枢的 zd > 前一个中枢的 zg
-            if len(zhongshus) >= 2:
-                prev_zs = zhongshus[-2]
-                if zd > prev_zs["zg"]:
-                    state = ChanState.THIRD_BUY_CONFIRMED
-                else:
-                    state = ChanState.WAITING_FOR_PULLBACK
-            else:
-                state = ChanState.WAITING_FOR_PULLBACK
+            # 向上的反弹笔，但不破中枢下沿 ZD -> 三卖
+            state = "THIRD_SELL_CONFIRMED" # Using string directly to avoid enum import changes if any
         else:
             state = ChanState.DOWNWARD_LEAVING
     else:

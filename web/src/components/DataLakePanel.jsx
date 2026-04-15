@@ -8,6 +8,13 @@ const FREQ_ORDER = ['day', '60', '30', '15', '5']
 const fmtNum = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
 const fmtSize = (mb) => mb >= 1 ? `${mb.toFixed(1)} MB` : `${(mb * 1024).toFixed(0)} KB`
 
+// 获取前N年的YMD格式
+const getYearsAgoStr = (years) => {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() - years)
+  return d.toISOString().split('T')[0]
+}
+
 export default function DataLakePanel() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -20,6 +27,9 @@ export default function DataLakePanel() {
   const [fetchEnd, setFetchEnd] = useState('')
   const [fetchFreqs, setFetchFreqs] = useState(['day', '60', '30', '15', '5'])
   const [fetching, setFetching] = useState(false)
+  
+  // 批量拉取UI状态
+  const [batching, setBatching] = useState(false)
 
   const fetchOverview = useCallback(async () => {
     setLoading(true)
@@ -70,7 +80,37 @@ export default function DataLakePanel() {
     )
   }
 
-  const handleFetch = async () => {
+  // 时间胶囊预设
+  const handlePresetTime = (type) => {
+    if (type === 'all') {
+      setFetchStart('')
+      setFetchEnd('')
+    } else if (type === '1y') {
+      setFetchStart(getYearsAgoStr(1))
+      setFetchEnd('')
+    } else if (type === '3y') {
+      setFetchStart(getYearsAgoStr(3))
+      setFetchEnd('')
+    }
+  }
+
+  // 基础API拉取调用（供表单和快捷键复用）
+  const sendFetchRequest = async (symbol, freqs, start, end) => {
+    const payload = {
+      symbol: symbol,
+      freqs: freqs,
+      start_date: start || null,
+      end_date: end || null
+    }
+    await fetch(`${API_BASE}/lake/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  }
+
+  // 表单完整拉取提交
+  const handleFormFetch = async () => {
     if (!fetchSymbol) {
       alert("请输入股票代码")
       return
@@ -81,20 +121,9 @@ export default function DataLakePanel() {
     }
     setFetching(true)
     try {
-      const payload = {
-        symbol: fetchSymbol,
-        freqs: fetchFreqs,
-        start_date: fetchStart || null,
-        end_date: fetchEnd || null
-      }
-      await fetch(`${API_BASE}/lake/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      // 不需要 await 等待太久，后台会慢慢去下
+      await sendFetchRequest(fetchSymbol, fetchFreqs, fetchStart, fetchEnd)
       alert("拉取指令已提交后台，可多次刷新概览查看入库进度。")
-      setFetchSymbol('')
+      setFetchSymbol('') // 清空方便下一次
       setTimeout(() => fetchOverview(), 2000)
     } catch (e) {
       console.error('[Manual Fetch Error]', e)
@@ -103,6 +132,39 @@ export default function DataLakePanel() {
       setFetching(false)
     }
   }
+
+  // 表格单行全量回填
+  const handleInlineFetch = async (symbol) => {
+    try {
+      await sendFetchRequest(symbol, ['day', '60', '30', '15', '5'], '', '')
+      alert(`已提交 [${symbol}] 全量历史抓取指令！`)
+      setTimeout(() => fetchOverview(), 1500)
+    } catch (e) {
+      console.error('[Inline Fetch Error]', e)
+      alert("抓取指令发送失败")
+    }
+  }
+
+  // 全局回填
+  const handleBatchSyncAll = async () => {
+    if (!data || !data.stocks || data.stocks.length === 0) return
+    if (!confirm(`确认一键同步全部 ${data.stocks.length} 只股票？后台将利用多核满负荷为您增量追平历史，请放心离开页面。`)) return
+
+    setBatching(true)
+    try {
+      // 遍历并发发送，BackgroundTasks 和 ThreadPool 会自动排队
+      await Promise.all(data.stocks.map(st => 
+        sendFetchRequest(st.symbol, ['day', '60', '30', '15', '5'], '', '')
+      ))
+      alert(`已成功投递 ${data.stocks.length} 个同步任务！请稍后刷新观察行数结晶。`)
+    } catch (e) {
+      console.error('[Batch Fetch Error]', e)
+      alert("批量抓取发生异常")
+    } finally {
+      setBatching(false)
+    }
+  }
+
 
   if (loading && !data) {
     return (
@@ -148,34 +210,49 @@ export default function DataLakePanel() {
 
       {/* 初始化主动拉取工具 */}
       <div className="lake-fetch-form">
-        <h4>主动回填数据中心</h4>
+        <div className="lake-fetch-header">
+          <h4>🧲 数据猎手引擎</h4>
+          <span className="lake-hint">全新引入标的时使用，已有标的请点下方[回填]</span>
+        </div>
+        
         <div className="lake-fetch-inputs">
           <input 
               type="text" 
-              className="lake-input"
-              placeholder="股票代码 (如 sh.600519)" 
+              className="lake-input lake-symbol-input"
+              placeholder="代码 (e.g. sh.600519)" 
               value={fetchSymbol}
               onChange={e => setFetchSymbol(e.target.value)}
           />
-          <input 
-              type="date"
-              className="lake-input"
-              value={fetchStart}
-              onChange={e => setFetchStart(e.target.value)}
-              title="可选: 起始日期"
-          />
-          <span className="lake-date-sep">至</span>
-          <input 
-              type="date"
-              className="lake-input"
-              value={fetchEnd}
-              onChange={e => setFetchEnd(e.target.value)}
-              title="可选: 结束日期"
-          />
+          
+          {/* 时间区间与其快捷方案放在一起 */}
+          <div className="lake-time-group">
+            <input 
+                type="date"
+                className="lake-input lake-date"
+                value={fetchStart}
+                onChange={e => setFetchStart(e.target.value)}
+                title="起始日期"
+            />
+            <span className="lake-date-sep"></span>
+            <input 
+                type="date"
+                className="lake-input lake-date"
+                value={fetchEnd}
+                onChange={e => setFetchEnd(e.target.value)}
+                title="结束日期"
+            />
+            
+            <div className="lake-capsules">
+              <button className={`lake-capsule ${!fetchStart && !fetchEnd ? 'active' : ''}`} onClick={() => handlePresetTime('all')}>全量历史</button>
+              <button className="lake-capsule" onClick={() => handlePresetTime('1y')}>近期1年</button>
+              <button className="lake-capsule" onClick={() => handlePresetTime('3y')}>近期3年</button>
+            </div>
+          </div>
         </div>
         
         <div className="lake-fetch-actions">
           <div className="lake-freq-checkboxes">
+             <span className="lake-freq-label">采集精度:</span>
              {FREQ_ORDER.map(f => (
                  <label key={f} className="lake-checkbox-label">
                      <input 
@@ -187,20 +264,32 @@ export default function DataLakePanel() {
                  </label>
              ))}
           </div>
-          <button className="lake-fetch-submit" onClick={handleFetch} disabled={fetching || !fetchSymbol}>
-              {fetching ? '发送请求中...' : '一键拉取'}
+          <button className="lake-fetch-submit" onClick={handleFormFetch} disabled={fetching || !fetchSymbol}>
+              {fetching ? '发送请求中...' : '+ 新增截获'}
           </button>
         </div>
       </div>
 
       {/* 工具栏 */}
       <div className="lake-toolbar">
-        <span className="lake-toolbar-label">
-          LAKE · {data.total_stocks} symbols · {FREQ_ORDER.length} periods
-        </span>
-        <button className="lake-refresh-btn" onClick={fetchOverview}>
-          [ 🔄 刷新面板 ]
-        </button>
+        <div className="lake-toolbar-left">
+          <span className="lake-toolbar-label">
+            LAKE INVENTORY · {data.total_stocks} STOCKS
+          </span>
+          <button className="lake-refresh-btn" onClick={fetchOverview}>
+            [ 🔄 刷新面板 ]
+          </button>
+        </div>
+        
+        {data.stocks && data.stocks.length > 0 && (
+          <button 
+            className="lake-batch-btn" 
+            onClick={handleBatchSyncAll} 
+            disabled={batching}
+          >
+            {batching ? '指令洪流分发中...' : '🚀 [ 全局自动化追平/同步所有记录 ]'}
+          </button>
+        )}
       </div>
 
       {/* 详情表格 */}
@@ -212,7 +301,7 @@ export default function DataLakePanel() {
               {FREQ_ORDER.map(f => (
                 <th key={f} className="center">{FREQ_LABELS[f]}</th>
               ))}
-              <th className="right">操作</th>
+              <th className="right">状态/操作</th>
             </tr>
           </thead>
           <tbody>
@@ -228,7 +317,7 @@ export default function DataLakePanel() {
                         <div>
                           <div className="lake-bar-count">{fmtNum(count)}</div>
                           <div className="lake-bar-date">
-                            ~{info.last?.split(' ')[0]?.slice(5) || ''}
+                            {info.last?.split(' ')[0]?.slice(5) || ''}
                           </div>
                         </div>
                       ) : (
@@ -238,21 +327,30 @@ export default function DataLakePanel() {
                   )
                 })}
                 <td className="right">
-                  <button
-                    className="lake-delete-btn"
-                    onClick={() => handleDelete(stock.symbol)}
-                    disabled={deleting === stock.symbol}
-                    title={`删除 ${stock.symbol} 的所有缓存数据`}
-                  >
-                    {deleting === stock.symbol ? '…' : '🗑'}
-                  </button>
+                  <div className="lake-row-actions">
+                    <button
+                      className="lake-inline-fetch-btn"
+                      onClick={() => handleInlineFetch(stock.symbol)}
+                      title={`无脑一键全量补充 ${stock.symbol}`}
+                    >
+                      ⏬ 回填
+                    </button>
+                    <button
+                      className="lake-delete-btn"
+                      onClick={() => handleDelete(stock.symbol)}
+                      disabled={deleting === stock.symbol}
+                      title={`清除 ${stock.symbol}`}
+                    >
+                      {deleting === stock.symbol ? '…' : '🗑'}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
         {data.stocks.length === 0 && (
-          <div className="lake-empty-msg">数据湖为空，请先添加自选股或主动拉取数据</div>
+          <div className="lake-empty-msg">数据湖为空，请通过上方猎手引擎抓取标的</div>
         )}
       </div>
     </div>

@@ -90,10 +90,22 @@ CREATE TABLE IF NOT EXISTS behavior_stats (
     calculated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AI 雷达推演快照
+CREATE TABLE IF NOT EXISTS radar_deductions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    matrix_state_json TEXT NOT NULL,
+    ai_summary TEXT NOT NULL,
+    ai_deduction_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, traded_at);
 CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, is_triggered);
+CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id, symbol);
 """
 
 
