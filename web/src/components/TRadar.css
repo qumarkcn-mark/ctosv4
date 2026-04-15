@@ -235,3 +235,118 @@
   color: #ff6b6b;
   border: 1px solid rgba(231, 76, 60, 0.3);
 }
+
+/* 历史推演相关样式 */
+.tradar-ai-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.tradar-ai-actions .tradar-ai-btn {
+  flex: 1;
+}
+
+.tradar-history-btn {
+  background: var(--bg-default);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.tradar-history-btn:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.tradar-history-btn.active {
+  background: var(--bg-surface);
+  border-color: var(--info-blue);
+  color: var(--info-blue);
+}
+
+.tradar-history-list {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item:hover {
+  background: var(--bg-surface);
+}
+
+.history-date {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+}
+
+.history-summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.report-history-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(231, 76, 60, 0.1);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--warning-red);
+  font-weight: 600;
+}
+
+.report-history-banner button {
+  background: var(--bg-elevated);
+  border: 1px solid var(--warning-red);
+  color: var(--warning-red);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.report-history-banner button:hover {
+  background: var(--warning-red);
+  color: #fff;
+}

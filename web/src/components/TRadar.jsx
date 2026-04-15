@@ -46,11 +46,16 @@ export default function TRadar({ symbol }) {
   // AI 推演相关状态
   const [deducing, setDeducing] = useState(false)
   const [aiReport, setAiReport] = useState(null)
+  
+  // 历史复盘相关状态
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyList, setHistoryList] = useState([])
+  const [activeHistoryId, setActiveHistoryId] = useState(null)
+  const [historyTimestamp, setHistoryTimestamp] = useState(null)
 
-  useEffect(() => {
+  const fetchCurrentMatrix = () => {
     if (!symbol) return
     setLoading(true)
-    setAiReport(null) // 切换股票时清空上一次的战报
     fetch(`${API_BASE}/chan/matrix/${symbol}`)
       .then((r) => r.json())
       .then((json) => {
@@ -58,7 +63,16 @@ export default function TRadar({ symbol }) {
         setLoading(false)
       })
       .catch(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    setAiReport(null) // 切换股票时清空上一次的战报
+    setActiveHistoryId(null)
+    setHistoryTimestamp(null)
+    setShowHistory(false)
+    fetchCurrentMatrix()
   }, [symbol])
+
 
   const matrix = data ? (mode === 'A' ? data.matrix_a : data.matrix_b) : []
   const advice = computeAdvice(matrix)
@@ -85,6 +99,34 @@ export default function TRadar({ symbol }) {
     } finally {
       setDeducing(false)
     }
+  }
+
+  const handleToggleHistory = async () => {
+    if (!showHistory) {
+      try {
+        const res = await fetch(`${API_BASE}/agent/radar_history/${symbol}`)
+        const json = await res.json()
+        if (json.status === 'success') {
+          setHistoryList(json.data)
+        }
+      } catch (e) {}
+    }
+    setShowHistory(!showHistory)
+  }
+
+  const loadHistorySnapshot = (h) => {
+    setActiveHistoryId(h.id)
+    setHistoryTimestamp(h.created_at)
+    setData(h.matrix_data)
+    setAiReport({ summary: h.summary, deduction_process: h.deduction_process })
+    setShowHistory(false) // 选中后收起列表
+  }
+
+  const handleBackToCurrent = () => {
+    setActiveHistoryId(null)
+    setHistoryTimestamp(null)
+    setAiReport(null)
+    fetchCurrentMatrix()
   }
 
   return (
@@ -121,25 +163,57 @@ export default function TRadar({ symbol }) {
                   <div className={`tradar-advice ${advice.level}`}>
                     {advice.text}
                   </div>
-                  <button 
-                    className="tradar-ai-btn" 
-                    onClick={handleAIDeduce} 
-                    disabled={deducing}
-                  >
-                    {deducing ? '🧠 正在进行多级别逻辑推演...' : '⚡ 请求 AI 深度走势推演'}
-                  </button>
+                  <div className="tradar-ai-actions">
+                    <button 
+                      className="tradar-ai-btn" 
+                      onClick={handleAIDeduce} 
+                      disabled={deducing}
+                    >
+                      {deducing ? '🧠 推演中...' : '⚡ AI推演'}
+                    </button>
+                    <button
+                      className={`tradar-history-btn ${showHistory ? 'active' : ''}`}
+                      onClick={handleToggleHistory}
+                    >
+                      🕰️ {showHistory ? '收起历史' : '复盘'}
+                    </button>
+                  </div>
                 </>
               ) : (
                 <div className="tradar-ai-report">
+                  {activeHistoryId && (
+                    <div className="report-history-banner">
+                      <span>⚠️ 历史快照视图 ({historyTimestamp})</span>
+                      <button onClick={handleBackToCurrent}>返回实时</button>
+                    </div>
+                  )}
                   <div className="report-summary">{aiReport.summary}</div>
                   <ul className="report-list">
                     {(aiReport.deduction_process || []).map((step, idx) => (
                       <li key={idx}>▸ {step}</li>
                     ))}
                   </ul>
-                  <button className="tradar-ai-refresh" onClick={() => setAiReport(null)}>
-                    收起战报
-                  </button>
+                  {!activeHistoryId && (
+                    <button className="tradar-ai-refresh" onClick={() => setAiReport(null)}>
+                      收起战报
+                    </button>
+                  )}
+                </div>
+              )}
+              
+              {/* 历史记录列表槽位 */}
+              {showHistory && (
+                <div className="tradar-history-list">
+                  {historyList.length === 0 ? (
+                    <div className="history-empty">暂无该股历史推演</div>
+                  ) : (
+                    historyList.map(h => (
+                      <div key={h.id} className="history-item" onClick={() => loadHistorySnapshot(h)}>
+                        <span className="history-date">{h.created_at?.slice(5, 16)}</span>
+                        <span className="history-summary" title={h.summary}>{h.summary}</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>
