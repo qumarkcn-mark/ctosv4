@@ -37,11 +37,23 @@ def _deduce_state_from_structures(bis: list, zhongshus: list) -> Tuple[str, dict
       zhongshus: [{begin_date, end_date, zg, zd, gg, dd}, ...]
     """
     if not bis:
-        return ChanState.UNKNOWN, {}
+        return ChanState.UNKNOWN, {}, {}
     
+    # 算一下极值
+    last_bi = bis[-1]
+    recent_ex = {
+        "current_price": last_bi["y1"],
+        "support": min(last_bi["y0"], last_bi["y1"]),
+        "pressure": max(last_bi["y0"], last_bi["y1"])
+    }
+    if len(bis) >= 2:
+        prev = bis[-2]
+        recent_ex["support"] = min(recent_ex["support"], prev["y0"], prev["y1"])
+        recent_ex["pressure"] = max(recent_ex["pressure"], prev["y0"], prev["y1"])
+
     if not zhongshus:
         # 有笔但无中枢 → 趋势延伸（单边走势尚未形成中枢）
-        return ChanState.TREND_EXTENDING, {}
+        return ChanState.TREND_EXTENDING, {}, recent_ex
     
     last_zs = zhongshus[-1]
     zg = last_zs["zg"]
@@ -53,24 +65,19 @@ def _deduce_state_from_structures(bis: list, zhongshus: list) -> Tuple[str, dict
     
     # 判断当前价格相对中枢的位置
     if bi_end_price > zg:
-        # 价格在中枢上方
         if bi_is_up:
             state = ChanState.UPWARD_LEAVING
         else:
-            # 向下的回调笔，但不破中枢上沿 ZG -> 三买
             state = ChanState.THIRD_BUY_CONFIRMED
     elif bi_end_price < zd:
-        # 价格在中枢下方
         if bi_is_up:
-            # 向上的反弹笔，但不破中枢下沿 ZD -> 三卖
-            state = "THIRD_SELL_CONFIRMED" # Using string directly to avoid enum import changes if any
+            state = "THIRD_SELL_CONFIRMED"
         else:
             state = ChanState.DOWNWARD_LEAVING
     else:
-        # 价格在中枢内
         state = ChanState.IN_CENTER_OSC
     
-    return state, last_zs
+    return state, last_zs, recent_ex
 
 
 # ─── 频率映射：chan_service 用 "m30" 格式, chan_detail 用 "30" 格式 ───
@@ -103,7 +110,7 @@ async def _analyze_single_level(symbol: str, level: str) -> dict:
     bis = detail.get("bis", [])
     zhongshus = detail.get("bi_zhongshus", [])
     
-    state, last_zs = _deduce_state_from_structures(bis, zhongshus)
+    state, last_zs, recent_ex = _deduce_state_from_structures(bis, zhongshus)
     
     zd = last_zs.get("zd", 0) if last_zs else 0
     zg = last_zs.get("zg", 0) if last_zs else 0
@@ -151,6 +158,9 @@ async def _analyze_single_level(symbol: str, level: str) -> dict:
         "zd": zd,
         "zg": zg,
         "patterns": patterns,
+        "ex_support": recent_ex.get("support", 0) if recent_ex else 0,
+        "ex_pressure": recent_ex.get("pressure", 0) if recent_ex else 0,
+        "price": recent_ex.get("current_price", 0) if recent_ex else 0,
     }
 
 
