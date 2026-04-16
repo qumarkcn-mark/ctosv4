@@ -192,6 +192,129 @@
   font-size: var(--text-sm);
 }
 
+/* ── 编辑/删除按钮 ── */
+.trade-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+
+.btn-icon {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+
+.btn-icon:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+}
+
+.btn-icon-danger:hover {
+  background: var(--warning-red-bg);
+  border-color: var(--warning-red);
+}
+
+/* ── 编辑模式 ── */
+.trade-item.editing {
+  border-color: var(--action-gold);
+  background: rgba(240, 185, 11, 0.03);
+}
+
+.trade-edit-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trade-edit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.trade-edit-fields {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.trade-edit-fields label,
+.trade-edit-reason label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trade-edit-fields label span,
+.trade-edit-reason label span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.trade-edit-fields input,
+.trade-edit-reason input {
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.trade-edit-fields input:focus,
+.trade-edit-reason input:focus {
+  outline: none;
+  border-color: var(--action-gold);
+  box-shadow: 0 0 0 1px var(--action-gold);
+}
+
+.trade-edit-reason input {
+  font-family: var(--font-sans);
+}
+
+.trade-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.btn-save {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+
+.btn-save:hover {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.btn-cancel {
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.btn-cancel:hover {
+  border-color: var(--border-default);
+}
+
 /* ── 响应式 ── */
 @media (max-width: 768px) {
   .overview-cards {
@@ -216,5 +339,13 @@
 
   .trade-meta {
     align-self: flex-end;
+  }
+
+  .trade-actions {
+    opacity: 1;
+  }
+
+  .trade-edit-fields {
+    grid-template-columns: 1fr;
   }
 }

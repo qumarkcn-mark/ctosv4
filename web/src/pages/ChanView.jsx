@@ -1,21 +1,26 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchlistPanel from '../components/WatchlistPanel.jsx'
 import KlineChart from '../components/KlineChart.jsx'
 import LayerPanel from '../components/LayerPanel.jsx'
-import TRadar from '../components/TRadar.jsx'
+import TRadarV2 from '../components/TRadarV2.jsx'
 import { loadVisibility, saveVisibility } from '../store/layerState.js'
 import './ChanView.css'
 
 export default function ChanView() {
-  const [symbol, setSymbol] = useState('sh600519')
-  const [symbolName, setSymbolName] = useState('贵州茅台')
+  const [symbol, setSymbol] = useState(() => localStorage.getItem('lastViewedSymbol') || 'sh600519')
+  const [symbolName, setSymbolName] = useState(() => localStorage.getItem('lastViewedSymbolName') || '贵州茅台')
   const [layerVisibility, setLayerVisibility] = useState(loadVisibility)
+  const [showWatchlistMenu, setShowWatchlistMenu] = useState(false)
   const watchlistRef = useRef(null)
 
   const handleSelect = useCallback((stock) => {
-    setSymbol(stock.symbol)
-    setSymbolName(stock.name || stock.symbol)
+    const sym = stock.symbol
+    const sName = stock.name || stock.symbol
+    setSymbol(sym)
+    setSymbolName(sName)
+    localStorage.setItem('lastViewedSymbol', sym)
+    localStorage.setItem('lastViewedSymbolName', sName)
   }, [])
 
   const handleLayerChange = useCallback((vis) => {
@@ -23,8 +28,19 @@ export default function ChanView() {
     saveVisibility(vis)
   }, [])
 
-  const handleAddToWatchlist = useCallback(() => {
-    watchlistRef.current?.addToGroup('观察', { symbol, name: symbolName })
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (!e.target.closest('.watchlist-dropdown-container')) {
+        setShowWatchlistMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleAddToWatchlist = useCallback((groupName) => {
+    watchlistRef.current?.addToGroup(groupName, { symbol, name: symbolName })
+    setShowWatchlistMenu(false)
   }, [symbol, symbolName])
 
   return (
@@ -44,13 +60,22 @@ export default function ChanView() {
             <span className="symbol-code mono">{symbol}</span>
           </div>
           <div className="chan-topbar-actions">
-            <button
-              className="add-watchlist-btn"
-              onClick={handleAddToWatchlist}
-              title="加入自选"
-            >
-              ★
-            </button>
+            <div className="watchlist-dropdown-container">
+              <button
+                className="add-watchlist-btn"
+                onClick={() => setShowWatchlistMenu(!showWatchlistMenu)}
+                title="加入自选"
+              >
+                ★
+              </button>
+              {showWatchlistMenu && (
+                <div className="watchlist-dropdown-menu">
+                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('观察')}>入观察</div>
+                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('重仓')}>入重仓</div>
+                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('短线')}>入短线</div>
+                </div>
+              )}
+            </div>
             <LayerPanel visibility={layerVisibility} onChange={handleLayerChange} />
           </div>
         </div>
@@ -59,7 +84,7 @@ export default function ChanView() {
         <KlineChart symbol={symbol} layerVisibility={layerVisibility} />
 
         {/* 推演雷达 */}
-        <TRadar symbol={symbol} />
+        <TRadarV2 symbol={symbol} />
       </div>
     </div>
   )

@@ -31,3 +31,5 @@ Thumbs.db
 miniprogram/miniprogram_npm/
 miniprogram/node_modules/
 .gstack/
+uvicorn.log
+*.log

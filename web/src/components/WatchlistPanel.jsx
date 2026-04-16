@@ -40,9 +40,14 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
   const addToGroup = useCallback((groupName, stock) => {
     setGroups((prev) =>
       prev.map((g) => {
-        if (g.name !== groupName) return g
-        if (g.stocks.some((s) => s.symbol === stock.symbol)) return g
-        return { ...g, stocks: [...g.stocks, stock] }
+        if (g.name === groupName) {
+          if (g.stocks.some((s) => s.symbol === stock.symbol)) return g
+          return { ...g, stocks: [...g.stocks, stock] }
+        }
+        // 对于其它分组，移除该股票以保证唯一性
+        const newStocks = g.stocks.filter((s) => s.symbol !== stock.symbol)
+        if (newStocks.length === g.stocks.length) return g
+        return { ...g, stocks: newStocks }
       })
     )
   }, [])

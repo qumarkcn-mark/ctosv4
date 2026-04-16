@@ -125,13 +125,12 @@ async def radar_deduce(request: InferenceRequest):
         # 将结果入库保存 (留存推演快照)
         try:
             conn = get_connection()
-            summary = result.get("summary", "")
-            ai_deduction_json = json.dumps(result.get("deduction_process", []), ensure_ascii=False)
-            
-            # 使用 dev_user 默认 ID=1
+            summary = result.get("position", "")
+            ai_deduction_json = json.dumps(result, ensure_ascii=False)
+
             conn.execute(
-                """INSERT INTO radar_deductions 
-                   (user_id, symbol, matrix_state_json, ai_summary, ai_deduction_json) 
+                """INSERT INTO radar_deductions
+                   (user_id, symbol, matrix_state_json, ai_summary, ai_deduction_json)
                    VALUES (?, ?, ?, ?, ?)""",
                 (1, symbol, json.dumps(matrix_data, ensure_ascii=False), summary, ai_deduction_json)
             )

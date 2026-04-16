@@ -44,6 +44,7 @@ if not hasattr(pd.DataFrame, 'append'):
 
 # BaoStock 的 freq 映射（我们内部 -> baostock 参数）
 FREQ_MAP = {
+    "week": "w",
     "day": "d",
     "60":  "60",
     "30":  "30",
@@ -53,16 +54,31 @@ FREQ_MAP = {
 
 # 分钟线历史起点（BaoStock 不提供更早的数据）
 MIN_MINUTE_DATE = "2019-01-02"
-# 日线历史起点（默认拉取多少年）
+# 日线/周线历史起点（默认拉取多少年）
 DEFAULT_DAY_START = "2015-01-01"
 
 # 冷启动快速拉取：只拉最近 N 天，先满足前端即时需求
 QUICK_FETCH_DAYS = {
+    "week": 1825, # 5 年周线 ≈ 260 根
     "day": 730,   # 2 年日线 ≈ 500 根
     "60":  180,   # 半年 60m ≈ 720 根
     "30":  120,   # 4 个月 30m ≈ 960 根
     "15":  90,    # 3 个月 15m ≈ 960 根
     "5":   60,    # 2 个月 5m  ≈ 960 根
+}
+
+# ---------------------------------------------------------------------------
+# 分段拉取：BaoStock 单次查询存在 ~10,000 行隐式限制
+# 超过限制时静默截断（不报错、不分页），导致数据丢失
+# 每段控制在安全行数以内（< 5000 行）
+# ---------------------------------------------------------------------------
+CHUNK_DAYS = {
+    "week": 3650, # 周线 10 年 ≈ 520 行，安全
+    "day": 3650,  # 日线 10 年 ≈ 2500 行，安全
+    "60":  365,   # 60m 1 年 ≈ 960 行
+    "30":  180,   # 30m 半年 ≈ 960 行
+    "15":  120,   # 15m 4 个月 ≈ 1280 行
+    "5":   60,    # 5m 2 个月  ≈ 1920 行
 }
 
 # 线程池扩容至 4 workers（支持 Matrix 页面 5 级别并发）
@@ -144,6 +160,9 @@ def _bs_query(symbol: str, freq: str, start_date: str, end_date: str, adjustflag
 
             if freq == "d":
                 fields = "date,open,high,low,close,volume,amount,adjustflag,turn,tradestatus,pctChg"
+            elif freq == "w":
+                # 周线不支持 tradestatus/pctChg
+                fields = "date,open,high,low,close,volume,amount,adjustflag,turn"
             else:
                 # 分钟线字段略有不同
                 fields = "date,time,open,high,low,close,volume,amount,adjustflag"
@@ -171,7 +190,16 @@ def _bs_query(symbol: str, freq: str, start_date: str, end_date: str, adjustflag
             if df is None or df.empty:
                 return []
 
-            return _parse_dataframe(df, freq)
+            result = _parse_dataframe(df, freq)
+
+            # 截断检测：BaoStock 静默截断阈值约 10,000 行
+            if len(result) >= 9500:
+                logger.warning(
+                    "⚠️ BaoStock 返回 %d 行（接近 10000 限制），数据可能被截断: %s/%s [%s ~ %s]",
+                    len(result), symbol, freq, start_date, end_date,
+                )
+
+            return result
 
         except ConnectionError:
             if attempt == 0:
@@ -193,7 +221,7 @@ def _bs_query(symbol: str, freq: str, start_date: str, end_date: str, adjustflag
 def _parse_dataframe(df: pd.DataFrame, freq: str) -> list[dict]:
     """将 BaoStock 返回的 DataFrame 解析为标准 dict 列表"""
     # 统一时间字段
-    if freq != "d" and "time" in df.columns:
+    if freq not in ("d", "w") and "time" in df.columns:
         # 分钟线时间格式是 "20240102090000000"，转为 "2024-01-02 09:00:00"
         def fmt_time(row_date: str, row_time: str) -> str:
             if len(row_time) >= 14:
@@ -239,6 +267,10 @@ def fetch_klines_sync(
     增量策略：
     - 如果本地有缓存，从 last_sync_date + 1 天开始拉取
     - 如果本地没有缓存，从 start_date（默认 DEFAULT_DAY_START）开始全量拉取
+
+    分段拉取（V4.2 修复）：
+    - BaoStock 单次查询存在 ~10,000 行隐式截断限制
+    - 按 CHUNK_DAYS 分段拉取，每段控制在安全行数以内
     """
     bs_freq = FREQ_MAP.get(freq)
     if not bs_freq:
@@ -253,7 +285,7 @@ def fetch_klines_sync(
         logger.info("增量拉取 %s/%s: %s ~ 今天", symbol, freq, effective_start)
     else:
         # 全量：按频率决定起点
-        if freq == "day":
+        if freq in ("day", "week"):
             effective_start = start_date or DEFAULT_DAY_START
         else:
             # 分钟线 BaoStock 最早数据为 2019-01-02
@@ -266,15 +298,32 @@ def fetch_klines_sync(
         logger.info("%s/%s 数据已是最新，无需拉取", symbol, freq)
         return 0
 
-    rows = _bs_query(symbol, bs_freq, effective_start, effective_end, adjustflag)
+    # 分段拉取（防止 BaoStock ~10,000 行截断）
+    chunk_days = CHUNK_DAYS.get(freq, 180)
+    total_written = 0
+    cursor_date = effective_start
 
-    if not rows:
+    while cursor_date <= effective_end:
+        chunk_end = (datetime.strptime(cursor_date, "%Y-%m-%d") + timedelta(days=chunk_days)).strftime("%Y-%m-%d")
+        if chunk_end > effective_end:
+            chunk_end = effective_end
+
+        rows = _bs_query(symbol, bs_freq, cursor_date, chunk_end, adjustflag)
+
+        if rows:
+            count = upsert_klines(symbol, freq, rows, adjustflag)
+            total_written += count
+            logger.debug("分段写入 %d 条: %s/%s [%s ~ %s]", count, symbol, freq, cursor_date, chunk_end)
+
+        # 移动游标到下一段
+        cursor_date = (datetime.strptime(chunk_end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if total_written > 0:
+        logger.info("写入 %d 条 K 线: %s/%s", total_written, symbol, freq)
+    else:
         logger.warning("BaoStock 返回空数据 %s/%s [%s ~ %s]", symbol, freq, effective_start, effective_end)
-        return 0
 
-    count = upsert_klines(symbol, freq, rows, adjustflag)
-    logger.info("写入 %d 条 K 线: %s/%s", count, symbol, freq)
-    return count
+    return total_written
 
 
 def fetch_klines_quick(

@@ -9,12 +9,13 @@ import './KlineChart.css'
 registerOverlay(phantomOverlay)
 
 const INTERVALS = [
-  { key: 'day', label: '日线', freq: 'day' },
-  { key: 'm60', label: '60分', freq: '60' },
-  { key: 'm30', label: '30分', freq: '30' },
-  { key: 'm15', label: '15分', freq: '15' },
-  { key: 'm5', label: '5分', freq: '5' },
-  { key: 'm1', label: '1分', freq: '1' },
+  { key: 'week', label: '周线', freq: 'week', count: 500 },
+  { key: 'day', label: '日线', freq: 'day', count: 500 },
+  { key: 'm60', label: '60分', freq: '60', count: 800 },
+  { key: 'm30', label: '30分', freq: '30', count: 1000 },
+  { key: 'm15', label: '15分', freq: '15', count: 1200 },
+  { key: 'm5', label: '5分', freq: '5', count: 1500 },
+  { key: 'm1', label: '1分', freq: '1', count: 1500 },
 ]
 
 const MAIN_INDICATORS = ['MA', 'BOLL', 'None']
@@ -41,7 +42,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
 
     const iv = INTERVALS.find((i) => i.key === interval)
     const freq = iv?.freq ?? 'day'
-    const isDay = interval === 'day'
+    const isDay = interval === 'day' || interval === 'week'
 
     setLoading(true)
     setError(null)
@@ -143,7 +144,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
     resizeObserver.observe(chartContainerRef.current)
 
     // 发起数据请求
-    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${freq}&count=500`)
+    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${freq}&count=${iv?.count ?? 500}`)
       .then((r) => r.json())
       .then((json) => {
         if (!json?.data?.klines?.length) {

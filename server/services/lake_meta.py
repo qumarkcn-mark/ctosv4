@@ -16,8 +16,8 @@ from server.db.kline_lake import LAKE_PATH, get_lake_connection
 logger = logging.getLogger(__name__)
 
 # 周期显示顺序
-FREQ_ORDER = ["day", "60", "30", "15", "5"]
-FREQ_LABELS = {"day": "日线", "60": "60m", "30": "30m", "15": "15m", "5": "5m"}
+FREQ_ORDER = ["week", "day", "60", "30", "15", "5"]
+FREQ_LABELS = {"week": "周线", "day": "日线", "60": "60m", "30": "30m", "15": "15m", "5": "5m"}
 
 
 def scan_lake_overview() -> dict:
@@ -171,22 +171,44 @@ def get_sync_status() -> list[dict]:
     finally:
         conn.close()
 
-def trigger_manual_fetch(symbol: str, freqs: list[str], start_date: Optional[str] = None, end_date: Optional[str] = None) -> dict:
+def trigger_manual_fetch(
+    symbol: str,
+    freqs: list[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    force_refresh: bool = False,
+) -> dict:
     """
-    触发手动数据拉取
+    触发手动数据拉取。
+
+    Args:
+        force_refresh: 强制全量刷新。清除 sync_meta 和已有 klines，
+                       从头拉取完整数据。用于修复被 BaoStock 截断的脏数据。
     """
     from server.services.baostock_service import fetch_klines_sync
     import threading
-    
+
     def _fetch_all():
         for freq in freqs:
             try:
-                fetch_klines_sync(symbol=symbol, freq=freq, start_date=start_date, end_date=end_date)
+                # 强制刷新：先清除旧数据和同步标记
+                if force_refresh:
+                    logger.info("[ManualFetch] 强制刷新 %s/%s，清除旧数据...", symbol, freq)
+                    conn = get_lake_connection()
+                    try:
+                        conn.execute("DELETE FROM kline_sync_meta WHERE symbol = ? AND freq = ?", (symbol, freq))
+                        conn.execute("DELETE FROM klines WHERE symbol = ? AND freq = ?", (symbol, freq))
+                        conn.commit()
+                    finally:
+                        conn.close()
+
+                written = fetch_klines_sync(symbol=symbol, freq=freq, start_date=start_date, end_date=end_date)
+                logger.info("[ManualFetch] 完成 %s/%s: %d 条", symbol, freq, written)
             except Exception as e:
-                logger.error(f"Manual fetch failed for {symbol} {freq}: {e}")
-                
-    # 丢入子线程静默处理
-    t = threading.Thread(target=_fetch_all)
+                logger.error("[ManualFetch] 失败 %s/%s: %s", symbol, freq, e)
+
+    # 丢入子线程处理（不阻塞 API 响应）
+    t = threading.Thread(target=_fetch_all, daemon=True)
     t.start()
-    
-    return {"status": "started", "symbol": symbol, "freqs": freqs}
+
+    return {"status": "started", "symbol": symbol, "freqs": freqs, "force_refresh": force_refresh}

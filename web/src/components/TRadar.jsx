@@ -10,31 +10,72 @@ const STATE_CONFIG = {
   DOWNWARD_LEAVING: { label: '向下离开', color: '#ef4444', emoji: '🔴' },
   UPWARD_LEAVING: { label: '向上离开', color: '#22c55e', emoji: '🟢' },
   TREND_EXTENDING: { label: '趋势延伸', color: '#f59e0b', emoji: '🟡' },
+  // V4.2 新增四状态
+  LIMBO: { label: '中阴阶段', color: '#f97316', emoji: '🟠' },
+  FAKE_BREAK: { label: '假突破', color: '#f59e0b', emoji: '⚠️' },
+  SMALL_TO_BIG: { label: '小转大', color: '#a855f7', emoji: '🔮' },
+  CONFIRMED_BREAK: { label: '真突破', color: '#06b6d4', emoji: '🚀' },
   UNKNOWN: { label: '数据不足', color: '#666', emoji: '⚪' },
 }
 
 const LEVEL_NAMES = {
-  day: '日线', m60: '60分钟', m30: '30分钟', m15: '15分钟', m5: '5分钟',
+  day: '日线', week: '周线', m60: '60分钟', m30: '30分钟', m15: '15分钟', m5: '5分钟',
 }
 
 function computeAdvice(matrix) {
   if (!matrix || matrix.length < 2) return { text: '等待数据...', level: 'neutral' }
-  const [l1, l2] = matrix
+  const [l1, l2, l3] = matrix
+
+  // 收集所有级别的形态标签
+  const allPatterns = matrix.flatMap(m => m.patterns || []).join(' ')
+
+  // ── V4.2 新增状态 ──
+  if (l1.state === 'FAKE_BREAK')
+    return { text: '⚠️ 假突破确认，警惕反向运动', level: 'danger' }
+  if (l1.state === 'SMALL_TO_BIG')
+    return { text: '🔮 小转大信号，级别反转进行中', level: 'danger' }
+
+  // ── 危险信号优先 ──
   if (l1.state === 'DOWNWARD_LEAVING' && l2.state !== 'THIRD_BUY_CONFIRMED')
     return { text: '⚠️ 主级别向下破位，极度弱势', level: 'danger' }
   if (l1.state === 'THIRD_SELL_CONFIRMED')
     return { text: '🛑 大级别三卖已确立，逢高离场', level: 'danger' }
+  if (allPatterns.includes('1卖风险'))
+    return { text: '🔴 趋势顶背驰，1卖风险逼近', level: 'danger' }
+  if (allPatterns.includes('3买转1卖'))
+    return { text: '⚠️ 三买后动能衰竭，谨防转1卖', level: 'danger' }
+
+  // ── 机会信号 ──
+  if (l1.state === 'CONFIRMED_BREAK')
+    return { text: '🚀 真突破确认，趋势已脱离中枢', level: 'fire' }
+  if (allPatterns.includes('1买机会'))
+    return { text: '🟢 趋势底背驰出现1买机会！', level: 'fire' }
+  if (allPatterns.includes('3卖转1买'))
+    return { text: '✅ 三卖后底背驰，关注1买反转', level: 'fire' }
   if (l1.state === 'WAITING_FOR_PULLBACK' && l2.state === 'THIRD_BUY_CONFIRMED')
     return { text: '🔥 主级别离开段 + 次级别三买共振', level: 'fire' }
   if (l1.state === 'THIRD_BUY_CONFIRMED')
     return { text: '🚀 大级别三买已确立', level: 'success' }
+  if (allPatterns.includes('二买'))
+    return { text: '🟢 出现二买信号(不创新低)', level: 'success' }
   if (l1.state === 'UPWARD_LEAVING')
     return { text: '🚀 大级别向上离开中枢', level: 'success' }
+
+  // ── 中性/结构边界信号 (动态注入操作指导价) ──
+  const zgStr = l1.zg > 0 ? l1.zg.toFixed(2) : 'ZG'
+  const zdStr = l1.zd > 0 ? l1.zd.toFixed(2) : 'ZD'
+
+  if (l1.state === 'WAITING_FOR_PULLBACK')
+    return { text: `🔵 等待回踩: 只要回调不跌破 ${zgStr}(中枢上沿)，即构成3买。跌破 ${zdStr} 止损`, level: 'neutral' }
+  if (l1.state === 'LIMBO')
+    return { text: `🟠 中阴阶段: 走势不明，等次级别出方向。以 ${zdStr} 为绝对防线`, level: 'neutral' }
+  if (allPatterns.includes('盘整') && allPatterns.includes('背驰'))
+    return { text: `🟡 盘整背驰: 注意观察能否向突破 ${zgStr}，突破前不要重仓`, level: 'neutral' }
   if (l1.state === 'TREND_EXTENDING')
-    return { text: '📈 趋势延伸中，等待中枢形成', level: 'neutral' }
+    return { text: `📈 趋势延伸: 若跌破跟踪防守线 ${zdStr} 立即大幅减仓`, level: 'neutral' }
   if (l1.state === 'IN_CENTER_OSC')
-    return { text: '⚖️ 中枢震荡中', level: 'neutral' }
-  return { text: '观望等待结构明朗', level: 'neutral' }
+    return { text: `⚖️ 中枢震荡 (${zdStr} 至 ${zgStr}): 不破 ${zdStr} 可持有高抛低吸，破位必须离场`, level: 'neutral' }
+  return { text: `⚖️ 走势发育中: 目前以 ${zdStr} 作为物理止损底线，跌破离场`, level: 'neutral' }
 }
 
 export default function TRadar({ symbol }) {

@@ -69,3 +69,44 @@
   background: var(--action-gold-bg, rgba(240,185,11,0.12));
   border-color: var(--action-gold, #f0b90b);
 }
+
+/* ─── Watchlist Dropdown ─── */
+.watchlist-dropdown-container {
+  position: relative;
+}
+
+.watchlist-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: var(--bg-elevated, #1a1b24);
+  border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+  border-radius: var(--radius-md, 6px);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  min-width: 90px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.watchlist-dropdown-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text-secondary, #9aa0a6);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 13px;
+  transition: all 0.1s;
+}
+
+.watchlist-dropdown-item:hover {
+  background: var(--bg-overlay, rgba(255,255,255,0.05));
+  color: var(--action-gold, #f0b90b);
+}

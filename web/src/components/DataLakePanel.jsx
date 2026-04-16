@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { API_BASE } from '../config.js'
 import './DataLakePanel.css'
 
-const FREQ_LABELS = { day: '日线', '60': '60m', '30': '30m', '15': '15m', '5': '5m' }
-const FREQ_ORDER = ['day', '60', '30', '15', '5']
+const FREQ_LABELS = { week: '周线', day: '日线', '60': '60m', '30': '30m', '15': '15m', '5': '5m' }
+const FREQ_ORDER = ['week', 'day', '60', '30', '15', '5']
 
 const fmtNum = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
 const fmtSize = (mb) => mb >= 1 ? `${mb.toFixed(1)} MB` : `${(mb * 1024).toFixed(0)} KB`
@@ -25,20 +25,25 @@ export default function DataLakePanel() {
   const [fetchSymbol, setFetchSymbol] = useState('')
   const [fetchStart, setFetchStart] = useState('')
   const [fetchEnd, setFetchEnd] = useState('')
-  const [fetchFreqs, setFetchFreqs] = useState(['day', '60', '30', '15', '5'])
+  const [fetchFreqs, setFetchFreqs] = useState(['week', 'day', '60', '30', '15', '5'])
   const [fetching, setFetching] = useState(false)
   
   // 批量拉取UI状态
   const [batching, setBatching] = useState(false)
 
+  // 持久化通知 (替代 alert，不会被 re-render 打断)
+  const [toast, setToast] = useState(null)
+
   const fetchOverview = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/lake/overview`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       setData(json)
     } catch (e) {
       console.error('[Lake] fetch error:', e)
+      // 如果后端锁表抛错，保留旧数据不让页面崩溃
     } finally {
       setLoading(false)
     }
@@ -51,7 +56,7 @@ export default function DataLakePanel() {
     try {
       const res = await fetch(`${API_BASE}/lake/cleanup`, { method: 'POST' })
       const json = await res.json()
-      alert(`已清理 ${json.cleaned} 个孤儿文件，释放 ${json.freed_kb.toFixed(1)} KB`)
+      setToast({ type: 'success', msg: `已清理 ${json.cleaned} 个孤儿文件，释放 ${json.freed_kb.toFixed(1)} KB` })
       fetchOverview()
     } catch (e) {
       console.error('[Cleanup] error:', e)
@@ -61,7 +66,7 @@ export default function DataLakePanel() {
   }
 
   const handleDelete = async (symbol) => {
-    if (!confirm(`确认删除 ${symbol} 的所有本地缓存数据？`)) return
+    if (!window.confirm(`确认删除 ${symbol} 的所有本地缓存数据？`)) return
     setDeleting(symbol)
     try {
       const res = await fetch(`${API_BASE}/lake/${symbol}`, { method: 'DELETE' })
@@ -110,56 +115,61 @@ export default function DataLakePanel() {
   }
 
   // 表单完整拉取提交
-  const handleFormFetch = async () => {
+  const handleFormFetch = async (e) => {
+    e?.preventDefault()
+    e?.stopPropagation()
     if (!fetchSymbol) {
-      alert("请输入股票代码")
+      setToast({ type: 'error', msg: '请输入股票代码' })
       return
     }
     if (fetchFreqs.length === 0) {
-      alert("请至少选择一个周期")
+      setToast({ type: 'error', msg: '请至少选择一个周期' })
       return
     }
     setFetching(true)
     try {
       await sendFetchRequest(fetchSymbol, fetchFreqs, fetchStart, fetchEnd)
-      alert("拉取指令已提交后台，可多次刷新概览查看入库进度。")
-      setFetchSymbol('') // 清空方便下一次
+      setToast({ type: 'success', msg: '拉取指令已提交后台，可多次刷新概览查看入库进度。' })
+      setFetchSymbol('')
       setTimeout(() => fetchOverview(), 2000)
     } catch (e) {
       console.error('[Manual Fetch Error]', e)
-      alert("发送拉取请求失败")
+      setToast({ type: 'error', msg: '发送拉取请求失败' })
     } finally {
       setFetching(false)
     }
   }
 
   // 表格单行全量回填
-  const handleInlineFetch = async (symbol) => {
+  const handleInlineFetch = async (e, symbol) => {
+    e?.preventDefault()
+    e?.stopPropagation()
     try {
-      await sendFetchRequest(symbol, ['day', '60', '30', '15', '5'], '', '')
-      alert(`已提交 [${symbol}] 全量历史抓取指令！`)
+      await sendFetchRequest(symbol, ['week', 'day', '60', '30', '15', '5'], '', '')
+      setToast({ type: 'success', msg: `已提交 [${symbol}] 全量历史抓取指令！` })
       setTimeout(() => fetchOverview(), 1500)
     } catch (e) {
       console.error('[Inline Fetch Error]', e)
-      alert("抓取指令发送失败")
+      setToast({ type: 'error', msg: '抓取指令发送失败' })
     }
   }
 
   // 全局回填
-  const handleBatchSyncAll = async () => {
+  const handleBatchSyncAll = async (e) => {
+    e?.preventDefault()
+    e?.stopPropagation()
     if (!data || !data.stocks || data.stocks.length === 0) return
-    if (!confirm(`确认一键同步全部 ${data.stocks.length} 只股票？后台将利用多核满负荷为您增量追平历史，请放心离开页面。`)) return
 
     setBatching(true)
     try {
       // 遍历并发发送，BackgroundTasks 和 ThreadPool 会自动排队
       await Promise.all(data.stocks.map(st => 
-        sendFetchRequest(st.symbol, ['day', '60', '30', '15', '5'], '', '')
+        sendFetchRequest(st.symbol, ['week', 'day', '60', '30', '15', '5'], '', '')
       ))
-      alert(`已成功投递 ${data.stocks.length} 个同步任务！请稍后刷新观察行数结晶。`)
+      setToast({ type: 'success', msg: `已成功投递 ${data.stocks.length} 个同步任务！请稍后刷新观察行数结晶。` })
     } catch (e) {
       console.error('[Batch Fetch Error]', e)
-      alert("批量抓取发生异常")
+      setToast({ type: 'error', msg: '批量抓取发生异常' })
     } finally {
       setBatching(false)
     }
@@ -181,6 +191,13 @@ export default function DataLakePanel() {
 
   return (
     <div className="lake-panel">
+      {/* 持久通知条 */}
+      {toast && (
+        <div className={`lake-toast ${toast.type}`} onClick={() => setToast(null)}>
+          <span>{toast.type === 'success' ? '✅' : '❌'} {toast.msg}</span>
+          <button className="lake-toast-close" onClick={() => setToast(null)}>✕</button>
+        </div>
+      )}
       {/* 统计卡片 */}
       <div className="lake-stats">
         <div className="lake-stat-card">
@@ -264,7 +281,7 @@ export default function DataLakePanel() {
                  </label>
              ))}
           </div>
-          <button className="lake-fetch-submit" onClick={handleFormFetch} disabled={fetching || !fetchSymbol}>
+          <button type="button" className="lake-fetch-submit" onClick={handleFormFetch} disabled={fetching || !fetchSymbol}>
               {fetching ? '发送请求中...' : '+ 新增截获'}
           </button>
         </div>
@@ -329,8 +346,9 @@ export default function DataLakePanel() {
                 <td className="right">
                   <div className="lake-row-actions">
                     <button
+                      type="button"
                       className="lake-inline-fetch-btn"
-                      onClick={() => handleInlineFetch(stock.symbol)}
+                      onClick={(e) => handleInlineFetch(e, stock.symbol)}
                       title={`无脑一键全量补充 ${stock.symbol}`}
                     >
                       ⏬ 回填

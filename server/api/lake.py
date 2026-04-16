@@ -12,13 +12,15 @@ class FetchRequest(BaseModel):
     freqs: List[str]
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    force_refresh: bool = False
 
 
 @router.get("/overview")
 async def lake_overview():
     """数据湖概览: 已缓存股票、各周期条数、磁盘占用"""
     from server.services.lake_meta import scan_lake_overview
-    return scan_lake_overview()
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(scan_lake_overview)
 
 
 @router.post("/cleanup")
@@ -42,15 +44,17 @@ async def delete_stock_data(symbol: str, freq: str = Query(None)):
 async def sync_status():
     """获取同步元信息"""
     from server.services.lake_meta import get_sync_status
-    return get_sync_status()
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(get_sync_status)
 
 @router.post("/fetch")
 async def manual_fetch_stocks(req: FetchRequest):
     """手动触发拉取股票历史数据"""
     from server.services.lake_meta import trigger_manual_fetch
     return trigger_manual_fetch(
-        symbol=req.symbol, 
-        freqs=req.freqs, 
-        start_date=req.start_date, 
-        end_date=req.end_date
+        symbol=req.symbol,
+        freqs=req.freqs,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        force_refresh=req.force_refresh,
     )

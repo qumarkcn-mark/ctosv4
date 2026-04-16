@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { API_BASE } from '../config.js'
 import './TradeForm.css'
 
 export default function TradeForm({ onSubmitted }) {
@@ -14,6 +15,121 @@ export default function TradeForm({ onSubmitted }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
+  // ── 股票搜索相关 ──
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [activeIdx, setActiveIdx] = useState(-1)
+  const searchTimerRef = useRef(null)
+  const searchWrapperRef = useRef(null)
+  const listRef = useRef(null)
+
+  // 点击外部关闭下拉
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (searchWrapperRef.current && !searchWrapperRef.current.contains(e.target)) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    }
+  }, [])
+
+  // 防抖搜索
+  const doSearch = useCallback((q) => {
+    if (!q || q.length < 1) {
+      setSearchResults([])
+      setSearchOpen(false)
+      return
+    }
+    setSearchLoading(true)
+    fetch(`${API_BASE}/data/search?q=${encodeURIComponent(q)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setSearchResults(data.results || [])
+        setActiveIdx(-1)
+        setSearchOpen(true)
+      })
+      .catch(() => {})
+      .finally(() => setSearchLoading(false))
+  }, [])
+
+  const handleSearchChange = (e) => {
+    const val = e.target.value
+    setSearchQuery(val)
+    setActiveIdx(-1)
+    // 清除已选中的股票（用户重新输入）
+    if (form.symbol) {
+      setForm({ ...form, symbol: '', name: '' })
+    }
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(() => doSearch(val), 300)
+  }
+
+  const handleSelectStock = (item) => {
+    setForm({ ...form, symbol: item.symbol, name: item.name })
+    setSearchQuery('')
+    setSearchOpen(false)
+    setSearchResults([])
+    setActiveIdx(-1)
+  }
+
+  const handleClearStock = () => {
+    setForm({ ...form, symbol: '', name: '' })
+    setSearchQuery('')
+  }
+
+  // 键盘导航
+  const handleSearchKeyDown = (e) => {
+    if (!searchOpen || searchResults.length === 0) {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        if (searchQuery.trim()) doSearch(searchQuery.trim())
+      }
+      return
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        setActiveIdx((prev) => {
+          const next = prev < searchResults.length - 1 ? prev + 1 : 0
+          scrollIntoView(next)
+          return next
+        })
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        setActiveIdx((prev) => {
+          const next = prev > 0 ? prev - 1 : searchResults.length - 1
+          scrollIntoView(next)
+          return next
+        })
+        break
+      case 'Enter':
+        e.preventDefault()
+        if (activeIdx >= 0 && activeIdx < searchResults.length) {
+          handleSelectStock(searchResults[activeIdx])
+        } else if (searchResults.length > 0) {
+          handleSelectStock(searchResults[0])
+        }
+        break
+      case 'Escape':
+        setSearchOpen(false)
+        setActiveIdx(-1)
+        break
+    }
+  }
+
+  const scrollIntoView = (idx) => {
+    if (!listRef.current) return
+    const items = listRef.current.children
+    if (items[idx]) items[idx].scrollIntoView({ block: 'nearest' })
+  }
+
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value })
     setError('')
@@ -24,7 +140,7 @@ export default function TradeForm({ onSubmitted }) {
     setError('')
 
     // 校验
-    if (!form.symbol.trim()) return setError('请输入股票代码')
+    if (!form.symbol.trim()) return setError('请先搜索并选择一只股票')
     if (!form.price || parseFloat(form.price) <= 0) return setError('请输入有效价格')
     if (!form.quantity || parseInt(form.quantity) <= 0) return setError('请输入有效数量')
 
@@ -54,6 +170,7 @@ export default function TradeForm({ onSubmitted }) {
         symbol: '', name: '', direction: 'BUY',
         price: '', quantity: '', reason_text: '', reason_category: '',
       })
+      setSearchQuery('')
       onSubmitted?.()
     } catch (err) {
       setError(err.message)
@@ -86,28 +203,58 @@ export default function TradeForm({ onSubmitted }) {
         </button>
       </div>
 
-      {/* 股票信息 */}
-      <div className="form-row">
-        <div className="form-field">
-          <label>股票代码</label>
-          <input
-            className="input"
-            name="symbol"
-            value={form.symbol}
-            onChange={handleChange}
-            placeholder="如 sh600519"
-          />
-        </div>
-        <div className="form-field">
-          <label>股票名称</label>
-          <input
-            className="input"
-            name="name"
-            value={form.name}
-            onChange={handleChange}
-            placeholder="如 贵州茅台"
-          />
-        </div>
+      {/* 股票搜索 — 代码+名称合一 */}
+      <div className="form-field">
+        <label>股票</label>
+        {form.symbol ? (
+          /* 已选中状态：显示标签 */
+          <div className="stock-selected-tag">
+            <span className="selected-symbol mono">{form.symbol}</span>
+            <span className="selected-name">{form.name}</span>
+            <button type="button" className="selected-clear" onClick={handleClearStock} title="重新选择">✕</button>
+          </div>
+        ) : (
+          /* 未选中状态：搜索输入框 */
+          <div className="stock-search-inline" ref={searchWrapperRef}>
+            <div className="search-input-wrapper">
+              <span className="search-icon">🔍</span>
+              <input
+                type="text"
+                className="search-input"
+                value={searchQuery}
+                onChange={handleSearchChange}
+                onKeyDown={handleSearchKeyDown}
+                onFocus={() => searchQuery && setSearchOpen(true)}
+                placeholder="输入代码、名称或拼音搜索..."
+                autoComplete="off"
+              />
+              {searchLoading && <span className="search-spinner" />}
+            </div>
+
+            {searchOpen && searchResults.length > 0 && (
+              <div className="search-dropdown" ref={listRef}>
+                {searchResults.map((item, idx) => (
+                  <div
+                    key={item.symbol}
+                    className={`search-result-item${idx === activeIdx ? ' active' : ''}`}
+                    onClick={() => handleSelectStock(item)}
+                    onMouseEnter={() => setActiveIdx(idx)}
+                  >
+                    <span className="result-symbol mono">{item.symbol}</span>
+                    <span className="result-name">{item.name}</span>
+                    <span className="result-market">{item.market || ''}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {searchOpen && searchResults.length === 0 && searchQuery && !searchLoading && (
+              <div className="search-dropdown">
+                <div className="search-empty">未找到匹配的股票</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 价格和数量 */}

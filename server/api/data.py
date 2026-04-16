@@ -64,7 +64,7 @@ async def query_batch_prices(symbols: str = Query(..., description="逗号分隔
 async def query_klines(
     symbol: str,
     interval: str = Query("day", description="day / m60 / m30 / m15 / m5"),
-    count: int = Query(200, ge=10, le=500)
+    count: int = Query(200, ge=10, le=2000)
 ):
     """获取 K 线数据用于前端图表渲染"""
     if interval == "day":

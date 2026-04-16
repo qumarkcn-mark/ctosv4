@@ -185,6 +185,68 @@ def get_trade(trade_id: int, user_id: int = 1):
         conn.close()
 
 
+class TradeUpdate(BaseModel):
+    """编辑交易请求（只传需要修改的字段）"""
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+    direction: Optional[str] = None
+    name: Optional[str] = None
+    stop_loss_price: Optional[float] = None
+    reason_text: Optional[str] = None
+    reason_category: Optional[str] = None
+    traded_at: Optional[str] = None
+
+
+@router.put("/{trade_id}")
+def update_trade(trade_id: int, update: TradeUpdate, user_id: int = 1):
+    """编辑交易记录（同时重算持仓）"""
+    conn = get_connection()
+    try:
+        # 先查到原记录
+        row = conn.execute(
+            "SELECT * FROM trades WHERE id = ? AND user_id = ?",
+            (trade_id, user_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "交易记录不存在")
+
+        original = dict(row)
+
+        # 合并更新字段
+        new_price = update.price if update.price is not None else original["price"]
+        new_qty = update.quantity if update.quantity is not None else original["quantity"]
+        new_dir = update.direction if update.direction is not None else original["direction"]
+        new_name = update.name if update.name is not None else original["name"]
+        new_stop = update.stop_loss_price if update.stop_loss_price is not None else original["stop_loss_price"]
+        new_reason = update.reason_text if update.reason_text is not None else original["reason_text"]
+        new_cat = update.reason_category if update.reason_category is not None else original["reason_category"]
+        new_time = update.traded_at if update.traded_at is not None else original["traded_at"]
+        new_amount = new_price * new_qty
+
+        conn.execute(
+            """UPDATE trades
+               SET price = ?, quantity = ?, amount = ?, direction = ?,
+                   name = ?, stop_loss_price = ?, reason_text = ?,
+                   reason_category = ?, traded_at = ?
+               WHERE id = ?""",
+            (new_price, new_qty, new_amount, new_dir,
+             new_name, new_stop, new_reason, new_cat, new_time,
+             trade_id),
+        )
+
+        # 重算持仓
+        recalculate_position(conn, user_id, original["symbol"])
+        conn.commit()
+
+        updated = conn.execute(
+            "SELECT * FROM trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        return dict(updated)
+    finally:
+        conn.close()
+
+
+
 @router.delete("/{trade_id}")
 def delete_trade(trade_id: int, user_id: int = 1):
     """删除交易记录 (同时重算持仓)"""

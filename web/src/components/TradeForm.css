@@ -71,6 +71,153 @@
   font-size: var(--text-base);
 }
 
+/* ── 股票搜索 (内联到表单) ── */
+.stock-search-inline {
+  position: relative;
+}
+
+.stock-search-inline .search-input-wrapper {
+  display: flex;
+  align-items: center;
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  transition: border-color var(--transition-fast);
+}
+
+.stock-search-inline .search-input-wrapper:focus-within {
+  border-color: var(--action-gold);
+  box-shadow: 0 0 0 2px rgba(240, 185, 11, 0.12);
+}
+
+.stock-search-inline .search-icon {
+  font-size: var(--text-sm);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.stock-search-inline .search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-family: var(--font-body);
+  min-width: 0;
+}
+
+.stock-search-inline .search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.stock-search-inline .search-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--action-gold);
+  border-radius: 50%;
+  animation: tfSearchSpin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes tfSearchSpin {
+  to { transform: rotate(360deg); }
+}
+
+.stock-search-inline .search-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
+}
+
+.stock-search-inline .search-result-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.stock-search-inline .search-result-item:hover,
+.stock-search-inline .search-result-item.active {
+  background: var(--bg-overlay, rgba(255, 255, 255, 0.04));
+}
+
+.stock-search-inline .result-symbol {
+  font-size: var(--text-sm);
+  color: var(--action-gold);
+  min-width: 80px;
+}
+
+.stock-search-inline .result-name {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.stock-search-inline .result-market {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.stock-search-inline .search-empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* ── 已选中的股票标签 ── */
+.stock-selected-tag {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-base);
+  border: 1px solid var(--action-gold);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast);
+}
+
+.stock-selected-tag .selected-symbol {
+  font-size: var(--text-sm);
+  color: var(--action-gold);
+  font-weight: 600;
+}
+
+.stock-selected-tag .selected-name {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.stock-selected-tag .selected-clear {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+
+.stock-selected-tag .selected-clear:hover {
+  color: var(--warning-red);
+}
+
 /* ── 错误信息 ── */
 .form-error {
   padding: var(--space-2) var(--space-3);

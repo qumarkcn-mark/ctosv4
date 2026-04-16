@@ -6,25 +6,39 @@ const API_BASE = 'http://localhost:8000/api'
 
 const STATE_LABELS = {
   THIRD_BUY_CONFIRMED: '三买确立',
+  THIRD_SELL_CONFIRMED: '三卖确立',
   WAITING_FOR_PULLBACK: '等待回踩',
   IN_CENTER_OSC: '中枢震荡',
   DOWNWARD_LEAVING: '向下离开',
   UPWARD_LEAVING: '向上离开',
+  TREND_EXTENDING: '趋势延伸',
+  // V4.2 新增四状态
+  LIMBO: '中阴阶段',
+  FAKE_BREAK: '假突破',
+  SMALL_TO_BIG: '小转大',
+  CONFIRMED_BREAK: '真突破',
   UNKNOWN: '数据不足',
 }
 
 const STATE_COLORS = {
   THIRD_BUY_CONFIRMED: 'gold',
+  THIRD_SELL_CONFIRMED: 'red',
   WAITING_FOR_PULLBACK: 'blue',
   IN_CENTER_OSC: 'blue',
   DOWNWARD_LEAVING: 'red',
   UPWARD_LEAVING: 'green',
+  TREND_EXTENDING: 'yellow',
+  // V4.2 新增四状态
+  LIMBO: 'orange',
+  FAKE_BREAK: 'yellow',
+  SMALL_TO_BIG: 'purple',
+  CONFIRMED_BREAK: 'cyan',
   UNKNOWN: 'gray',
 }
 
 export default function ChanMatrix() {
-  const [symbol, setSymbol] = useState('sz000001')
-  const [input, setInput] = useState('sz000001')
+  const [symbol, setSymbol] = useState(() => localStorage.getItem('lastViewedMatrixSymbol') || 'sz000001')
+  const [input, setInput] = useState(() => localStorage.getItem('lastViewedMatrixSymbol') || 'sz000001')
   const [data, setData] = useState(null)
   const [mode, setMode] = useState('A')
   const [loading, setLoading] = useState(false)
@@ -49,7 +63,11 @@ export default function ChanMatrix() {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (input.trim()) setSymbol(input.trim().toLowerCase())
+    if (input.trim()) {
+      const sym = input.trim().toLowerCase()
+      setSymbol(sym)
+      localStorage.setItem('lastViewedMatrixSymbol', sym)
+    }
   }
 
   const matrix = data ? (mode === 'A' ? data.matrix_a : data.matrix_b) : []

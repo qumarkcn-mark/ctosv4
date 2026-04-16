@@ -186,6 +186,7 @@ PERIOD_MAP = {
     "30":  KL_TYPE.K_30M,
     "60":  KL_TYPE.K_60M,
     "day": KL_TYPE.K_DAY,
+    "week": KL_TYPE.K_WEEK,
     # XM 格式（兼容）
     "1M":  KL_TYPE.K_1M,
     "5M":  KL_TYPE.K_5M,
@@ -216,6 +217,31 @@ def _parse_chan_detail_sync(
 
     if not rows:
         return {"error": f"无可用 K 线数据: {symbol}/{freq}"}
+    
+    # ─── 周线实时补全：用日线合成本周未完成的周K ───
+    if freq == "week" and rows:
+        last_week_date = str(rows[-1]["date"]).split(" ")[0]
+        try:
+            daily_rows = query_klines(symbol, "day", limit=10)
+            if daily_rows:
+                # 找出比最后一根完整周K更新的日线
+                current_week_days = [
+                    r for r in daily_rows
+                    if str(r["date"]).split(" ")[0] > last_week_date
+                ]
+                if current_week_days:
+                    synth = {
+                        "date": str(current_week_days[-1]["date"]),
+                        "open": float(current_week_days[0]["open"]),
+                        "high": max(float(r["high"]) for r in current_week_days),
+                        "low": min(float(r["low"]) for r in current_week_days),
+                        "close": float(current_week_days[-1]["close"]),
+                        "volume": sum(float(r["volume"]) for r in current_week_days),
+                    }
+                    rows.append(synth)
+                    logger.debug("周线补全: 用 %d 根日线合成本周K线 %s", len(current_week_days), synth["date"])
+        except Exception as e:
+            logger.warning("周线补全失败: %s", e)
         
     kl_type = PERIOD_MAP.get(freq, KL_TYPE.K_DAY)
     

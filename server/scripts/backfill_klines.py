@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger("backfill")
 
 # 默认回填的级别列表
-DEFAULT_FREQS = ["day", "60", "30", "15", "5"]
+DEFAULT_FREQS = ["week", "day", "60", "30", "15", "5"]
 
 
 def backfill(symbols: list[str], freqs: list[str], start_date: str = None) -> None:

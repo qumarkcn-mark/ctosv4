@@ -1,7 +1,7 @@
 import os
 import json
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from openai import AsyncOpenAI
 import logging
 
@@ -24,9 +24,60 @@ class CommanderInferenceResult(BaseModel):
     window_b: str = Field(..., description="Window B stop-loss floor line")
     scenarios: List[ScenarioNode] = Field(..., description="Exactly 3 scenarios")
 
+class Scenario(BaseModel):
+    trigger: str = Field(..., description="触发条件")
+    action: str = Field(..., description="具体操作")
+    position: str = Field(..., description="仓位建议")
+    stop_loss: str = Field(..., description="止损价或止损条件")
+
+class KeyLevels(BaseModel):
+    zg: float = Field(..., description="中枢上沿")
+    zd: float = Field(..., description="中枢下沿")
+    gg: float = Field(..., description="最高点")
+    dd: float = Field(..., description="最低点")
+    ex_support: float = Field(..., description="短期支撑")
+    ex_pressure: float = Field(..., description="短期压力")
+
+# V4.3 拟人化推演格式
+class ThinkingStep(BaseModel):
+    level: str = Field(..., description="级别: week/day/m30/m5")
+    icon: str = Field(..., description="图标 emoji")
+    say: str = Field(..., description="自然语言描述")
+
+class DecisionBranch(BaseModel):
+    """if/then 决策分支"""
+    if_: str = Field(..., alias="if", description="价格条件")
+    then: str = Field(..., description="对应操作")
+    type: str = Field(..., description="buy/sell/wait")
+
+    model_config = {"populate_by_name": True}
+
+class ClassificationBranch(BaseModel):
+    """完全分类分支"""
+    id: str = Field(..., description="分类ID: A/B/C")
+    name: str = Field(..., description="分类名称")
+    condition: str = Field(..., description="触发条件")
+    action: str = Field(..., description="操作建议")
+    stopLoss: Optional[str] = Field(None, description="止损价位和原因")
+    is_current: bool = Field(False, description="是否为当前所在分类")
+
+    model_config = {"populate_by_name": True}
+
+class WatchPrice(BaseModel):
+    price: float = Field(..., description="价位")
+    role: str = Field(..., description="价位角色")
+
 class RadarInferenceResult(BaseModel):
-    summary: str = Field(..., description="一句高度提炼的核心结论")
-    deduction_process: List[str] = Field(..., description="分段的拆解剖析流")
+    thinking: List[ThinkingStep] = Field(..., description="逐级别看盘思维过程")
+    position: str = Field(..., description="当前定位一句话")
+    # V4.5: classifications 替代 decisions
+    classifications: List[ClassificationBranch] = Field(default=[], description="完全分类")
+    watch_prices: List[WatchPrice] = Field(default=[], description="关键价位")
+    interval_nesting: str = Field(default="无", description="区间套状态")
+    veto: Optional[str] = Field(default=None, description="大级别否决")
+    # 保留兼容
+    decisions: List[DecisionBranch] = Field(default=[], description="条件决策树(旧)")
+    red_line: str = Field(default="N/A", description="物理止损红线")
 
 class LLMService:
     def __init__(self):
@@ -130,9 +181,15 @@ class LLMService:
         except Exception as e:
             logger.error(f"Radar LLM Inference failed: {e}")
             return {
-                "summary": f"⚠️ 雷达核心损坏: {e}",
-                "deduction_process": [
-                    "推演系统离线，无法获取到有效推演回应。",
-                    "可能原因：API Key 错误、余额不足，或大模型要求格式异常。"
-                ]
+                "thinking": [
+                    {"level": "week", "icon": "🔭", "say": "⚠️ 推演引擎离线，无法读取周线"},
+                    {"level": "day", "icon": "📊", "say": f"系统异常: {str(e)[:50]}"},
+                    {"level": "m30", "icon": "🔍", "say": "等待引擎恢复后重试"},
+                    {"level": "m5", "icon": "🎯", "say": "当前数据仅供参考"}
+                ],
+                "position": "推演引擎离线",
+                "decisions": [
+                    {"if": "引擎恢复", "then": "重新推演", "type": "wait"}
+                ],
+                "red_line": "N/A"
             }

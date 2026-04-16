@@ -11,6 +11,8 @@ export default function Dashboard() {
   const [trades, setTrades] = useState([])
   const [showTradeForm, setShowTradeForm] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({})
 
   // 加载数据
   const fetchData = async () => {
@@ -36,10 +38,54 @@ export default function Dashboard() {
     fetchData()
   }, [])
 
-  // 交易提交后刷新
   const handleTradeSubmitted = () => {
     setShowTradeForm(false)
     fetchData()
+  }
+
+  // 开始编辑
+  const handleStartEdit = (trade) => {
+    setEditingId(trade.id)
+    setEditForm({
+      price: trade.price,
+      quantity: trade.quantity,
+      stop_loss_price: trade.stop_loss_price || '',
+      reason_text: trade.reason_text || '',
+      traded_at: trade.traded_at?.split('T')[0] || '',
+    })
+  }
+
+  // 保存编辑
+  const handleSaveEdit = async (tradeId) => {
+    try {
+      const body = {}
+      if (editForm.price) body.price = parseFloat(editForm.price)
+      if (editForm.quantity) body.quantity = parseInt(editForm.quantity)
+      if (editForm.stop_loss_price !== '') body.stop_loss_price = parseFloat(editForm.stop_loss_price)
+      if (editForm.reason_text !== undefined) body.reason_text = editForm.reason_text
+      if (editForm.traded_at) body.traded_at = editForm.traded_at + 'T09:30:00'
+
+      await fetch(`${API}/api/trades/${tradeId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setEditingId(null)
+      fetchData()
+    } catch (err) {
+      console.error('编辑失败:', err)
+    }
+  }
+
+  // 删除交易
+  const handleDelete = async (tradeId) => {
+    if (!confirm('确定要删除这笔交易记录吗？删除后持仓将自动重算。')) return
+    try {
+      await fetch(`${API}/api/trades/${tradeId}`, { method: 'DELETE' })
+      fetchData()
+    } catch (err) {
+      console.error('删除失败:', err)
+    }
   }
 
   if (loading) {
@@ -132,22 +178,97 @@ export default function Dashboard() {
         ) : (
           <div className="trade-list">
             {trades.map((t) => (
-              <div key={t.id} className="trade-item">
-                <div className="trade-info">
-                  <span className={`trade-direction ${t.direction === 'BUY' ? 'buy' : 'sell'}`}>
-                    {t.direction === 'BUY' ? '买' : '卖'}
-                  </span>
-                  <span className="trade-name">{t.name || t.symbol}</span>
-                  <span className="trade-detail mono">
-                    {t.quantity}股 × ¥{t.price}
-                  </span>
-                </div>
-                <div className="trade-meta">
-                  <span className="mono">¥{t.amount?.toLocaleString()}</span>
-                  <span className="text-secondary">
-                    {t.traded_at?.split('T')[0]}
-                  </span>
-                </div>
+              <div key={t.id} className={`trade-item ${editingId === t.id ? 'editing' : ''}`}>
+                {editingId === t.id ? (
+                  /* ── 编辑模式 ── */
+                  <div className="trade-edit-form">
+                    <div className="trade-edit-row">
+                      <span className={`trade-direction ${t.direction === 'BUY' ? 'buy' : 'sell'}`}>
+                        {t.direction === 'BUY' ? '买' : '卖'}
+                      </span>
+                      <span className="trade-name">{t.name || t.symbol}</span>
+                    </div>
+                    <div className="trade-edit-fields">
+                      <label>
+                        <span>价格</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={editForm.price}
+                          onChange={e => setEditForm({...editForm, price: e.target.value})}
+                        />
+                      </label>
+                      <label>
+                        <span>数量</span>
+                        <input
+                          type="number"
+                          step="100"
+                          value={editForm.quantity}
+                          onChange={e => setEditForm({...editForm, quantity: e.target.value})}
+                        />
+                      </label>
+                      <label>
+                        <span>止损价</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={editForm.stop_loss_price}
+                          onChange={e => setEditForm({...editForm, stop_loss_price: e.target.value})}
+                        />
+                      </label>
+                      <label>
+                        <span>交易日期</span>
+                        <input
+                          type="date"
+                          value={editForm.traded_at}
+                          onChange={e => setEditForm({...editForm, traded_at: e.target.value})}
+                        />
+                      </label>
+                    </div>
+                    <div className="trade-edit-reason">
+                      <label>
+                        <span>交易原因</span>
+                        <input
+                          type="text"
+                          value={editForm.reason_text}
+                          onChange={e => setEditForm({...editForm, reason_text: e.target.value})}
+                          placeholder="交易原因"
+                        />
+                      </label>
+                    </div>
+                    <div className="trade-edit-actions">
+                      <button className="btn btn-sm btn-save" onClick={() => handleSaveEdit(t.id)}>
+                        ✓ 保存
+                      </button>
+                      <button className="btn btn-sm btn-cancel" onClick={() => setEditingId(null)}>
+                        ✕ 取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── 展示模式 ── */
+                  <>
+                    <div className="trade-info">
+                      <span className={`trade-direction ${t.direction === 'BUY' ? 'buy' : 'sell'}`}>
+                        {t.direction === 'BUY' ? '买' : '卖'}
+                      </span>
+                      <span className="trade-name">{t.name || t.symbol}</span>
+                      <span className="trade-detail mono">
+                        {t.quantity}股 × ¥{t.price}
+                      </span>
+                    </div>
+                    <div className="trade-meta">
+                      <span className="mono">¥{t.amount?.toLocaleString()}</span>
+                      <span className="text-secondary">
+                        {t.traded_at?.split('T')[0]}
+                      </span>
+                      <div className="trade-actions">
+                        <button className="btn-icon" title="编辑" onClick={() => handleStartEdit(t)}>✏️</button>
+                        <button className="btn-icon btn-icon-danger" title="删除" onClick={() => handleDelete(t.id)}>🗑️</button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
