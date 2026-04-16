@@ -30,6 +30,7 @@ class PriceMonitor:
 
     async def _monitor_loop(self):
         self._loop_count = 0
+        self._multiverse_ran_today = None  # 记录今天是否已运行
         while self._running:
             try:
                 await self._check_stop_losses()
@@ -37,6 +38,9 @@ class PriceMonitor:
                 # 每隔 20 个周期 (约 10 分钟) 跑一次低频的缠论长线日线推演 (减少API负担)
                 if self._loop_count % 20 == 0:
                     await self._check_chan_buys()
+                
+                # 多元宇宙日志：每天 20:30 自动拍快照+结算
+                await self._check_multiverse_auto_run()
                     
                 self._loop_count += 1
             except asyncio.CancelledError:
@@ -45,6 +49,31 @@ class PriceMonitor:
                 logger.error("价格监控发生异常: %s", e)
             
             await asyncio.sleep(self.interval_seconds)
+
+    async def _check_multiverse_auto_run(self):
+        """每天 20:30 后自动运行多元宇宙快照+结算（仅工作日）"""
+        from datetime import datetime
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        
+        # 避免重复运行
+        if self._multiverse_ran_today == today_str:
+            return
+        
+        # 只在 20:30~21:00 之间触发，且是工作日(周一到周五)
+        if now.weekday() >= 5:  # 周末跳过
+            return
+        if not (now.hour == 20 and now.minute >= 30):
+            return
+        
+        self._multiverse_ran_today = today_str
+        logger.info("🌌 多元宇宙日志 — 开始自动快照+结算")
+        try:
+            from server.services.multiverse_service import auto_daily_run
+            await auto_daily_run()
+            logger.info("🌌 多元宇宙日志 — 自动运行完成")
+        except Exception as e:
+            logger.error("多元宇宙自动运行失败: %s", e)
 
     def _db_get_positions(self):
         conn = get_connection()

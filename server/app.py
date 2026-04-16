@@ -9,6 +9,7 @@ from server.config import DEBUG
 from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
+from server.workers.kline_sync_worker import kline_sync
 from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
@@ -32,9 +33,11 @@ async def lifespan(app: FastAPI):
         logger.warning(f"孤儿清理失败: {e}")
 
     monitor.start()
+    kline_sync.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
+    kline_sync.stop()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
@@ -84,6 +87,9 @@ app.include_router(agent.router, prefix="/api/agent", tags=["agent engine"])
 
 from server.api import lake
 app.include_router(lake.router, prefix="/api/lake", tags=["data lake"])
+
+from server.api import multiverse
+app.include_router(multiverse.router, prefix="/api/multiverse", tags=["multiverse journal"])
 
 # Phase 2+:
 # from server.api import alerts, analysis

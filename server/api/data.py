@@ -74,3 +74,20 @@ async def query_klines(
     if not klines:
         raise HTTPException(404, f"无法获取 {symbol} 的 {interval} K 线数据")
     return {"symbol": symbol, "interval": interval, "count": len(klines), "klines": klines}
+
+
+# ── K 线数据同步 ──
+
+@router.post("/sync-klines")
+async def sync_klines():
+    """手动触发所有自选股 K 线数据同步"""
+    from server.workers.kline_sync_worker import kline_sync
+    result = await kline_sync.force_sync()
+    return result
+
+
+@router.get("/sync-status")
+async def sync_status():
+    """查询 K 线自动同步状态"""
+    from server.workers.kline_sync_worker import kline_sync
+    return kline_sync.status

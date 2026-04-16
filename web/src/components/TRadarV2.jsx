@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { API_BASE } from '../config.js'
+import MultiverseJournal from './MultiverseJournal.jsx'
 import './TRadar.css'
 
 const STATE_CONFIG = {
@@ -252,12 +253,17 @@ export default function TRadarV2({ symbol }) {
         <div className="tradar-v2-tabs" onClick={e => e.stopPropagation()}>
           <button className={`tv2-tab ${mode === 'A' ? 'active' : ''}`} onClick={() => setMode('A')}>短线</button>
           <button className={`tv2-tab ${mode === 'B' ? 'active' : ''}`} onClick={() => setMode('B')}>波段</button>
+          <button className={`tv2-tab ${mode === 'journal' ? 'active' : ''}`} onClick={() => setMode('journal')}>🌌 日志</button>
         </div>
         <span className="tradar-collapse-icon">{collapsed ? '▶' : '▼'}</span>
       </div>
 
       {!collapsed && (
         <div className="tradar-v2-body">
+          {mode === 'journal' ? (
+            <MultiverseJournal symbol={symbol} />
+          ) : (
+          <>
           {loading && <div className="tradar-loading">推算中...</div>}
 
           {/* ═══ 结构事实 + 完全分类 + 监控价位 ═══ */}
@@ -521,6 +527,8 @@ export default function TRadarV2({ symbol }) {
                 </div>
               )}
             </div>
+          )}
+          </>
           )}
         </div>
       )}

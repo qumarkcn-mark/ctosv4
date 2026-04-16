@@ -101,11 +101,48 @@ CREATE TABLE IF NOT EXISTS radar_deductions (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 多元宇宙日志（每日分类快照 + 结算）
+CREATE TABLE IF NOT EXISTS multiverse_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    
+    -- 多级别结构快照
+    structure_json TEXT NOT NULL,
+    
+    -- 各级别完全分类
+    classifications_json TEXT NOT NULL,
+    highlighted_json TEXT,
+    
+    -- 结算（次日填入）
+    outcome_json TEXT,
+    outcome_reason TEXT,
+    outcome_price REAL,
+    settlement_status TEXT DEFAULT 'PENDING',
+    settled_at DATETIME,
+    
+    -- 评分
+    day_correct INTEGER,
+    m30_correct INTEGER,
+    m5_correct INTEGER,
+    
+    -- 树结构
+    parent_id INTEGER REFERENCES multiverse_snapshots(id),
+    
+    -- AI 复盘
+    ai_review TEXT,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, symbol, snapshot_date)
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, traded_at);
 CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, is_triggered);
 CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_mv_symbol_date ON multiverse_snapshots(user_id, symbol, snapshot_date);
 """
 
 
