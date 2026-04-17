@@ -32,7 +32,7 @@ const DECISION_STYLE = {
 // 读盘引擎 V4.5：完全分类 + 结构事实 + 监控价位
 // 忠于缠论原文：不预测，只分类，为每种可能准备预案
 // ═══════════════════════════════════════════════════════════════
-function readBoard(matrix, week, nestingData) {
+function readBoard(matrix, week, nestingData, forwardAnalysis) {
   if (!matrix || matrix.length < 2) return null
   const [l1, l2, l3] = matrix
 
@@ -154,7 +154,7 @@ function readBoard(matrix, week, nestingData) {
   // ── ⑤ 区间套 ──
   const intervalNesting = nestingData || null
 
-  return { structure, classifications, watchPrices: dedupedPrices, veto, intervalNesting }
+  return { structure, classifications, watchPrices: dedupedPrices, veto, intervalNesting, forwardAnalysis: forwardAnalysis || null }
 }
 
 
@@ -194,7 +194,8 @@ export default function TRadarV2({ symbol }) {
 
   const matrix = data ? (mode === 'A' ? data.matrix_a : data.matrix_b) : []
   const nestingData = data ? (mode === 'A' ? data.interval_nesting_a : data.interval_nesting_b) : null
-  const board = readBoard(matrix, data?.week, nestingData)
+  const forwardAnalysis = data ? (mode === 'A' ? data.forward_analysis_a : data.forward_analysis_b) : null
+  const board = readBoard(matrix, data?.week, nestingData, forwardAnalysis)
 
   // AI 拟人化推演
   const handleAIDeduce = async () => {
@@ -269,32 +270,19 @@ export default function TRadarV2({ symbol }) {
           {/* ═══ 结构事实 + 完全分类 + 监控价位 ═══ */}
           {!loading && board && (
             <>
-              {/* ── 结构事实 + 关键价位（合并） ── */}
+              {/* ── 结构事实 ── */}
               <div className="board-structure">
                 {board.structure.weekContext && (
                   <div className="structure-week">{board.structure.weekContext}</div>
                 )}
-                {board.structure.levels.map((lv, i) => {
-                  // 找到属于这个级别的监控价位
-                  const lvPrices = board.watchPrices.filter(wp => wp.label.includes(lv.name))
-                  return (
-                    <div key={i} className="structure-level">
-                      <span className="structure-name">{lv.name}</span>
-                      <span className={`structure-type structure-type--${lv.zoushiType === '上涨趋势' ? 'up' : lv.zoushiType === '下跌趋势' ? 'down' : 'neutral'}`}>
-                        {lv.zoushiType}
-                      </span>
-                      {lvPrices.length > 0 && (
-                        <span className="structure-prices">
-                          {lvPrices.map((wp, j) => (
-                            <span key={j} className={`structure-price-tag ${wp.label.includes('ZG') ? 'up' : 'down'}`}>
-                              {wp.label.replace(lv.name, '')}:{wp.price.toFixed(2)}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </div>
-                  )
-                })}
+                {board.structure.levels.map((lv, i) => (
+                  <div key={i} className="structure-level">
+                    <span className="structure-name">{lv.name}</span>
+                    <span className={`structure-type structure-type--${lv.zoushiType === '上涨趋势' ? 'up' : lv.zoushiType === '下跌趋势' ? 'down' : 'neutral'}`}>
+                      {lv.zoushiType}
+                    </span>
+                  </div>
+                ))}
               </div>
 
               {/* ── 大级别否决 ── */}
@@ -315,44 +303,56 @@ export default function TRadarV2({ symbol }) {
                   </span>
                 </div>
               )}
-
-              {/* ── 完全分类 ── */}
-              <div className="board-classifications">
-                <div className="classifications-title">🔀 完全分类</div>
-                {board.classifications.map(c => (
-                  <div
-                    key={c.id}
-                    className={`classification-card ${c.highlighted ? 'highlighted' : ''} ${c.vetoed ? 'vetoed' : ''}`}
-                  >
-                    <div className="cls-header">
-                      <span className="cls-id">{c.id}</span>
-                      <span className="cls-name">{c.name}</span>
-                      {c.highlighted && <span className="cls-current">← 当下</span>}
-                    </div>
-                    <div className="cls-condition">
-                      <span className="cls-label">条件</span>
-                      <span className="cls-text">{c.condition}</span>
-                    </div>
-                    <div className="cls-action-row">
-                      <div className="cls-action">
-                        <span className="cls-label">操作</span>
-                        <span className="cls-text">{c.action}</span>
-                      </div>
-                      {c.stopLoss && (
-                        <div className="cls-stoploss">
-                          <span className="cls-sl-price">{c.stopLoss}</span>
-                          {c.stopReason && <span className="cls-sl-reason">({c.stopReason})</span>}
-                        </div>
-                      )}
-                    </div>
-                    {c.vetoed && (
-                      <div className="cls-veto-overlay">⛔ {c.vetoReason}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
             </>
           )}
+
+          {/* ═══ 前瞻推演面板（新增主体）═══ */}
+          {!loading && board?.forwardAnalysis && (
+            <div className="board-forward">
+
+              {/* ── 最近走势── */}
+              <div className="forward-section">
+                <div className="forward-section-title">📈 最近走势</div>
+                <div className="forward-body">{board.forwardAnalysis.recent_action}</div>
+              </div>
+
+              {/* ── 当下定位── */}
+              <div className="forward-section">
+                <div className="forward-section-title">📍 当下定位</div>
+                <div className="forward-body">{board.forwardAnalysis.current_position}</div>
+                <div className="forward-sub">{board.forwardAnalysis.day_context}</div>
+              </div>
+
+              {/* ── 今日完全分类── */}
+              {board.forwardAnalysis.forward_classes?.length > 0 && (
+                <div className="forward-section">
+                  <div className="forward-section-title">🔀 完全分类</div>
+                  {board.forwardAnalysis.forward_classes.map((fc, i) => (
+                    <div key={i} className={`forward-class forward-class--${i === 0 ? 'alpha' : i === 1 ? 'beta' : 'gamma'}`}>
+                      <div className="fc-header">
+                        <span className="fc-id">{fc.id}</span>
+                        <span className="fc-condition">{fc.condition}</span>
+                      </div>
+                      <div className="fc-meaning">{fc.meaning}</div>
+                      <div className="fc-action">操作：{fc.action}</div>
+                      <div className="fc-stop">
+                        <span className="fc-stop-label">止损</span>
+                        <span className="fc-stop-price">{fc.stop_loss}</span>
+                        <span className="fc-stop-reason">({fc.stop_reason})</span>
+                      </div>
+                      {fc.next_watch && (
+                        <div className="fc-next">下步：{fc.next_watch}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+
+
+            </div>
+          )}
+
 
           {/* ═══ AI 深度看盘 ═══ */}
           {!loading && matrix.length > 0 && (
@@ -398,6 +398,30 @@ export default function TRadarV2({ symbol }) {
                     <div className="thinking-position">📍 {aiReport.position}</div>
                   )}
 
+                  {/* 外部语境裁决 */}
+                  {aiReport.market_context_verdict && (
+                    <div className="market-verdict-banner">
+                      <span className="market-verdict-icon">💹</span>
+                      <span className="market-verdict-text">{aiReport.market_context_verdict}</span>
+                    </div>
+                  )}
+
+                  {/* 资金流向摘要 */}
+                  {aiReport.market_context_raw?.fund_flow?.today && (
+                    <div className="market-fund-row">
+                      <span className="fund-label">主力</span>
+                      <span className={`fund-value ${aiReport.market_context_raw.fund_flow.today.main_net_fmt?.startsWith('+') ? 'up' : 'down'}`}>
+                        {aiReport.market_context_raw.fund_flow.today.main_net_fmt}
+                      </span>
+                      <span className="fund-label">超大单</span>
+                      <span className={`fund-value ${aiReport.market_context_raw.fund_flow.today.super_net_fmt?.startsWith('+') ? 'up' : 'down'}`}>
+                        {aiReport.market_context_raw.fund_flow.today.super_net_fmt}
+                      </span>
+                      <span className="fund-label">近3日</span>
+                      <span className="fund-trend">{aiReport.market_context_raw.fund_flow['3day']?.trend}</span>
+                    </div>
+                  )}
+
                   {/* AI 的完全分类（如果AI输出了） */}
                   {aiReport.classifications && aiReport.classifications.length > 0 && (
                     <div className="ai-classifications">
@@ -424,6 +448,12 @@ export default function TRadarV2({ symbol }) {
                               </div>
                             )}
                           </div>
+                          {c.position_advice && (
+                            <div className="cls-position-advice">
+                              <span className="cls-label">仓位</span>
+                              <span className="cls-text advice-text">{c.position_advice}</span>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

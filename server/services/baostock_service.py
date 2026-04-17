@@ -175,9 +175,17 @@ def _bs_query(symbol: str, freq: str, start_date: str, end_date: str, adjustflag
                     frequency=freq,
                     adjustflag=adjustflag,
                 )
+                
+                error_code = rs.error_code
+                error_msg = rs.error_msg
+                
+                if error_code == "0":
+                    df = rs.get_data()
+                else:
+                    df = None
 
-            if rs.error_code != "0":
-                error_msg = rs.error_msg or "unknown"
+            if error_code != "0":
+                error_msg = error_msg or "unknown"
                 # 网络错误需要重置会话
                 if "网络" in error_msg or "connect" in error_msg.lower():
                     logger.warning("BaoStock 网络错误，重置会话: %s", error_msg)
@@ -186,7 +194,6 @@ def _bs_query(symbol: str, freq: str, start_date: str, end_date: str, adjustflag
                 logger.warning("查询失败 %s/%s: %s", symbol, freq, error_msg)
                 return []
 
-            df = rs.get_data()
             if df is None or df.empty:
                 return []
 

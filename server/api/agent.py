@@ -12,6 +12,7 @@ from server.prompts.czsc_agent import CZSC_SYSTEM_PROMPT
 from server.prompts.chan_radar_prompt import RADAR_SYSTEM_PROMPT
 from chan_engine.phantom import generate_phantom_klines
 from server.services.chan_service import analyze_matrix_state
+from server.services.market_context_service import get_market_context, format_context_for_prompt
 
 logger = logging.getLogger("AgentAPI")
 router = APIRouter()
@@ -52,6 +53,13 @@ async def infer_scenarios(request: InferenceRequest):
             "macro_30m": snapshot(res_30m),
             "micro_5m": snapshot(res_5m)
         }
+        
+        matrix_state = await analyze_matrix_state(symbol)
+        m5_state = next((x for x in matrix_state.get("matrix_a", []) if x.get("level") == "m5"), {})
+        
+        context["fsm_state"] = m5_state.get("state", "UNKNOWN")
+        context["zoushi_type"] = m5_state.get("zoushi_type", {})
+        context["classifications"] = m5_state.get("classifications", [])
         
         context_json = json.dumps(context, ensure_ascii=False)
         
@@ -104,30 +112,40 @@ async def infer_scenarios(request: InferenceRequest):
 @router.post("/radar_deduce")
 async def radar_deduce(request: InferenceRequest):
     """
-    接收股票代码，调用 chan_service 跑一边最新的矩阵状态（包含形态 Patterns），
-    然后发给大语言模型，生成多级别走势推理总结。
+    接收股票代码，并行获取：
+    1. 缠论矩阵状态（含甲/乙/丙前瞻推演）
+    2. 外部市场语境（资金流向、板块排名、大盘背景）
+    然后合并输入大模型，生成含仓位建议的深度推演。
     """
     symbol = request.symbol
     try:
-        # 获取矩阵（里面包含 level, state, zd, zg, patterns 等增强数据）
-        matrix_data = await analyze_matrix_state(symbol)
-        
-        # 组装 Prompt Context
+        # 并行获取结构数据 + 市场语境
+        import asyncio
+        matrix_data, market_ctx = await asyncio.gather(
+            analyze_matrix_state(symbol),
+            get_market_context(symbol),
+        )
+
+        # 格式化外部语境文字
+        ctx_text = format_context_for_prompt(market_ctx)
+
+        # 组装 Prompt Context：结构数据 + 外部语境
         context_json = json.dumps({
             "symbol": symbol,
-            "matrix_data": matrix_data
+            "matrix_data": matrix_data,
+            "market_context": ctx_text,
         }, ensure_ascii=False)
-        
-        # 直接调用底层的 infer_czsc_scenarios 接口来解析 JSON
-        # 直接调用底层的 infer_radar_deduction 接口来解析 Radar JSON
+
         result = await _llm_service.infer_radar_deduction(RADAR_SYSTEM_PROMPT, context_json)
-        
-        # 将结果入库保存 (留存推演快照)
+
+        # 把原始市场语境也附在返回里（供前端展示）
+        result["market_context_raw"] = market_ctx
+
+        # 入库保存推演快照
         try:
             conn = get_connection()
             summary = result.get("position", "")
             ai_deduction_json = json.dumps(result, ensure_ascii=False)
-
             conn.execute(
                 """INSERT INTO radar_deductions
                    (user_id, symbol, matrix_state_json, ai_summary, ai_deduction_json)
@@ -138,10 +156,9 @@ async def radar_deduce(request: InferenceRequest):
             conn.close()
         except Exception as db_e:
             logger.error(f"Failed to save radar deduction to history: {db_e}")
-            # 不阻塞主流程返回
-        
+
         return {"status": "success", "data": result}
-        
+
     except Exception as e:
         logger.error(f"Radar deduction failed for {symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"雷达推演失败: {str(e)}")

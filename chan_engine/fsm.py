@@ -5,10 +5,13 @@ from .models import Bi, ZhongShu, Direction
 class ChanState(Enum):
     UNKNOWN = "UNKNOWN"
     IN_CENTER_OSC = "IN_CENTER_OSC"               # 维持中枢震荡
-    UPWARD_LEAVING = "UPWARD_LEAVING"             # 向上离开中枢阶段 (某笔的低点已经大于中枢ZG，甚至只是当下一笔直接干出去了)
-    DOWNWARD_LEAVING = "DOWNWARD_LEAVING"         # 向下脱离跌破了中枢 (ZD)
-    WAITING_FOR_PULLBACK = "WAITING_FOR_PULLBACK" # 向上离开后，正在形成向下的一笔，准备试探支撑
+    UPWARD_LEAVING = "UPWARD_LEAVING"             # 向上离开中枢阶段
+    DOWNWARD_LEAVING = "DOWNWARD_LEAVING"         # 向下脱离跌破了中枢(ZD)
+    WAITING_FOR_PULLBACK = "WAITING_FOR_PULLBACK" # 向上离开后，等待回踩结果
     THIRD_BUY_CONFIRMED = "THIRD_BUY_CONFIRMED"   # 三买确立
+    THIRD_SELL_CONFIRMED = "THIRD_SELL_CONFIRMED" # 三卖确立（向下离开后反弹不过ZD）
+    MAJOR_WAVE_UP = "MAJOR_WAVE_UP"               # 主升浪延续（free_bis>3 持续向上）
+    MAJOR_WAVE_DOWN = "MAJOR_WAVE_DOWN"           # 主跌浪延续（free_bis>3 持续向下）
 
 class ChanFSM:
     """
@@ -115,28 +118,60 @@ class ChanFSM:
             elif len(free_bis) == 3:
                  # 有三笔：离开一笔(上)，回调一笔(下)，反转一笔(上)！
                  # 这正是三买判断最核心的回头看！
-                 b_leave = free_bis[0]
+                 b_leave  = free_bis[0]
                  b_pullback = free_bis[1]
-                 b_turn = free_bis[2]
+                 b_turn   = free_bis[2]
                  
                  # 三买定律：向下回调的一笔其最低点，死活不跌破 ZG，并且随后构成了向上的一笔
                  if b_pullback.direction == Direction.DOWN and b_pullback.low > zg:
                       return ChanState.THIRD_BUY_CONFIRMED, latest_zs
                  else:
-                      # 如果跌破了ZG，中枢级别扩张或者重新陷入震荡，那就不符合严苛的日线三买了
+                      # 如果跌破了ZG，中枢级别扩张或者重新陷入震荡
                       return ChanState.IN_CENTER_OSC, latest_zs
             else:
-                 # 脱离单边走势已经走成线段了...此时如果一直不破ZG，已经是漫天天际的上涨了
-                 return ChanState.UNKNOWN, latest_zs
+                 # free_bis > 3：主升浪延续阶段
+                 # 规则：看最后一笔的方向决定当前状态
+                 last_free = free_bis[-1]
+                 prev_free = free_bis[-2]
+                 if last_free.direction == Direction.UP:
+                     # 最后一笔向上：持续拉升中（主升浪）
+                     return ChanState.MAJOR_WAVE_UP, latest_zs
+                 else:
+                     # 最后一笔向下：回调中
+                     # 判断回调低点是否在 ZG 上方（健康的主升浪回调）
+                     if last_free.low > zg:
+                         return ChanState.WAITING_FOR_PULLBACK, latest_zs
+                     else:
+                         # 回调跌回中枢，主升浪结构破坏
+                         return ChanState.IN_CENTER_OSC, latest_zs
                  
         elif b_leave.high < latest_zs.ZD:
             # 向下脱离跌破了中枢 (ZD)
+            zd = latest_zs.ZD
             if len(free_bis) == 1:
                 return ChanState.DOWNWARD_LEAVING, latest_zs
-            else:
-                # 哪怕有反弹笔，只要最高点依然不碰 ZD，这就是三卖确认
-                # 但由于我们目前系统主要抓"第三类买点(多头)"，对空头形态统一定义为向下脱离期
+            elif len(free_bis) == 2:
+                # 有两笔（向下离开 + 向上反弹），等待反弹结果
                 return ChanState.DOWNWARD_LEAVING, latest_zs
+            elif len(free_bis) == 3:
+                # 三卖判断：向上反弹的高点不突破 ZD，形成三卖点
+                b_pullback = free_bis[1]  # 反弹笔（向上）
+                b_cont     = free_bis[2]  # 继续下行笔（向下）
+                if b_pullback.direction == Direction.UP and b_pullback.high < zd:
+                    # 反弹高点未过ZD → 三卖确认
+                    return ChanState.THIRD_SELL_CONFIRMED, latest_zs
+                else:
+                    # 反弹过了ZD → 中枢延伸或结构改变
+                    return ChanState.IN_CENTER_OSC, latest_zs
+            else:
+                # free_bis > 3：主跌浪持续延续
+                last_free = free_bis[-1]
+                if last_free.direction == Direction.DOWN:
+                    return ChanState.MAJOR_WAVE_DOWN, latest_zs
+                else:
+                    # 空头回调中
+                    return ChanState.DOWNWARD_LEAVING, latest_zs
+
         else:
             # 脱离的这几笔依然和 ZG/ZD 有纠缠，处于中心震荡衍生阶段
             return ChanState.IN_CENTER_OSC, latest_zs

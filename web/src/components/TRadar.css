@@ -1019,3 +1019,201 @@
   margin-top: 8px;
 }
 
+/* ═══════════════════════════════════════════════
+   前瞻推演面板 — 最近走势 + 当下定位 + 完全分类
+   ═══════════════════════════════════════════════ */
+
+.board-forward {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+}
+
+.forward-section {
+  background: var(--bg-elevated, #1a1b24);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-radius: var(--radius-md, 6px);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.forward-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary, #5a5c66);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 2px;
+}
+
+.forward-body {
+  font-size: 12px;
+  color: var(--text-primary, #e8e9ed);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.forward-sub {
+  font-size: 11px;
+  color: var(--text-secondary, #8b8d97);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+/* ── 完全分类卡片（甲/乙/丙）── */
+.forward-class {
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-left-width: 3px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  transition: background 0.15s;
+}
+
+.forward-class--alpha { border-left-color: #22c55e; }
+.forward-class--beta  { border-left-color: #f0b90b; }
+.forward-class--gamma { border-left-color: #ef4444; }
+
+.forward-class--alpha:hover { background: rgba(34,197,94,0.04); }
+.forward-class--beta:hover  { background: rgba(240,185,11,0.04); }
+.forward-class--gamma:hover { background: rgba(239,68,68,0.04); }
+
+.fc-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.fc-id {
+  font-size: 12px;
+  font-weight: 800;
+  min-width: 20px;
+}
+
+.forward-class--alpha .fc-id { color: #22c55e; }
+.forward-class--beta  .fc-id { color: #f0b90b; }
+.forward-class--gamma .fc-id { color: #ef4444; }
+
+.fc-condition {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #e8e9ed);
+  line-height: 1.4;
+}
+
+.fc-meaning {
+  font-size: 11px;
+  color: var(--text-secondary, #8b8d97);
+  line-height: 1.4;
+  padding-left: 26px;
+}
+
+.fc-action {
+  font-size: 11px;
+  color: var(--text-primary, #e8e9ed);
+  padding-left: 26px;
+  line-height: 1.4;
+}
+
+.fc-stop {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 26px;
+  margin-top: 2px;
+}
+
+.fc-stop-label {
+  font-size: 10px;
+  color: var(--text-tertiary, #5a5c66);
+  font-weight: 600;
+}
+
+.fc-stop-price {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ef4444;
+  font-family: var(--font-mono, monospace);
+}
+
+.fc-stop-reason {
+  font-size: 10px;
+  color: var(--text-tertiary, #5a5c66);
+}
+
+.fc-next {
+  font-size: 10px;
+  color: var(--text-tertiary, #5a5c66);
+  padding-left: 26px;
+  line-height: 1.4;
+  font-style: italic;
+}
+
+/* ── 日线止损红线横幅 ── */
+.forward-stopline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.35);
+  border-radius: var(--radius-sm, 4px);
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ef4444;
+}
+
+.stopline-price {
+  font-size: 14px;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+}
+
+/* ── 外部市场语境 ── */
+.market-verdict-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(139,92,246,0.08));
+  border: 1px solid rgba(139,92,246,0.3);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 8px 0;
+}
+.market-verdict-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+.market-verdict-text { font-size: 12.5px; color: #c4b5fd; line-height: 1.5; }
+
+.market-fund-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+  padding: 7px 12px;
+  margin: 6px 0 10px;
+  flex-wrap: wrap;
+}
+.fund-label { font-size: 11px; color: #666; flex-shrink: 0; }
+.fund-value { font-size: 12.5px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+.fund-value.up   { color: #f87171; }
+.fund-value.down { color: #34d399; }
+.fund-trend { font-size: 11.5px; color: #a78bfa; margin-left: 4px; }
+
+.cls-position-advice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.advice-text { color: #fbbf24 !important; font-style: italic; }
