@@ -1,6 +1,6 @@
 import './PositionList.css'
 
-export default function PositionList({ positions }) {
+export default function PositionList({ positions, onViewInChan }) {
   if (!positions || positions.length === 0) {
     return (
       <div className="position-empty">
@@ -30,6 +30,15 @@ export default function PositionList({ positions }) {
             <div className="position-header">
               <span className="position-name">{p.name || p.symbol}</span>
               <span className="position-code mono text-secondary">{p.symbol}</span>
+              {onViewInChan && (
+                <button
+                  className="pos-view-btn"
+                  title="缢论看盘"
+                  onClick={() => onViewInChan(p.symbol, p.name)}
+                >
+                  🔮 看盘
+                </button>
+              )}
             </div>
 
             <div className="position-stats">

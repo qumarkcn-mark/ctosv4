@@ -1,6 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE } from '../config.js'
+import VoiceInput from './VoiceInput.jsx'
 import './TradeForm.css'
+
+// ── A股手续费计算（与后端保持一致）──
+function calcFee(price, quantity, direction, symbol) {
+  if (!price || !quantity || price <= 0 || quantity <= 0) return null
+  const amount = price * quantity
+  const commission = Math.max(amount * 0.0005, 5)   // 佣金万5，最低5元
+  const transferFee = amount * 0.00001               // 过户费万0.1
+  const stampDuty = direction === 'SELL' ? amount * 0.001 : 0  // 印花税仅卖出
+  return {
+    commission: commission.toFixed(2),
+    transferFee: transferFee.toFixed(2),
+    stampDuty: stampDuty.toFixed(2),
+    total: (commission + transferFee + stampDuty).toFixed(2),
+  }
+}
+
+// 判断是否科创板/北交所（最小交易单位不是100股）
+function isAStockSpecial(symbol) {
+  const code = symbol.toLowerCase().replace(/^(sh|sz)/, '')
+  return code.startsWith('688') || (code.startsWith('8') && !code.startsWith('68'))
+}
 
 export default function TradeForm({ onSubmitted }) {
   const [form, setForm] = useState({
@@ -14,6 +36,7 @@ export default function TradeForm({ onSubmitted }) {
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [t1Warning, setT1Warning] = useState(false)  // T+1 提示
 
   // ── 股票搜索相关 ──
   const [searchQuery, setSearchQuery] = useState('')
@@ -39,6 +62,24 @@ export default function TradeForm({ onSubmitted }) {
     }
   }, [])
 
+  // 当方向切换或股票变化时，重置T+1警告并重新检测
+  useEffect(() => {
+    setT1Warning(false)
+    if (form.direction === 'SELL' && form.symbol) {
+      // 查当日是否有买入记录（前端预检）
+      fetch(`${API_BASE}/api/trades?symbol=${encodeURIComponent(form.symbol)}&direction=BUY&limit=5`)
+        .then(r => r.json())
+        .then(data => {
+          const today = new Date().toISOString().split('T')[0]
+          const hasTodayBuy = (data.trades || []).some(t =>
+            t.traded_at?.startsWith(today)
+          )
+          setT1Warning(hasTodayBuy)
+        })
+        .catch(() => {})
+    }
+  }, [form.direction, form.symbol])
+
   // 防抖搜索
   const doSearch = useCallback((q) => {
     if (!q || q.length < 1) {
@@ -62,7 +103,6 @@ export default function TradeForm({ onSubmitted }) {
     const val = e.target.value
     setSearchQuery(val)
     setActiveIdx(-1)
-    // 清除已选中的股票（用户重新输入）
     if (form.symbol) {
       setForm({ ...form, symbol: '', name: '' })
     }
@@ -135,14 +175,38 @@ export default function TradeForm({ onSubmitted }) {
     setError('')
   }
 
+  // ── 语音填充回调 ──
+  const handleVoiceFill = (parsed) => {
+    setForm(prev => ({
+      ...prev,
+      direction: parsed.direction || prev.direction,
+      name: parsed.name || prev.name,
+      price: parsed.price ? String(parsed.price) : prev.price,
+      quantity: parsed.quantity ? String(parsed.quantity) : prev.quantity,
+      // symbol 需要用户在搜索框确认，不直接覆盖（symbol_hint 仅参考）
+    }))
+    // 如果有股票名称提示，填入搜索框让用户确认
+    if (parsed.name && !form.symbol) {
+      setSearchQuery(parsed.name)
+      doSearch(parsed.name)
+    }
+    setError('')
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
 
-    // 校验
+    // 前端校验
     if (!form.symbol.trim()) return setError('请先搜索并选择一只股票')
     if (!form.price || parseFloat(form.price) <= 0) return setError('请输入有效价格')
     if (!form.quantity || parseInt(form.quantity) <= 0) return setError('请输入有效数量')
+
+    // A股100手校验
+    const qty = parseInt(form.quantity)
+    if (!isAStockSpecial(form.symbol) && qty % 100 !== 0) {
+      return setError(`A股最小交易单位为100股（1手），当前数量 ${qty} 不符合规格`)
+    }
 
     setSubmitting(true)
     try {
@@ -171,6 +235,7 @@ export default function TradeForm({ onSubmitted }) {
         price: '', quantity: '', reason_text: '', reason_category: '',
       })
       setSearchQuery('')
+      setT1Warning(false)
       onSubmitted?.()
     } catch (err) {
       setError(err.message)
@@ -179,11 +244,18 @@ export default function TradeForm({ onSubmitted }) {
     }
   }
 
-  const amount = (parseFloat(form.price) || 0) * (parseInt(form.quantity) || 0)
+  const price = parseFloat(form.price) || 0
+  const quantity = parseInt(form.quantity) || 0
+  const amount = price * quantity
+  const fee = calcFee(price, quantity, form.direction, form.symbol || '')
 
   return (
     <form className="trade-form" onSubmit={handleSubmit}>
-      <h3 className="form-title">录入交易</h3>
+      <div className="form-title-row">
+        <h3 className="form-title">录入交易</h3>
+        {/* 语音录入 */}
+        <VoiceInput onFill={handleVoiceFill} />
+      </div>
 
       {/* 买卖方向 */}
       <div className="direction-toggle">
@@ -202,6 +274,14 @@ export default function TradeForm({ onSubmitted }) {
           卖出
         </button>
       </div>
+
+      {/* T+1 警告横幅 */}
+      {t1Warning && (
+        <div className="t1-warning-banner">
+          ⚠ <strong>T+1 提示</strong>：今日已买入 <strong>{form.name || form.symbol}</strong>，
+          按A股规则当日买入不可当日卖出，请注意风险。
+        </div>
+      )}
 
       {/* 股票搜索 — 代码+名称合一 */}
       <div className="form-field">
@@ -272,12 +352,18 @@ export default function TradeForm({ onSubmitted }) {
           />
         </div>
         <div className="form-field">
-          <label>成交数量</label>
+          <label>
+            成交数量
+            {form.symbol && isAStockSpecial(form.symbol)
+              ? <span className="field-hint">（最小1股）</span>
+              : <span className="field-hint">（最小100股）</span>
+            }
+          </label>
           <input
             className="input mono"
             name="quantity"
             type="number"
-            step="100"
+            step={form.symbol && isAStockSpecial(form.symbol) ? 1 : 100}
             value={form.quantity}
             onChange={handleChange}
             placeholder="100"
@@ -290,6 +376,23 @@ export default function TradeForm({ onSubmitted }) {
           </div>
         </div>
       </div>
+
+      {/* 手续费预估 */}
+      {fee && (
+        <div className="fee-estimate">
+          <span className="fee-label">预计费用</span>
+          <span className="fee-item">佣金 ¥{fee.commission}</span>
+          <span className="fee-sep">+</span>
+          <span className="fee-item">过户费 ¥{fee.transferFee}</span>
+          {parseFloat(fee.stampDuty) > 0 && (
+            <>
+              <span className="fee-sep">+</span>
+              <span className="fee-item fee-stamp">印花税 ¥{fee.stampDuty}</span>
+            </>
+          )}
+          <span className="fee-total">= 共 ¥{fee.total}</span>
+        </div>
+      )}
 
       {/* 交易原因 */}
       <div className="form-row">

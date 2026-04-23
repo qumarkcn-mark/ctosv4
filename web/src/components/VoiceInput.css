@@ -1,0 +1,217 @@
+/* ── 自然语言快速录入组件 ── */
+
+.voice-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 240px;
+}
+
+/* ── NLP 输入栏 ── */
+.nlp-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.nlp-input-bar:focus-within {
+  border-color: var(--action-gold);
+  box-shadow: 0 0 0 2px rgba(240, 185, 11, 0.1);
+}
+
+.nlp-input-bar.parsing {
+  border-color: var(--action-gold);
+  opacity: 0.8;
+}
+
+.nlp-input-bar.done {
+  border-color: #22c55e;
+}
+
+.nlp-input-bar.error {
+  border-color: #ef4444;
+}
+
+.nlp-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.nlp-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-body);
+  min-width: 0;
+}
+
+.nlp-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.nlp-input:disabled {
+  opacity: 0.6;
+}
+
+/* 解析按钮 */
+.nlp-send-btn {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(240, 185, 11, 0.35);
+  background: rgba(240, 185, 11, 0.08);
+  color: var(--action-gold);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.nlp-send-btn:hover {
+  background: rgba(240, 185, 11, 0.16);
+  border-color: var(--action-gold);
+}
+
+/* spinner */
+.nlp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--action-gold);
+  border-radius: 50%;
+  animation: nlpSpin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes nlpSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* 错误提示 */
+.nlp-error {
+  font-size: 12px;
+  color: #ef4444;
+  padding: 2px 4px;
+}
+
+/* ── 解析结果确认卡片 ── */
+.voice-result-card {
+  background: var(--bg-surface);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  border-left: 3px solid #22c55e;
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.voice-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.voice-result-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.voice-result-conf {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.voice-result-body {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.voice-dir-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.voice-dir-badge.buy {
+  background: var(--up-bg);
+  color: var(--up);
+}
+
+.voice-dir-badge.sell {
+  background: var(--down-bg);
+  color: var(--down);
+}
+
+.voice-result-name {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.voice-result-field {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.voice-result-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: 2px;
+}
+
+.btn-voice-confirm {
+  padding: 4px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-voice-confirm:hover {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.btn-voice-cancel {
+  padding: 4px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-voice-cancel:hover {
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}

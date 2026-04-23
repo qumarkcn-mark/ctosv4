@@ -26,6 +26,10 @@ class TradeCreate(BaseModel):
     trend_direction: Optional[str] = Field(None, description="大级别方向")
     source: str = Field("MANUAL", description="来源: VOICE/MANUAL/CSV_IMPORT")
     traded_at: Optional[str] = Field(None, description="成交时间, ISO格式")
+    # 入场战法（BUY 时可传）：战法一 / 战法二 / 未知
+    strategy_type: Optional[str] = Field(None, description="入场战法：战法一/战法二/未知")
+    # 入场时5分中枢ZG（BUY 时可传，用于结构失效判断）
+    m5_entry_zg: Optional[float] = Field(None, description="入场时5分中枢ZG价格")
 
 
 class TradeFromText(BaseModel):
@@ -54,33 +58,111 @@ class TradeResponse(BaseModel):
 
 # ── 路由 ──
 
+def _calc_fee(price: float, quantity: int, direction: str, symbol: str) -> dict:
+    """计算A股交易费用（佣金万5 + 过户费0.001% + 卖出印花税0.1%）"""
+    amount = price * quantity
+    # 佣金：万分之5，最低5元
+    commission = max(amount * 0.0005, 5.0)
+    # 过户费：万分之1（沪市收，深市免；此处统一收取）
+    transfer_fee = amount * 0.00001
+    # 印花税：仅卖出收0.1%
+    stamp_duty = amount * 0.001 if direction == "SELL" else 0.0
+    total = commission + transfer_fee + stamp_duty
+    return {
+        "commission": round(commission, 2),
+        "transfer_fee": round(transfer_fee, 2),
+        "stamp_duty": round(stamp_duty, 2),
+        "total_fee": round(total, 2),
+    }
+
+
+def _is_astock_special(symbol: str) -> bool:
+    """科创板(688xx)或北交所(8xxxxx)，最小交易单位非100股"""
+    code = symbol.lower().removeprefix("sh").removeprefix("sz")
+    return code.startswith("688") or (code.startswith("8") and not code.startswith("68"))
+
+
 @router.post("", response_model=TradeResponse)
 async def create_trade(trade: TradeCreate, user_id: int = 1):
-    """创建一笔交易记录"""
+    """创建一笔交易记录（含A股合规校验）"""
     from fastapi.concurrency import run_in_threadpool
 
-    # 校验方向
+    # ── 校验方向 ──
     if trade.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "direction 必须是 BUY 或 SELL")
 
-    # 校验原因分类
+    # ── 校验原因分类 ──
     valid_categories = ("CHAN_SIGNAL", "FRIEND_TIP", "FEELING", "OTHER", None)
     if trade.reason_category not in valid_categories:
         raise HTTPException(400, f"reason_category 必须是 {valid_categories}")
 
-    # 计算金额
+    # ── A股：数量100手校验（科创板/北交所放开）──
+    if not _is_astock_special(trade.symbol):
+        if trade.quantity % 100 != 0:
+            raise HTTPException(
+                400,
+                f"A股最小交易单位为100股（1手），当前数量 {trade.quantity} 不符合规格"
+            )
+
+    # ── SELL 校验：持仓必须存在且不超量 ──
+    if trade.direction == "SELL":
+        def _check_position():
+            conn = get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT quantity FROM positions WHERE user_id=? AND symbol=? AND quantity>0",
+                    (user_id, trade.symbol),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+        pos = await run_in_threadpool(_check_position)
+        stock_label = trade.name or trade.symbol
+        if pos is None:
+            raise HTTPException(400, f"您未持有 {stock_label}，无法卖出")
+        if trade.quantity > pos["quantity"]:
+            raise HTTPException(
+                400,
+                f"持仓仅 {pos['quantity']} 股，卖出数量 {trade.quantity} 超出持仓"
+            )
+
+    # ── 计算金额 ──
     amount = trade.price * trade.quantity
 
-    # 成交时间
+    # ── 成交时间 ──
     traded_at = trade.traded_at or datetime.now().isoformat()
 
-    # 自动计算止损价 (武器2：止损看门狗) — 需要 await 异步网络请求
+    # ── T+1 软校验：查当日是否已买入该标的 ──
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    def _check_t1():
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                """SELECT COUNT(*) as cnt FROM trades
+                   WHERE user_id=? AND symbol=? AND direction='BUY'
+                   AND date(traded_at)=?""",
+                (user_id, trade.symbol, today_str),
+            ).fetchone()
+            return row["cnt"] > 0
+        finally:
+            conn.close()
+
+    t1_warning = False
+    if trade.direction == "SELL":
+        t1_warning = await run_in_threadpool(_check_t1)
+
+    # ── 手续费计算 ──
+    fee_info = _calc_fee(trade.price, trade.quantity, trade.direction, trade.symbol)
+
+    # ── 自动计算止损价（ATR看门狗）──
     stop_loss_price = trade.stop_loss_price
     if stop_loss_price is None:
         from server.services.atr_service import calculate_stop_loss
         stop_loss_price = await calculate_stop_loss(trade.symbol, trade.price, trade.direction)
 
-    # 同步 DB 操作隔离到线程池
+    # ── DB 写入（线程池）──
     def _db_insert():
         conn = get_connection()
         try:
@@ -101,11 +183,39 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
             )
             trade_id = cursor.lastrowid
             recalculate_position(conn, user_id, trade.symbol)
+
+            # ── 入场战法持久化（仅 BUY，且只在首次建仓或战法未知时写入）──
+            if trade.direction == "BUY":
+                _st = trade.strategy_type
+                _zg = trade.m5_entry_zg
+                _today = datetime.now().strftime("%Y-%m-%d")
+                if _st and _st != "未知":
+                    conn.execute(
+                        """UPDATE positions
+                           SET strategy_type = ?,
+                               entry_date    = COALESCE(entry_date, ?),
+                               m5_entry_zg   = COALESCE(m5_entry_zg, ?)
+                           WHERE user_id = ? AND symbol = ?
+                             AND (strategy_type IS NULL OR strategy_type = '未知')""",
+                        (_st, _today, _zg, user_id, trade.symbol),
+                    )
+                else:
+                    # 战法未传但 entry_date 还没写 → 至少记录入场日期
+                    conn.execute(
+                        """UPDATE positions
+                           SET entry_date  = COALESCE(entry_date, ?)
+                           WHERE user_id = ? AND symbol = ?""",
+                        (_today, user_id, trade.symbol),
+                    )
+
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM trades WHERE id = ?", (trade_id,)
             ).fetchone()
-            return dict(row)
+            result = dict(row)
+            result["fee_info"] = fee_info
+            result["t1_warning"] = t1_warning
+            return result
         finally:
             conn.close()
 
@@ -159,13 +269,13 @@ def list_trades(
 # 注意: /from-text 必须在 /{trade_id} 之前注册，否则会被路径参数捕获
 @router.post("/from-text")
 async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
-    """从文本提取交易信息 (Phase 3: LLM 提取)"""
-    # Phase 3 实现: 调用 LLM 提取结构化数据
-    # 目前返回 placeholder
+    """从自然语言/语音文本提取交易信息（调用 DeepSeek V3 解析）"""
+    from server.services.llm_service import LLMService
+    svc = LLMService()
+    result = await svc.parse_trade_from_text(req.text)
     return {
-        "status": "not_implemented",
-        "message": "语音提取功能将在 Phase 3 实现",
-        "raw_text": req.text,
+        "status": "ok",
+        "parsed": result,
     }
 
 

@@ -11,7 +11,7 @@ import os
 import sqlite3
 from typing import Optional
 
-from server.db.kline_lake import LAKE_PATH, get_lake_connection
+from server.db.kline_lake import LAKE_PATH, get_lake_connection, get_lake_write_connection
 
 logger = logging.getLogger(__name__)
 
@@ -57,54 +57,52 @@ def scan_lake_overview() -> dict:
                 if not os.path.exists(os.path.join(lake_dir, base_db)):
                     orphan_count += 1
 
+    # 读操作：使用线程本地复用连接，不 close
     conn = get_lake_connection()
-    try:
-        # 获取各股票各周期的统计
-        cursor = conn.execute("""
-            SELECT symbol, freq, COUNT(*) as cnt, MIN(date) as first_date, MAX(date) as last_date
-            FROM klines
-            GROUP BY symbol, freq
-            ORDER BY symbol, freq
-        """)
+    # 获取各股票各周期的统计
+    cursor = conn.execute("""
+        SELECT symbol, freq, COUNT(*) as cnt, MIN(date) as first_date, MAX(date) as last_date
+        FROM klines
+        GROUP BY symbol, freq
+        ORDER BY symbol, freq
+    """)
 
-        stock_map = {}
-        total_bars = 0
+    stock_map = {}
+    total_bars = 0
 
-        for row in cursor.fetchall():
-            sym = row["symbol"]
-            freq = row["freq"]
-            cnt = row["cnt"]
-            total_bars += cnt
+    for row in cursor.fetchall():
+        sym = row["symbol"]
+        freq = row["freq"]
+        cnt = row["cnt"]
+        total_bars += cnt
 
-            if sym not in stock_map:
-                stock_map[sym] = {"symbol": sym, "total_bars": 0, "periods": {}}
+        if sym not in stock_map:
+            stock_map[sym] = {"symbol": sym, "total_bars": 0, "periods": {}}
 
-            stock_map[sym]["total_bars"] += cnt
-            stock_map[sym]["periods"][freq] = {
-                "count": cnt,
-                "first": row["first_date"],
-                "last": row["last_date"],
-            }
-
-        # 补全空周期
-        for sym_data in stock_map.values():
-            for freq in FREQ_ORDER:
-                if freq not in sym_data["periods"]:
-                    sym_data["periods"][freq] = {"count": 0}
-
-        # 按总条数降序
-        stocks = sorted(stock_map.values(), key=lambda s: s["total_bars"], reverse=True)
-
-        return {
-            "total_stocks": len(stocks),
-            "total_bars": total_bars,
-            "disk_mb": round(disk_bytes / 1024 / 1024, 1),
-            "orphan_files": orphan_count,
-            "freqs": FREQ_ORDER,
-            "stocks": stocks,
+        stock_map[sym]["total_bars"] += cnt
+        stock_map[sym]["periods"][freq] = {
+            "count": cnt,
+            "first": row["first_date"],
+            "last": row["last_date"],
         }
-    finally:
-        conn.close()
+
+    # 补全空周期
+    for sym_data in stock_map.values():
+        for freq in FREQ_ORDER:
+            if freq not in sym_data["periods"]:
+                sym_data["periods"][freq] = {"count": 0}
+
+    # 按总条数降序
+    stocks = sorted(stock_map.values(), key=lambda s: s["total_bars"], reverse=True)
+
+    return {
+        "total_stocks": len(stocks),
+        "total_bars": total_bars,
+        "disk_mb": round(disk_bytes / 1024 / 1024, 1),
+        "orphan_files": orphan_count,
+        "freqs": FREQ_ORDER,
+        "stocks": stocks,
+    }
 
 
 def cleanup_orphan_files() -> dict:
@@ -139,7 +137,8 @@ def delete_stock_data(symbol: str, freq: Optional[str] = None) -> dict:
         symbol: 股票代码 (如 sh.600519)
         freq: 周期 (如 "day")。None=删除该股票所有周期
     """
-    conn = get_lake_connection()
+    # 写操作：使用独立短连接，必须 close
+    conn = get_lake_write_connection()
     try:
         if freq:
             conn.execute("DELETE FROM klines WHERE symbol = ? AND freq = ?", (symbol, freq))
@@ -159,17 +158,14 @@ def delete_stock_data(symbol: str, freq: Optional[str] = None) -> dict:
 
 
 def get_sync_status() -> list[dict]:
-    """获取同步元信息：各股票各周期的最后同步日期"""
+    """获取同步元信息：各股票各周期的最后同步日期（只读，复用线程本地连接）"""
     conn = get_lake_connection()
-    try:
-        cursor = conn.execute("""
-            SELECT symbol, freq, last_date, updated_at
-            FROM kline_sync_meta
-            ORDER BY updated_at DESC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
-    finally:
-        conn.close()
+    cursor = conn.execute("""
+        SELECT symbol, freq, last_date, updated_at
+        FROM kline_sync_meta
+        ORDER BY updated_at DESC
+    """)
+    return [dict(row) for row in cursor.fetchall()]
 
 def trigger_manual_fetch(
     symbol: str,
@@ -194,7 +190,8 @@ def trigger_manual_fetch(
                 # 强制刷新：先清除旧数据和同步标记
                 if force_refresh:
                     logger.info("[ManualFetch] 强制刷新 %s/%s，清除旧数据...", symbol, freq)
-                    conn = get_lake_connection()
+                    # 写操作：独立短连接
+                    conn = get_lake_write_connection()
                     try:
                         conn.execute("DELETE FROM kline_sync_meta WHERE symbol = ? AND freq = ?", (symbol, freq))
                         conn.execute("DELETE FROM klines WHERE symbol = ? AND freq = ?", (symbol, freq))

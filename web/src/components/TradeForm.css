@@ -6,10 +6,80 @@
   gap: var(--space-4);
 }
 
+/* ── 标题行（含语音按钮）── */
+.form-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
 .form-title {
   font-size: var(--text-lg);
   font-weight: 600;
   color: var(--action-gold);
+  margin: 0;
+  padding-top: 6px;
+}
+
+/* ── T+1 警告横幅 ── */
+.t1-warning-banner {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-left: 3px solid var(--action-gold);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--action-gold);
+  line-height: 1.5;
+}
+
+/* ── 手续费预估 ── */
+.fee-estimate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+}
+
+.fee-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-right: 2px;
+}
+
+.fee-item {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.fee-stamp {
+  color: #f97316;
+}
+
+.fee-sep {
+  color: var(--text-tertiary);
+}
+
+.fee-total {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-left: 4px;
+}
+
+/* ── 数量字段提示 ── */
+.field-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  margin-left: 4px;
 }
 
 /* ── 方向切换 ── */

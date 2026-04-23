@@ -53,13 +53,29 @@ def list_positions(user_id: int = 1):
 async def position_overview(user_id: int = 1):
     """仓位透视镜 — 武器 1 的数据源"""
     from server.services.analysis.concentration import analyze_concentration
+    from datetime import date
     res = await analyze_concentration(user_id)
+
+    # 查询今日买入的标的（T+1锁定列表）
+    today_str = date.today().isoformat()
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT t.symbol, t.name FROM trades t
+               WHERE t.user_id=? AND t.direction='BUY' AND date(t.traded_at)=?""",
+            (user_id, today_str),
+        ).fetchall()
+        t1_locked = [{"symbol": r["symbol"], "name": r["name"] or r["symbol"]} for r in rows]
+    finally:
+        conn.close()
+
     return {
         "total_value": res["total_market_value"],
         "position_count": len(res["positions"]),
         "health_score": res["health_score"],
         "positions": res["positions"],
         "warnings": res["warnings"],
+        "t1_locked": t1_locked,
     }
 
 

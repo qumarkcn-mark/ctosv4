@@ -7,12 +7,22 @@
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
 from server.config import DB_PATH
 
 logger = logging.getLogger(__name__)
+
+# ── 线程本地连接池 ─────────────────────────────────────────────────────────────
+# 问题：每次 get_lake_connection() 都新建连接，并发线程同时执行
+#       PRAGMA journal_mode=WAL 时，SQLite 需要创建 -shm 共享内存映射文件。
+#       多线程同时首次打开 430MB 数据库，-shm 创建存在竞态，导致 "disk I/O error"。
+# 方案：每个线程复用同一个连接（thread-local），只在首次创建时进行 WAL 初始化。
+#       写入时（upsert_klines）仍使用独立短连接，确保线程安全。
+_thread_local = threading.local()
+_wal_init_lock = threading.Lock()  # 串行化首次 WAL 初始化，消除竞态
 
 # K 线数据湖专属路径（与主库分离，方便单独维护/迁移）
 LAKE_PATH = str(Path(DB_PATH).parent / "kline_lake.db")
@@ -47,23 +57,65 @@ CREATE INDEX IF NOT EXISTS idx_klines_symbol_freq_date ON klines(symbol, freq, d
 """
 
 
-def get_lake_connection() -> sqlite3.Connection:
-    """获取数据湖连接，WAL 模式加速并发读"""
+def _make_fresh_connection(wal: bool = True) -> sqlite3.Connection:
+    """创建一个全新的数据湖连接，并完成 WAL / PRAGMA 初始化。"""
     Path(LAKE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(LAKE_PATH)
+    conn = sqlite3.connect(LAKE_PATH, check_same_thread=False, timeout=15)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")   # 写入性能提升，安全性接受
-    conn.execute("PRAGMA cache_size=-65536")    # 64MB query cache
+    if wal:
+        try:
+            # 首次 WAL 初始化时持锁，防止多线程同时创建 -shm 文件产生竞态
+            with _wal_init_lock:
+                conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            # WAL 在某些文件系统（网络盘/沙箱挂载）不可用，降级为 DELETE
+            logger.warning("kline_lake WAL 模式不可用，降级为 DELETE: %s", exc)
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE")
+            except Exception:
+                pass
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-65536")   # 64MB query cache
     return conn
+
+
+def get_lake_connection() -> sqlite3.Connection:
+    """
+    获取当前线程的数据湖连接（线程本地复用）。
+
+    每个工作线程只在首次调用时创建连接，后续复用，避免并发
+    PRAGMA journal_mode=WAL 时的 -shm 文件竞态（disk I/O error）。
+    """
+    conn: Optional[sqlite3.Connection] = getattr(_thread_local, "lake_conn", None)
+    if conn is not None:
+        # 检查连接是否仍有效（被关闭或数据库文件被替换）
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            pass  # 连接已失效，重建
+
+    conn = _make_fresh_connection()
+    _thread_local.lake_conn = conn
+    return conn
+
+
+def get_lake_write_connection() -> sqlite3.Connection:
+    """
+    获取用于写入的独立短连接（不复用线程本地连接）。
+    写操作完成后调用方必须 commit() + close()。
+    """
+    return _make_fresh_connection()
 
 
 def init_lake():
     """初始化 K 线数据湖 schema"""
-    conn = get_lake_connection()
-    conn.executescript(LAKE_SCHEMA)
-    conn.commit()
-    conn.close()
+    conn = get_lake_write_connection()
+    try:
+        conn.executescript(LAKE_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("K线数据湖已初始化: %s", LAKE_PATH)
 
 
@@ -90,62 +142,57 @@ def query_klines(
     Returns:
         [{"date": "2024-01-02", "open": 1800.0, "high": ..., "low": ..., "close": ..., "volume": ...}, ...]
     """
+    # 使用线程本地复用连接（读操作，不 close）
     conn = get_lake_connection()
-    try:
-        conditions = ["symbol = ?", "freq = ?", "adjustflag = ?"]
-        params: list = [symbol, freq, adjustflag]
+    conditions = ["symbol = ?", "freq = ?", "adjustflag = ?"]
+    params: list = [symbol, freq, adjustflag]
 
-        if start_date:
-            conditions.append("date >= ?")
-            params.append(start_date)
-        if end_date:
-            conditions.append("date <= ?")
-            params.append(end_date)
+    if start_date:
+        conditions.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        params.append(end_date)
 
-        where_clause = " AND ".join(conditions)
-        sql = f"""
-            SELECT date, open, high, low, close, volume, amount
-            FROM klines
-            WHERE {where_clause}
-            ORDER BY date DESC
-            LIMIT {limit}
-        """
-        cursor = conn.execute(sql, params)
-        rows = cursor.fetchall()
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT date, open, high, low, close, volume, amount
+        FROM klines
+        WHERE {where_clause}
+        ORDER BY date DESC
+        LIMIT {limit}
+    """
+    cursor = conn.execute(sql, params)
+    rows = cursor.fetchall()
 
-        # 反转为正序（最旧在前）
-        result = [
-            {
-                "date": row["date"],
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": row["close"],
-                "volume": row["volume"],
-                "amount": row["amount"],
-            }
-            for row in reversed(rows)
-        ]
-        return result
-    finally:
-        conn.close()
+    # 反转为正序（最旧在前）
+    result = [
+        {
+            "date": row["date"],
+            "open": row["open"],
+            "high": row["high"],
+            "low": row["low"],
+            "close": row["close"],
+            "volume": row["volume"],
+            "amount": row["amount"],
+        }
+        for row in reversed(rows)
+    ]
+    return result
 
 
 def get_last_sync_date(symbol: str, freq: str) -> Optional[str]:
-    """查询某只股票某级别最后同步的日期，用于增量更新"""
+    """查询某只股票某级别最后同步的日期，用于增量更新（线程本地复用连接）"""
     conn = get_lake_connection()
-    try:
-        cursor = conn.execute(
-            "SELECT last_date FROM kline_sync_meta WHERE symbol = ? AND freq = ?",
-            (symbol, freq),
-        )
-        row = cursor.fetchone()
-        return row["last_date"] if row else None
-    finally:
-        conn.close()
+    cursor = conn.execute(
+        "SELECT last_date FROM kline_sync_meta WHERE symbol = ? AND freq = ?",
+        (symbol, freq),
+    )
+    row = cursor.fetchone()
+    return row["last_date"] if row else None
 
 
-def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2") -> int:
+def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2", update_meta: bool = True) -> int:
     """
     增量写入 K 线数据（ON CONFLICT REPLACE）。
     返回实际写入的行数。
@@ -155,7 +202,8 @@ def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2
     if not rows:
         return 0
 
-    conn = get_lake_connection()
+    # 写入使用独立短连接（不污染线程本地读连接的事务状态）
+    conn = get_lake_write_connection()
     try:
         data = [
             (symbol, freq, r["date"], r["open"], r["high"], r["low"],
@@ -173,13 +221,14 @@ def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2
 
         # 更新 sync_meta
         last_date = max(r["date"] for r in rows)
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO kline_sync_meta (symbol, freq, last_date)
-            VALUES (?, ?, ?)
-            """,
-            (symbol, freq, last_date),
-        )
+        if update_meta:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO kline_sync_meta (symbol, freq, last_date)
+                VALUES (?, ?, ?)
+                """,
+                (symbol, freq, last_date),
+            )
         conn.commit()
         logger.debug("upsert %d klines for %s/%s, last_date=%s", len(data), symbol, freq, last_date)
         return len(data)
@@ -188,16 +237,13 @@ def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2
 
 
 def count_klines(symbol: str, freq: str) -> int:
-    """查询某只股票某级别的缓存 K 线总量，用于 cold-start 检测"""
+    """查询某只股票某级别的缓存 K 线总量，用于 cold-start 检测（线程本地复用连接）"""
     conn = get_lake_connection()
-    try:
-        cursor = conn.execute(
-            "SELECT COUNT(*) as cnt FROM klines WHERE symbol = ? AND freq = ?",
-            (symbol, freq),
-        )
-        return cursor.fetchone()["cnt"]
-    finally:
-        conn.close()
+    cursor = conn.execute(
+        "SELECT COUNT(*) as cnt FROM klines WHERE symbol = ? AND freq = ?",
+        (symbol, freq),
+    )
+    return cursor.fetchone()["cnt"]
 
 
 if __name__ == "__main__":

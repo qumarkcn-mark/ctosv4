@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import './BehaviorReport.css'
 
 const API_BASE = 'http://localhost:8000/api'
@@ -8,6 +9,14 @@ const LEVEL_ICONS = { critical: '🔴', warning: '🟡', success: '🟢', info: 
 export default function BehaviorReport() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  // Scanner State
+  const [isScanning, setIsScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState(0)
+  const [scanStatusText, setScanStatusText] = useState('')
+  const [scanResults, setScanResults] = useState([])
+  const [portfolioStrategy, setPortfolioStrategy] = useState('')
+  const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false)
 
   useEffect(() => {
     fetch(`${API_BASE}/behavior/report?user_id=1`)
@@ -20,6 +29,87 @@ export default function BehaviorReport() {
   if (!data) return <div className="behavior-loading">暂无数据</div>
 
   const { discipline_score: score, metrics: m, diagnosis } = data
+
+  const handleStartScan = async () => {
+    setIsScanning(true)
+    setScanResults([])
+    setScanStatusText('连线系统，获取现役持仓列表...')
+    setScanProgress(5)
+
+    try {
+      const posRes = await fetch(`${API_BASE}/positions?user_id=1`)
+      const posData = await posRes.json()
+      const positions = posData.positions || []
+      
+      if (positions.length === 0) {
+        setScanStatusText('当前空仓，无须扫描')
+        setScanProgress(100)
+        setIsScanning(false)
+        return
+      }
+
+      const results = []
+      
+      for (let i = 0; i < positions.length; i++) {
+        const p = positions[i]
+        setScanStatusText(`正在深度推演 ${p.name || p.symbol} (${i+1}/${positions.length})...`)
+        setScanProgress(10 + Math.floor((i / positions.length) * 90))
+        
+        try {
+          const deduceRes = await fetch(`${API_BASE}/agent/radar_deduce`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: p.symbol, user_id: 1 })
+          })
+          const deduceData = await deduceRes.json()
+          
+          if (deduceData.status === 'success') {
+            results.push({
+              symbol: p.symbol,
+              name: p.name || p.symbol,
+              quantity: p.quantity,
+              cost: p.avg_cost,
+              pnl_pct: p.pnl_pct,
+              report: deduceData.data
+            })
+          }
+        } catch (e) {
+          console.error('Scan failed for', p.symbol, e)
+        }
+        
+        // incremental update
+        setScanResults([...results])
+      }
+      
+      setScanStatusText(`扫描完成 (${positions.length} 只股票)，正在生成全局战报...`)
+      setScanProgress(100)
+      
+      // 生成全局战略
+      setIsGeneratingStrategy(true)
+      try {
+        const stratRes = await fetch(`${API_BASE}/agent/portfolio_strategy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scan_results: results })
+        })
+        const stratData = await stratRes.json()
+        if (stratData.status === 'success') {
+          setPortfolioStrategy(stratData.data)
+        }
+      } catch (e) {
+        console.error('Failed to generate portfolio strategy', e)
+      } finally {
+        setIsGeneratingStrategy(false)
+        setScanStatusText('全局扫描与战略推演完毕')
+      }
+      
+    } catch (e) {
+      console.error(e)
+      setScanStatusText('扫描网络异常')
+    } finally {
+      setIsScanning(false)
+    }
+  }
 
   // 六维数据归一化
   const dims = [
@@ -102,6 +192,107 @@ export default function BehaviorReport() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* 🛡️ 现役持仓防线扫描 */}
+      <div className="position-scanner-section">
+        <div className="scanner-header">
+          <div className="scanner-title-group">
+            <h3>🛡️ 全天候持仓防线扫描 (Active Defense Scan)</h3>
+            <p className="scanner-desc">调用 V5 操盘手引擎，对所有持仓股进行军事化逐一排查，杜绝违规死扛。</p>
+          </div>
+          <button 
+            className={`scan-btn ${isScanning ? 'scanning' : ''}`} 
+            onClick={handleStartScan}
+            disabled={isScanning}
+          >
+            {isScanning ? '正在扫描...' : '🚀 启动深度体检'}
+          </button>
+        </div>
+
+        {/* 进度条 */}
+        {(isScanning || scanProgress > 0) && (
+          <div className="scan-progress-container">
+            <div className="scan-progress-bar">
+              <div className="scan-progress-fill" style={{ width: `${scanProgress}%` }}></div>
+            </div>
+            <div className="scan-progress-text">{scanStatusText}</div>
+          </div>
+        )}
+
+        {/* 📈 全局战报大屏 */}
+        {portfolioStrategy && (
+          <div className="portfolio-strategy-panel">
+            <div className="ps-header">
+              <span className="ps-icon">🎖️</span>
+              <h4>总参谋部：全局仓位调度战略</h4>
+            </div>
+            <div className="ps-content">
+              <ReactMarkdown>{portfolioStrategy}</ReactMarkdown>
+            </div>
+          </div>
+        )}
+        
+        {isGeneratingStrategy && !portfolioStrategy && (
+           <div className="portfolio-strategy-panel generating">
+              <div className="ps-header">
+                <span className="ps-icon">🤖</span>
+                <h4>正在由 V5 引擎生成大元帅全局战报，请稍候...</h4>
+              </div>
+           </div>
+        )}
+
+        {/* 扫描结果网格 */}
+        {scanResults.length > 0 && (
+          <div className="scan-results-grid">
+            {scanResults.map((res, idx) => {
+               // 提取最核心的首要预案 (Main Plan)
+               const mainPlan = res.report.pre_plans && res.report.pre_plans.length > 0 ? res.report.pre_plans[0] : null;
+               const isDanger = mainPlan?.color === '🔴';
+               const isSafe = mainPlan?.color === '🟢';
+               const cardClass = isDanger ? 'danger' : isSafe ? 'safe' : 'warning';
+               
+               return (
+                 <div key={idx} className={`scan-card ${cardClass}`}>
+                   <div className="sc-header">
+                     <span className="sc-symbol">{res.name}</span>
+                     <div className="sc-stats">
+                       <span className="sc-qty">{res.quantity}股</span>
+                       <span className="sc-cost">| 成本 {res.cost?.toFixed(2)}</span>
+                     </div>
+                   </div>
+                   
+                   <div className={`sc-pnl ${res.pnl_pct >= 0 ? 'up' : 'down'}`}>
+                     PnL: {res.pnl_pct > 0 ? '+' : ''}{res.pnl_pct}%
+                   </div>
+                   
+                   <div className="sc-body">
+                     <div className="sc-diag">{res.report.diagnosis || '暂无定调'}</div>
+                   </div>
+                   
+                   {/* AI 机械指令 */}
+                   {mainPlan ? (
+                     <div className="sc-action-box">
+                        <div className="sc-cmd-label">AI COMMAND</div>
+                        <div className="sc-cmd-text">[{mainPlan.machine_action || 'HOLD'}]</div>
+                        {res.report.core_defense && (
+                          <div className="sc-defense">🛡️ {res.report.core_defense}</div>
+                        )}
+                     </div>
+                   ) : (
+                     <div className="sc-action-box">
+                        <div className="sc-cmd-label">AI COMMAND</div>
+                        <div className="sc-cmd-text">[MONITOR]</div>
+                        {res.report.core_defense && (
+                          <div className="sc-defense">🛡️ {res.report.core_defense}</div>
+                        )}
+                     </div>
+                   )}
+                 </div>
+               )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

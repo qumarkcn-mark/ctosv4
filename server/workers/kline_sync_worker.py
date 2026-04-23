@@ -11,6 +11,7 @@ BaoStock 更新时间表：
 
 import asyncio
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -37,18 +38,15 @@ def _get_all_tracked_symbols() -> list[str]:
     """
     symbols = set()
 
-    # 来源 1: kline_lake 中已有的 symbol
+    # 来源 1: kline_lake 中已有的 symbol（读操作，复用线程本地连接）
     try:
         from server.db.kline_lake import get_lake_connection
         conn = get_lake_connection()
-        try:
-            rows = conn.execute(
-                "SELECT DISTINCT symbol FROM kline_sync_meta"
-            ).fetchall()
-            for row in rows:
-                symbols.add(row["symbol"])
-        finally:
-            conn.close()
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM kline_sync_meta"
+        ).fetchall()
+        for row in rows:
+            symbols.add(row["symbol"])
     except Exception as e:
         logger.warning("读取 kline_sync_meta 失败: %s", e)
 
@@ -219,6 +217,19 @@ class KlineSyncWorker:
                 result["total_written"],
                 result["errors"],
             )
+
+            # 同步完成后执行 WAL checkpoint，防止 WAL 文件无限积累
+            # 用 run_in_threadpool 包裹，避免同步 I/O 阻塞事件循环
+            def _do_checkpoint():
+                with sqlite3.connect(LAKE_PATH) as conn:
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+            try:
+                from server.db.kline_lake import LAKE_PATH
+                await run_in_threadpool(_do_checkpoint)
+                logger.debug("📊 [%s] WAL checkpoint 完成", trigger)
+            except Exception as wal_err:
+                logger.warning("📊 [%s] WAL checkpoint 失败（非致命）: %s", trigger, wal_err)
 
         except Exception as e:
             logger.error("📊 [%s] 同步失败: %s", trigger, e)

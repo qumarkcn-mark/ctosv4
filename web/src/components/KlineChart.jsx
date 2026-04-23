@@ -6,17 +6,49 @@ import { API_BASE } from '../config.js'
 import { toTimestamp } from '../utils.js'
 import './KlineChart.css'
 
-registerOverlay(phantomOverlay)
+// ─── 工具栏状态持久化 key
+const TOOLBAR_KEY = 'ct_kline_toolbar_v4'
+
+// ─── 区间套投影：当前级别 → 上级别映射
+// 投影色带来自上级别的笔中枢，给小级别提供宏观支撑压力参考
+const PARENT_FREQ_MAP = {
+  week: null,                          // 周线无上级别
+  day:  { freq: 'week', count: 200 },  // 日线 ← 周线中枢
+  m60:  { freq: 'day',  count: 500 },  // 60分 ← 日线中枢
+  m30:  { freq: 'day',  count: 500 },  // 30分 ← 日线中枢
+  m15:  { freq: '30',   count: 800 },  // 15分 ← 30分中枢
+  m5:   { freq: '30',   count: 1000 }, // 5分  ← 30分中枢
+}
 
 const INTERVALS = [
-  { key: 'week', label: '周线', freq: 'week', count: 500 },
-  { key: 'day', label: '日线', freq: 'day', count: 500 },
-  { key: 'm60', label: '60分', freq: '60', count: 800 },
-  { key: 'm30', label: '30分', freq: '30', count: 1000 },
-  { key: 'm15', label: '15分', freq: '15', count: 1200 },
-  { key: 'm5', label: '5分', freq: '5', count: 1500 },
-  { key: 'm1', label: '1分', freq: '1', count: 1500 },
+  { key: 'week', label: '周线', freq: 'week', count: 2500 },
+  { key: 'day', label: '日线', freq: 'day', count: 2500 },
+  { key: 'm60', label: '60分', freq: '60', count: 2500 },
+  { key: 'm30', label: '30分', freq: '30', count: 2500 },
+  { key: 'm15', label: '15分', freq: '15', count: 2500 },
+  { key: 'm5', label: '5分', freq: '5', count: 2500 },
 ]
+
+function loadToolbar() {
+  try {
+    const s = localStorage.getItem(TOOLBAR_KEY)
+    if (s) {
+      const parsed = JSON.parse(s)
+      // 回退不受支持的级别（如 m1）到 m5
+      if (!INTERVALS.find(i => i.key === parsed.interval)) {
+        parsed.interval = 'm5'
+      }
+      return parsed
+    }
+  } catch {}
+  return { interval: 'day', mainIndicator: 'MA', subIndicator: 'MACD' }
+}
+
+function saveToolbar(state) {
+  localStorage.setItem(TOOLBAR_KEY, JSON.stringify(state))
+}
+
+registerOverlay(phantomOverlay)
 
 const MAIN_INDICATORS = ['MA', 'BOLL', 'None']
 const SUB_INDICATORS = ['MACD', 'KDJ', 'RSI']
@@ -27,14 +59,23 @@ export default function KlineChart({ symbol, layerVisibility }) {
   const chanDataRef = useRef(null)
   // 存储当前请求参数对应的 K 线数据，供 getBars 回调使用
   const klcDataCacheRef = useRef({ data: [], isDay: true })
+  // ★ 始终保存最新 layerVisibility，供初始化 effect 读取（不能放 deps 否则会触发完全重建）
+  const layerVisibilityRef = useRef(layerVisibility)
+  // ★ 区间套投影：缓存上级别中枢数据，避免每次切换图层都重新请求
+  const higherLevelRef = useRef(null)
 
-  const [interval, setIntervalKey] = useState('day')
-  const [mainIndicator, setMainIndicator] = useState('MA')
-  const [subIndicator, setSubIndicator] = useState('MACD')
+  const [interval, setIntervalKey] = useState(() => loadToolbar().interval)
+  const [mainIndicator, setMainIndicator] = useState(() => loadToolbar().mainIndicator)
+  const [subIndicator, setSubIndicator] = useState(() => loadToolbar().subIndicator)
   const [loading, setLoading] = useState(false)
   const [isInferring, setIsInferring] = useState(false)
   const [stats, setStats] = useState(null)
   const [error, setError] = useState(null)
+
+  // 同步 layerVisibility 到 ref（每次渲染都更新，不触发 effect）
+  useEffect(() => {
+    layerVisibilityRef.current = layerVisibility
+  })
 
   // ─── 核心 Effect: 初始化图表 + 加载数据 (symbol/interval 变化时完全重建)
   useEffect(() => {
@@ -107,10 +148,19 @@ export default function KlineChart({ symbol, layerVisibility }) {
 
     chartRef.current = chart
 
-    // 默认指标
-    chart.createIndicator('VOL', false, { id: 'pane_vol' })
-    chart.createIndicator('MA', false, { id: 'candle_pane' })
-    chart.createIndicator('MACD', false, { id: 'pane_sub' })
+    // ★ 按涂层状态决定初始指标 — 不再无条件创建
+    const initVis = layerVisibilityRef.current || {}
+    if (initVis.vol !== false) {
+      chart.createIndicator('VOL', false, { id: 'pane_vol' })
+    }
+    const initMainInd = loadToolbar().mainIndicator
+    if (initVis.ma !== false && initMainInd !== 'None') {
+      chart.createIndicator(initMainInd, false, { id: 'candle_pane' })
+    }
+    const initSubInd = loadToolbar().subIndicator
+    if (initVis.macd !== false) {
+      chart.createIndicator(initSubInd, false, { id: 'pane_sub' })
+    }
 
     // 注册 dataLoader — getBars 从缓存取数据
     chart.setDataLoader({
@@ -176,12 +226,17 @@ export default function KlineChart({ symbol, layerVisibility }) {
           // ★ 初始渲染也必须尊重 layerVisibility（从 localStorage 恢复的状态）
           const vis = layerVisibility || {}
           const filteredData = {
-            bis: vis.bi !== false ? bis : [],
-            segs: vis.seg !== false ? segs : [],
-            bi_zhongshus: vis.bi_zs !== false ? bi_zhongshus : [],
-            bi_zhongshus_decomp: vis.bi_zs_decomp ? (bi_zhongshus_decomp || []) : [],
-            seg_zhongshus: vis.seg_zs !== false ? seg_zhongshus : [],
-            bsps: vis.bsp !== false ? bsps : [],
+            bis:                 vis.bi      !== false ? bis              : [],
+            segs:                vis.seg     !== false ? segs             : [],
+            bi_zhongshus:        vis.bi_zs   !== false ? bi_zhongshus     : [],
+            bi_zhongshus_decomp: vis.bi_zs_decomp     ? (bi_zhongshus_decomp || []) : [],
+            seg_zhongshus:       vis.seg_zs  !== false ? seg_zhongshus    : [],
+            bsps:                vis.bsp     !== false ? bsps             : [],
+            // 高级分析：使用已缓存的上级别中枢（projection 可能在加载前就已打开）
+            higher_zhongshus:    vis.projection && higherLevelRef.current?.bi_zhongshus
+                                   ? higherLevelRef.current.bi_zhongshus
+                                   : [],
+            vis,
           }
           renderChanOverlays(chart, filteredData, isDay, false)
           setLoading(false)
@@ -213,6 +268,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
         chart.createIndicator(newInd, false, { id: 'candle_pane' })
       }
       setMainIndicator(newInd)
+      saveToolbar({ ...loadToolbar(), mainIndicator: newInd })
     },
     [mainIndicator]
   )
@@ -225,6 +281,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
       chart.removeIndicator({ paneId: 'pane_sub', name: subIndicator })
       chart.createIndicator(newInd, false, { id: 'pane_sub' })
       setSubIndicator(newInd)
+      saveToolbar({ ...loadToolbar(), subIndicator: newInd })
     },
     [subIndicator]
   )
@@ -236,20 +293,31 @@ export default function KlineChart({ symbol, layerVisibility }) {
 
     if (chanDataRef.current) {
       const { bis, segs, bi_zhongshus, bi_zhongshus_decomp, seg_zhongshus, bsps, isDay } = chanDataRef.current
+      // 清除所有缠论图层（含高级图层）
       chart.removeOverlay({ groupId: 'chan_bi_group' })
       chart.removeOverlay({ groupId: 'chan_seg_group' })
       chart.removeOverlay({ groupId: 'chan_bi_zs_group' })
       chart.removeOverlay({ groupId: 'chan_bi_zs_decomp_group' })
       chart.removeOverlay({ groupId: 'chan_seg_zs_group' })
       chart.removeOverlay({ groupId: 'chan_bsp_group' })
+      chart.removeOverlay({ groupId: 'chan_projection_group' })
+      chart.removeOverlay({ groupId: 'chan_momentum_group' })
+      chart.removeOverlay({ groupId: 'chan_decomp_group' })
+      chart.removeOverlay({ groupId: 'chan_support_wall_group' })
 
+      const vis = layerVisibility
       const filteredData = {
-        bis: layerVisibility.bi !== false ? bis : [],
-        segs: layerVisibility.seg !== false ? segs : [],
-        bi_zhongshus: layerVisibility.bi_zs !== false ? bi_zhongshus : [],
-        bi_zhongshus_decomp: layerVisibility.bi_zs_decomp ? (bi_zhongshus_decomp || []) : [],
-        seg_zhongshus: layerVisibility.seg_zs !== false ? seg_zhongshus : [],
-        bsps: layerVisibility.bsp !== false ? bsps : [],
+        bis:                 vis.bi      !== false ? bis              : [],
+        segs:                vis.seg     !== false ? segs             : [],
+        bi_zhongshus:        vis.bi_zs   !== false ? bi_zhongshus     : [],
+        bi_zhongshus_decomp: vis.bi_zs_decomp     ? (bi_zhongshus_decomp || []) : [],
+        seg_zhongshus:       vis.seg_zs  !== false ? seg_zhongshus    : [],
+        bsps:                vis.bsp     !== false ? bsps             : [],
+        // 高级分析
+        higher_zhongshus:    vis.projection && higherLevelRef.current?.bi_zhongshus
+                               ? higherLevelRef.current.bi_zhongshus
+                               : [],
+        vis,
       }
       renderChanOverlays(chart, filteredData, isDay, false)
     }
@@ -273,6 +341,43 @@ export default function KlineChart({ symbol, layerVisibility }) {
       chart.createIndicator(subIndicator, false, { id: 'pane_sub' })
     }
   }, [layerVisibility, mainIndicator, subIndicator])
+
+  // ─── 区间套投影：当 projection 图层开启时，异步拉取上级别中枢并叠加色带
+  // 独立 effect，不影响主图初始化流程；symbol/interval 变化时清缓存
+  useEffect(() => {
+    higherLevelRef.current = null
+
+    if (!layerVisibility?.projection || !symbol) return
+
+    const parentConfig = PARENT_FREQ_MAP[interval]
+    if (!parentConfig) return  // 周线无上级别，静默退出
+
+    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${parentConfig.freq}&count=${parentConfig.count}`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (!json?.data?.bi_zhongshus) return
+        higherLevelRef.current = json.data
+
+        // 若图表实例和原始数据均就绪，仅叠加投影图层（不重清其他图层）
+        if (chartRef.current && chanDataRef.current) {
+          chartRef.current.removeOverlay({ groupId: 'chan_projection_group' })
+          const { isDay } = chanDataRef.current
+          renderChanOverlays(
+            chartRef.current,
+            {
+              // 其他字段置空，此次调用仅追加投影色带
+              bis: [], segs: [], bi_zhongshus: [], bi_zhongshus_decomp: [],
+              seg_zhongshus: [], bsps: [],
+              higher_zhongshus: json.data.bi_zhongshus,
+              vis: { projection: true },
+            },
+            isDay,
+            false,  // clearFirst=false 保留主图已有标注
+          )
+        }
+      })
+      .catch((e) => console.warn('[ChanOverlay] 上级别数据拉取失败:', e))
+  }, [layerVisibility?.projection, symbol, interval])
 
   // ─── DeepSeek 推演
   const handleInferScenarios = async () => {
@@ -317,7 +422,10 @@ export default function KlineChart({ symbol, layerVisibility }) {
             <button
               key={iv.key}
               className={`kline-iv-btn ${interval === iv.key ? 'active' : ''}`}
-              onClick={() => setIntervalKey(iv.key)}
+              onClick={() => {
+                setIntervalKey(iv.key)
+                saveToolbar({ ...loadToolbar(), interval: iv.key })
+              }}
             >
               {iv.label}
             </button>

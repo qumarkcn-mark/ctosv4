@@ -34,11 +34,14 @@ class PriceMonitor:
         while self._running:
             try:
                 await self._check_stop_losses()
-                
+
                 # 每隔 20 个周期 (约 10 分钟) 跑一次低频的缠论长线日线推演 (减少API负担)
                 if self._loop_count % 20 == 0:
                     await self._check_chan_buys()
-                
+
+                # Task #10：每日收盘后（15:05-15:30 窗口）自动更新台阶止损
+                await self._check_trailing_stop_update()
+
                 # 多元宇宙日志：每天 20:30 自动拍快照+结算
                 await self._check_multiverse_auto_run()
                     
@@ -49,6 +52,59 @@ class PriceMonitor:
                 logger.error("价格监控发生异常: %s", e)
             
             await asyncio.sleep(self.interval_seconds)
+
+    async def _check_trailing_stop_update(self):
+        """Task #10：每日收盘后（15:05-15:30）自动更新台阶止损。
+
+        逻辑：
+          - 仅在 15:05-15:30 时间窗口内执行（每天最多一次）
+          - 取持仓股的30分钟中枢ZG，与现有台阶止损比较
+          - 台阶只上移（MAX取高），持久化到 positions.trailing_stop_price
+        """
+        import datetime as dt
+        from server.api.chan import _persist_trailing_stop
+
+        now = dt.datetime.now()
+        # 仅工作日 15:05-15:30 执行
+        if now.weekday() >= 5:
+            return
+        t = now.time()
+        if not (dt.time(15, 5) <= t <= dt.time(15, 30)):
+            return
+
+        # 今日已跑过则跳过（用日期标记）
+        today_str = now.strftime("%Y-%m-%d")
+        last_ran = getattr(self, "_trailing_stop_ran_date", None)
+        if last_ran == today_str:
+            return
+
+        try:
+            from server.services.chan_service import analyze_matrix_state
+            positions = await run_in_threadpool(self._db_get_positions)
+            if not positions:
+                return
+
+            for pos in positions:
+                sym = pos["symbol"]
+                try:
+                    result = await analyze_matrix_state(sym, holding=None)
+                    matrix_a = result.get("matrix_a", [])
+                    m30 = matrix_a[1] if len(matrix_a) > 1 else {}
+                    new_m30_zg = m30.get("zs_operative_zg", 0) or m30.get("zg", 0)
+                    if new_m30_zg > 0:
+                        _persist_trailing_stop(sym, new_m30_zg)
+                        logger.info(
+                            "[台阶止损] %s 收盘更新 trailing_stop → max(存储, %.2f)",
+                            sym, new_m30_zg
+                        )
+                except Exception as e:
+                    logger.warning("[台阶止损更新失败] %s error=%s", sym, e)
+
+            self._trailing_stop_ran_date = today_str
+            logger.info("[台阶止损] 每日收盘更新完成，共处理 %d 只持仓股", len(positions))
+
+        except Exception as e:
+            logger.error("[台阶止损] 定时任务异常: %s", e)
 
     async def _check_multiverse_auto_run(self):
         """每天 20:30 后自动运行多元宇宙快照+结算（仅工作日）"""
@@ -105,14 +161,27 @@ class PriceMonitor:
                     (current_price, pos["user_id"], sym)
                 )
 
-                # 检查止损击穿
-                if current_price > 0 and current_price <= stop_loss:
+                # 检查止损击穿（原始止损 + 台阶止损均检查）
+                trailing_stop = pos.get("trailing_stop_price") or stop_loss
+                effective_stop = max(stop_loss, trailing_stop) if trailing_stop else stop_loss
+
+                if current_price > 0 and current_price <= effective_stop:
                     msg = self._trigger_alert_db(conn, pos, current_price, "STOP_LOSS_BROKEN")
                     if msg: alerts_to_send.append((pos["user_id"], msg))
-                # TODO: 魔法数字 1.03 应改由配置项或个股 ATR 振幅动态决定
-                elif current_price > stop_loss and current_price <= stop_loss * 1.03:
+                elif current_price > effective_stop and current_price <= effective_stop * 1.03:
                     msg = self._trigger_alert_db(conn, pos, current_price, "STOP_LOSS_WARNING")
                     if msg: alerts_to_send.append((pos["user_id"], msg))
+
+                # Task #11：5分中枢完整性检测（结构失效 ≠ 止损触发，更早一步）
+                # m5_entry_zg 是入场时记录的5分中枢ZG，存在 positions 表 extra_data 字段
+                m5_entry_zg = pos.get("m5_entry_zg", 0) or 0
+                if m5_entry_zg > 0 and current_price > 0:
+                    if current_price < m5_entry_zg and current_price > effective_stop:
+                        # 价格跌回5分中枢内，但尚未触发止损：结构失效预警
+                        msg = self._trigger_alert_db(
+                            conn, pos, current_price, "M5_STRUCTURE_BROKEN"
+                        )
+                        if msg: alerts_to_send.append((pos["user_id"], msg))
                     
             conn.commit()
             return alerts_to_send
@@ -139,36 +208,55 @@ class PriceMonitor:
             asyncio.create_task(send_stop_loss_alert(user_id, msg))
 
     async def _check_chan_buys(self):
-        """低频轮询：进行缠论日线状态推演，发现三买给予推送"""
-        from server.services.chan_service import analyze_stock_chan_state, ChanState
-        
-        positions = await run_in_threadpool(self._db_get_positions)
-        if not positions:
-            return
-            
-        symbols = list(set(p["symbol"] for p in positions))
-        
-        # 1. 纯粹纯异步网络请求测算形态，释放 event loop
-        chan_signals = []
-        for sym in symbols:
-            try:
-                state, zs = await analyze_stock_chan_state(sym)
-                if state == ChanState.THIRD_BUY_CONFIRMED:
-                    chan_signals.append(sym)
-            except Exception as e:
-                logger.error(f"处理 {sym} 的缠论解析时发生异常: {e}")
+        """低频轮询：进行缠论日线状态推演，触发以下四类推送（每类每股每天最多一次）：
+        ① 台阶止损触发（STOP_LOSS_BROKEN 已在 _check_stop_losses 处理，此处增强消息）
+        ② 30分顶背驰预警（持仓股）→ 关注出局信号
+        ③ 30分底背驰（空仓关注股）→ 入场条件进展
+        ④ 入场五条件全满足（关注股）→ 入场信号触发
+        """
+        from server.services.chan_service import analyze_matrix_state, ChanState
 
-        if not chan_signals:
+        positions = await run_in_threadpool(self._db_get_positions)
+        watchlist = await run_in_threadpool(self._db_get_watchlist)
+
+        holding_symbols  = list(set(p["symbol"] for p in positions))
+        watchlist_symbols = list(set(w["symbol"] for w in watchlist if w["symbol"] not in holding_symbols))
+        all_symbols = holding_symbols + watchlist_symbols
+
+        if not all_symbols:
             return
-            
-        # 2. 将纯同步的 DB 写入扔进线程池，杜绝主事件循环阻塞
-        alerts_to_send = await run_in_threadpool(self._db_save_chan_alerts, chan_signals, positions)
-            
+
+        chan_results = {}
+        for sym in all_symbols:
+            try:
+                # 获取完整矩阵数据（含 m30 patterns）
+                result = await analyze_matrix_state(sym, holding=None)
+                chan_results[sym] = result
+            except Exception as e:
+                logger.error("[ERROR] CHAN_ENGINE_FALLBACK: %s  error=%s", sym, e, exc_info=True)
+
+        alerts_to_send = await run_in_threadpool(
+            self._db_save_chan_alerts_v2, chan_results, positions, watchlist
+        )
+
         for user_id, msg in alerts_to_send:
             asyncio.create_task(send_stop_loss_alert(user_id, msg))
 
+    def _db_get_watchlist(self):
+        """获取自选股列表（无持仓的关注股），用于底背驰/入场信号推送。"""
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, symbol, name FROM watchlist"
+            ).fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
     def _db_save_chan_alerts(self, chan_signals, positions):
-        """线程池运行的同步DB存入"""
+        """向后兼容旧接口（保留，供其他调用方使用）"""
         conn = get_connection()
         alerts_to_send = []
         try:
@@ -182,36 +270,266 @@ class PriceMonitor:
         finally:
             conn.close()
 
-    def _trigger_alert_db(self, conn, pos, current_price: float, alert_type: str) -> Optional[str]:
-        """记录提醒入库，如果今天已经发过则返回 None"""
+    def _db_save_chan_alerts_v2(self, chan_results: dict, positions: list, watchlist: list):
+        """V2 推送逻辑：处理七类推送触发条件，每类每股每天最多一次（24h 冷却）。
+
+        触发类型及冷却键：
+          STAGE_VALIDATION_FAIL  ① 预案失效（持仓）
+          STAGE_TIME_EXPIRED     ① 走势验证超时（持仓）
+          HOLDING_STAGE4         ① 30分顶背驰转折确认 → 建议减仓50%（持仓）
+          HOLDING_STAGE5         ① 日线顶背驰/台阶止损破 → 建议清仓（持仓）
+          CHAN_30M_TOP_DIV       ② 30分顶背驰预警（持仓）
+          CHAN_30M_BOT_DIV       ③ 30分底背驰（空仓关注股）
+          CHAN_ENTRY_SIGNAL      ④ 战法一/战法二入场条件全满足（含战法类型标注）
+        """
+        from server.services.chan_service import _classify_strategy, _detect_holding_stage
+
+        conn = get_connection()
+        alerts_to_send = []
+        try:
+            for sym, result in chan_results.items():
+                matrix_a = result.get("matrix_a", [])
+                day  = matrix_a[0] if len(matrix_a) > 0 else {}
+                m30  = matrix_a[1] if len(matrix_a) > 1 else {}
+                m5   = matrix_a[2] if len(matrix_a) > 2 else {}
+                week = matrix_a[3] if len(matrix_a) > 3 else {}
+
+                m30_patterns = " ".join(m30.get("patterns", []))
+
+                # ── ① 持仓股：Stage 状态机推送 ──
+                holding_users = [p for p in positions if p["symbol"] == sym]
+                if holding_users:
+                    from server.api.chan import _compute_holding_status
+                    for pos in holding_users:
+                        _holding = {
+                            "cost": pos.get("avg_cost", 0),
+                            "qty":  pos.get("quantity", 0),
+                            "entry_date": pos.get("entry_date"),
+                            "trailing_stop_price": pos.get("trailing_stop_price"),
+                            "stop_loss_price": pos.get("stop_loss_price", 0),
+                        }
+                        if _holding["cost"] <= 0 or _holding["qty"] <= 0:
+                            continue
+
+                        _fake_pos = {**pos, "name": pos.get("name", sym)}
+
+                        # Stage 0：走势验证
+                        _hs = _compute_holding_status(day, m30, _holding, {})
+                        _val = _hs.get("validation", {})
+                        if _val.get("status") == "预案失效":
+                            _msg = self._trigger_alert_db(
+                                conn, _fake_pos, current_price=0.0,
+                                alert_type="STAGE_VALIDATION_FAIL"
+                            )
+                            if _msg:
+                                alerts_to_send.append((pos["user_id"], _msg))
+                        elif _val.get("status") == "时间失效":
+                            _msg = self._trigger_alert_db(
+                                conn, _fake_pos, current_price=0.0,
+                                alert_type="STAGE_TIME_EXPIRED"
+                            )
+                            if _msg:
+                                alerts_to_send.append((pos["user_id"], _msg))
+
+                        # Stage 4/5：六阶段状态机（减仓/清仓信号）
+                        try:
+                            m30_bis = m30.get("bi_list", [])
+                            day_bis  = day.get("bi_list", [])
+                            _stage = _detect_holding_stage(
+                                _holding,
+                                l1=day_bis,
+                                l2=m30_bis,
+                                l3=m5.get("bi_list", [])
+                            )
+                            if _stage.get("should_notify"):
+                                stage_num = _stage.get("stage", 0)
+                                if stage_num == 4:
+                                    _msg = self._trigger_alert_db(
+                                        conn, _fake_pos, current_price=0.0,
+                                        alert_type="HOLDING_STAGE4",
+                                        extra={"stage_label": _stage.get("label", ""),
+                                               "trailing_stop": _stage.get("trailing_stop", 0)}
+                                    )
+                                    if _msg:
+                                        alerts_to_send.append((pos["user_id"], _msg))
+                                elif stage_num >= 5:
+                                    _msg = self._trigger_alert_db(
+                                        conn, _fake_pos, current_price=0.0,
+                                        alert_type="HOLDING_STAGE5",
+                                        extra={"stage_label": _stage.get("label", ""),
+                                               "trailing_stop": _stage.get("trailing_stop", 0)}
+                                    )
+                                    if _msg:
+                                        alerts_to_send.append((pos["user_id"], _msg))
+                        except Exception as e_stage:
+                            logger.warning("[Stage4/5推送] %s error=%s", sym, e_stage)
+
+                # ── ② 30分顶背驰预警（持仓股，区分中继/转折） ──
+                if any(kw in m30_patterns for kw in ("顶背驰", "1卖")):
+                    # 判断中继还是转折（利用 m30 的 beichi 分型）
+                    m30_beichi_type = m30.get("latest_top_beichi_type", "")  # "中继" | "转折" | ""
+                    for pos in holding_users:
+                        _fake_pos = {**pos, "name": pos.get("name", sym),
+                                     "_m30_beichi_type": m30_beichi_type}
+                        msg = self._trigger_alert_db(
+                            conn, _fake_pos, current_price=0.0,
+                            alert_type="CHAN_30M_TOP_DIV"
+                        )
+                        if msg:
+                            alerts_to_send.append((pos["user_id"], msg))
+
+                # ── ③ 30分底背驰（空仓关注股） ──
+                if any(kw in m30_patterns for kw in ("底背驰", "二买", "类二买")):
+                    watch_users = [w for w in watchlist if w["symbol"] == sym]
+                    for wu in watch_users:
+                        fake_pos = {"user_id": wu["user_id"], "symbol": sym,
+                                    "name": wu.get("name", sym), "stop_loss_price": 0.0}
+                        msg = self._trigger_alert_db(
+                            conn, fake_pos, current_price=0.0, alert_type="CHAN_30M_BOT_DIV"
+                        )
+                        if msg:
+                            alerts_to_send.append((wu["user_id"], msg))
+
+                # ── ④ 战法入场信号：使用新的 strategy_classification ──
+                # 直接读 result 中已计算好的 strategy_classification（由 analyze_matrix_state 提供）
+                sc = result.get("strategy_classification") or {}
+                strategy_type = sc.get("strategy_type", "观察中")
+                if strategy_type in ("战法一", "战法二", "双战法"):
+                    all_interested = [
+                        {"user_id": p["user_id"], "symbol": sym,
+                         "name": p.get("name", sym), "stop_loss_price": 0.0,
+                         "_strategy_type": strategy_type}
+                        for p in positions if p["symbol"] == sym
+                    ] + [
+                        {"user_id": w["user_id"], "symbol": sym,
+                         "name": w.get("name", sym), "stop_loss_price": 0.0,
+                         "_strategy_type": strategy_type}
+                        for w in watchlist if w["symbol"] == sym
+                    ]
+                    seen_users: set = set()
+                    for u in all_interested:
+                        uid = u["user_id"]
+                        if uid in seen_users:
+                            continue
+                        seen_users.add(uid)
+                        msg = self._trigger_alert_db(
+                            conn, u, current_price=0.0, alert_type="CHAN_ENTRY_SIGNAL"
+                        )
+                        if msg:
+                            alerts_to_send.append((uid, msg))
+
+            conn.commit()
+            return alerts_to_send
+        finally:
+            conn.close()
+
+    def _trigger_alert_db(
+        self, conn, pos, current_price: float,
+        alert_type: str, extra: Optional[dict] = None
+    ) -> Optional[str]:
+        """记录提醒入库，如果今天已经发过则返回 None
+
+        extra: 可选附加信息（如 stage_label、trailing_stop、_strategy_type、_m30_beichi_type）
+        """
+        extra = extra or {}
+        # extra 字段也可直接从 pos dict 读取（调用方可将附加字段塞入 pos）
+        strategy_type   = pos.get("_strategy_type", "") or extra.get("strategy_type", "")
+        beichi_type     = pos.get("_m30_beichi_type", "") or extra.get("beichi_type", "")
+        stage_label     = extra.get("stage_label", "")
+        trailing_stop   = extra.get("trailing_stop", 0)
+
         # 1. 检查今日是否已针对此股票发送过同类提醒 (简单防重)
         row = conn.execute(
-            """SELECT id FROM alerts 
-               WHERE user_id = ? AND symbol = ? AND alert_type = ? 
+            """SELECT id FROM alerts
+               WHERE user_id = ? AND symbol = ? AND alert_type = ?
                AND date(created_at) = date('now')""",
             (pos["user_id"], pos["symbol"], alert_type)
         ).fetchone()
-        
-        if row:
-            return None # 今天已经发过了
-            
-        msg = ""
-        if alert_type == "STOP_LOSS_BROKEN":
-            msg = f"【止损击穿】{pos['name']} 现价 {current_price} 已跌破止损价 {pos['stop_loss_price']}！"
-            logger.warning(f"[预警触发] {msg}")
-        elif alert_type == "STOP_LOSS_WARNING":
-            msg = f"【接近止损】{pos['name']} 现价 {current_price} 逼近止损价 {pos['stop_loss_price']}，请持续关注。"
-            logger.info(f"[预警触发] {msg}")
-        elif alert_type == "CHAN_THIRD_BUY":
-            msg = f"【绝佳买点】{pos['name']} 确立日线级别第三类买点！"
-            logger.info(f"[预警触发] {msg}")
 
-        # 写入 alerts 表
-        conn.execute(
-            """INSERT INTO alerts (user_id, symbol, alert_type, trigger_price, is_triggered, message)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (pos["user_id"], pos["symbol"], alert_type, current_price, 1, msg)
-        )
+        if row:
+            return None  # 今天已经发过了
+
+        name = pos.get("name", pos.get("symbol", ""))
+        msg = ""
+
+        if alert_type == "STOP_LOSS_BROKEN":
+            msg = f"【止损击穿】{name} 现价 {current_price:.2f} 已跌破止损价 {pos['stop_loss_price']:.2f}，立即执行止损！"
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "STOP_LOSS_WARNING":
+            msg = f"【接近止损】{name} 现价 {current_price:.2f} 逼近止损价 {pos['stop_loss_price']:.2f}，请持续关注。"
+            logger.info("[预警触发] %s", msg)
+        elif alert_type == "CHAN_THIRD_BUY":
+            msg = f"📈 {name} 日线三买确认，关注结构确立后入场。"
+            logger.info("[预警触发] %s", msg)
+        elif alert_type == "CHAN_30M_TOP_DIV":
+            # 区分中继背驰（继续持有）vs 转折背驰（关注出局）
+            if beichi_type == "转折":
+                msg = f"📉 {name} 30分顶背驰（转折型），出局信号出现，检查日线结构。"
+            elif beichi_type == "中继":
+                msg = f"📊 {name} 30分顶背驰（中继型），价格可能盘整，非出局信号，继续观察。"
+            else:
+                msg = f"📉 {name} 30分顶背驰出现，关注是否确认转折，检查雷达。"
+            logger.info("[预警触发] %s", msg)
+        elif alert_type == "CHAN_30M_BOT_DIV":
+            msg = f"📈 {name} 30分底背驰出现，入场条件进展，请检查雷达。"
+            logger.info("[预警触发] %s", msg)
+        elif alert_type == "CHAN_ENTRY_SIGNAL":
+            # 战法类型标注
+            if strategy_type == "战法一":
+                label = "战法一（三级别共振）"
+            elif strategy_type == "战法二":
+                label = "战法二（中枢上沿突破）"
+            elif strategy_type == "双战法":
+                label = "战法一+战法二（双确认）"
+            else:
+                label = "入场条件"
+            msg = f"🚀 {name} {label}信号触发，五条件全满足，请检查雷达确认入场。"
+            logger.info("[预警触发] %s", msg)
+        elif alert_type == "STAGE_VALIDATION_FAIL":
+            msg = f"⚠️ {name} 预案失效（30分未走出上涨笔），入场假设不成立，建议出场。"
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "STAGE_TIME_EXPIRED":
+            msg = f"⏰ {name} 走势验证超时（超过10根30分K线），结构迟滞，建议出场。"
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "HOLDING_STAGE4":
+            # 30分顶背驰转折确认 → 减仓 50%
+            stop_str = f"，台阶止损={trailing_stop:.2f}" if trailing_stop else ""
+            msg = f"📉 {name} 30分顶背驰已确认为转折型{stop_str}，建议减仓50%，剩余等待日线信号。"
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "HOLDING_STAGE5":
+            # 日线顶背驰 / 台阶止损破 → 清仓
+            stop_str = f"，台阶止损={trailing_stop:.2f}" if trailing_stop else ""
+            msg = f"🚨 {name} 日线顶背驰确认{stop_str}，出场信号触发，建议立即清仓。"
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "M5_STRUCTURE_BROKEN":
+            # 5分中枢结构失效（比止损更早的出场信号）
+            m5_zg = pos.get("m5_entry_zg", pos.get("stop_loss_price", 0))
+            msg = (
+                f"🔴 {name} 5分中枢支撑失效"
+                f"（现价{current_price:.2f} < 入场中枢ZG={m5_zg:.2f}），"
+                f"入场逻辑已证伪，建议出场。"
+            )
+            logger.warning("[预警触发] %s", msg)
+        elif alert_type == "TRAILING_STOP_BROKEN":
+            msg = (
+                f"🚨 {name} 台阶止损触及"
+                f"（现价{current_price:.2f}），利润锁定线已破，建议清仓。"
+            )
+            logger.warning("[预警触发] %s", msg)
+
+        # 写入 alerts 表，软处理 CHECK 约束（存量库可能未含新类型）
+        try:
+            conn.execute(
+                """INSERT INTO alerts (user_id, symbol, alert_type, trigger_price, is_triggered, message)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (pos["user_id"], pos["symbol"], alert_type, current_price, 1, msg)
+            )
+        except Exception as insert_err:
+            logger.warning(
+                "[alerts INSERT 失败] alert_type=%s symbol=%s error=%s",
+                alert_type, pos.get("symbol"), insert_err
+            )
+            return None
         return msg
 
 # 单例实例

@@ -67,17 +67,35 @@ class WatchPrice(BaseModel):
     price: float = Field(..., description="价位")
     role: str = Field(..., description="价位角色")
 
+class AccountStatus(BaseModel):
+    is_holding: bool
+    cost: Optional[float] = None
+    pnl_percentage: Optional[float] = None
+
+class PrePlan(BaseModel):
+    plan_name: str
+    trigger: str
+    deduction: str
+    machine_action: str
+    color: str
+
 class RadarInferenceResult(BaseModel):
-    thinking: List[ThinkingStep] = Field(..., description="逐级别看盘思维过程")
-    position: str = Field(..., description="当前定位一句话")
-    # V4.5: classifications 替代 decisions
-    classifications: List[ClassificationBranch] = Field(default=[], description="完全分类")
-    watch_prices: List[WatchPrice] = Field(default=[], description="关键价位")
-    interval_nesting: str = Field(default="无", description="区间套状态")
-    veto: Optional[str] = Field(default=None, description="大级别否决")
-    # 保留兼容
-    decisions: List[DecisionBranch] = Field(default=[], description="条件决策树(旧)")
-    red_line: str = Field(default="N/A", description="物理止损红线")
+    diagnosis: str
+    account_status: Optional[AccountStatus] = None
+    pre_plans: List[PrePlan] = Field(default=[])
+    core_defense: Optional[str] = None
+    market_context_verdict: Optional[str] = None
+
+class TradeParseResult(BaseModel):
+    """语音/文本交易解析结果"""
+    direction: str = Field(..., description="BUY 或 SELL")
+    name: Optional[str] = Field(None, description="股票名称，如 贵州茅台")
+    symbol_hint: Optional[str] = Field(None, description="股票代码提示，如 sh600519（可能不准）")
+    price: Optional[float] = Field(None, description="成交价格")
+    quantity: Optional[int] = Field(None, description="成交数量（股）")
+    confidence: float = Field(0.0, description="解析置信度 0-1")
+    raw_text: str = Field("", description="原始输入文本")
+
 
 class LLMService:
     def __init__(self):
@@ -181,15 +199,135 @@ class LLMService:
         except Exception as e:
             logger.error(f"Radar LLM Inference failed: {e}")
             return {
-                "thinking": [
-                    {"level": "week", "icon": "🔭", "say": "⚠️ 推演引擎离线，无法读取周线"},
-                    {"level": "day", "icon": "📊", "say": f"系统异常: {str(e)[:50]}"},
-                    {"level": "m30", "icon": "🔍", "say": "等待引擎恢复后重试"},
-                    {"level": "m5", "icon": "🎯", "say": "当前数据仅供参考"}
+                "diagnosis": f"推演引擎异常: {str(e)[:50]}",
+                "account_status": {"is_holding": False},
+                "pre_plans": [
+                    {
+                        "plan_name": "系统故障",
+                        "trigger": "后台报错",
+                        "deduction": "请检查终端日志或大模型API Key",
+                        "machine_action": "等待修复",
+                        "color": "🟡"
+                    }
                 ],
-                "position": "推演引擎离线",
-                "decisions": [
-                    {"if": "引擎恢复", "then": "重新推演", "type": "wait"}
-                ],
-                "red_line": "N/A"
+                "core_defense": "N/A",
+                "market_context_verdict": "未知"
             }
+
+    async def infer_portfolio_strategy(self, system_prompt: str, context_json: str) -> str:
+        """
+        Sends the portfolio summary to generate a markdown strategy report.
+        """
+        from server.db.database import get_connection
+        try:
+            api_key = None
+            db_conn = get_connection()
+            try:
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
+                if row and row["settings_json"]:
+                    settings = json.loads(row["settings_json"])
+                    api_key = settings.get("deepseek_api_key")
+            finally:
+                db_conn.close()
+                
+            if not api_key:
+                api_key = os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod")
+            
+            client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+            
+            response = await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Account Context:\n{context_json}"}
+                ],
+                temperature=0.6
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Portfolio LLM Inference failed: {e}")
+            return f"❌ 生成全局战略失败，请检查网络或大模型 API Key。错误详情: {e}"
+
+    async def parse_trade_from_text(self, text: str) -> dict:
+        """
+        从自然语言中提取交易信息（语音录入核心）。
+        使用 DeepSeek V3，temperature=0.1 确保精度。
+        失败时降级到正则解析。
+        """
+        import re
+        from server.db.database import get_connection
+
+        # ── 获取 API Key ──
+        api_key = None
+        try:
+            db_conn = get_connection()
+            try:
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
+                if row and row["settings_json"]:
+                    settings = json.loads(row["settings_json"])
+                    api_key = settings.get("deepseek_api_key")
+            finally:
+                db_conn.close()
+        except Exception:
+            pass
+
+        if not api_key:
+            api_key = os.environ.get("LLM_API_KEY")
+
+        # ── LLM 解析 ──
+        if api_key and api_key != "dummy_key_replace_in_prod":
+            try:
+                client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+                system_prompt = """你是A股交易记录解析助手。从用户输入的自然语言中提取交易信息，返回JSON。
+规则：
+- direction: 买/买入/B/buy → "BUY"；卖/卖出/S/sell → "SELL"
+- name: 股票名称（如 贵州茅台、宁德时代）
+- symbol_hint: 若能识别股票代码则填写（如 sh600519），否则 null
+- price: 成交价格（元/股），若无则 null
+- quantity: 成交股数（注意：A股最小100股，若用户说"1手"=100股）
+- confidence: 解析置信度 0.0-1.0
+
+只返回JSON，不要解释。示例：
+输入: "买了100股茅台1780块"
+输出: {"direction":"BUY","name":"贵州茅台","symbol_hint":"sh600519","price":1780.0,"quantity":100,"confidence":0.95}"""
+
+                response = await client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+                raw = json.loads(response.choices[0].message.content)
+                result = TradeParseResult(raw_text=text, **raw)
+                return result.model_dump()
+            except Exception as e:
+                logger.warning(f"LLM trade parse failed, falling back to regex: {e}")
+
+        # ── 正则降级 ──
+        result = {
+            "direction": "BUY",
+            "name": None,
+            "symbol_hint": None,
+            "price": None,
+            "quantity": None,
+            "confidence": 0.4,
+            "raw_text": text,
+        }
+        # 判断方向
+        if re.search(r"卖|卖出|sell|SELL", text, re.IGNORECASE):
+            result["direction"] = "SELL"
+        # 提取数量（N股 / N手）
+        qty_match = re.search(r"(\d+)\s*(?:股|手|shares?)", text)
+        if qty_match:
+            qty = int(qty_match.group(1))
+            if "手" in text[qty_match.start():qty_match.end()]:
+                qty *= 100
+            result["quantity"] = qty
+        # 提取价格（N元/N块/¥N/@N）
+        price_match = re.search(r"(?:@|¥|价格?|元|块|成本)?(\d+(?:\.\d+)?)\s*(?:元|块|¥)?", text)
+        if price_match:
+            result["price"] = float(price_match.group(1))
+        return result

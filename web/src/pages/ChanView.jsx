@@ -7,21 +7,35 @@ import TRadarV2 from '../components/TRadarV2.jsx'
 import { loadVisibility, saveVisibility } from '../store/layerState.js'
 import './ChanView.css'
 
-export default function ChanView() {
-  const [symbol, setSymbol] = useState(() => localStorage.getItem('lastViewedSymbol') || 'sh600519')
-  const [symbolName, setSymbolName] = useState(() => localStorage.getItem('lastViewedSymbolName') || '贵州茅台')
+export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChange }) {
+  // 兼容降级：若父组件未传 props（如旧路由），读本地存储
+  const [localSymbol, setLocalSymbol] = useState(
+    () => localStorage.getItem('lastViewedSymbol') || 'sh600519'
+  )
+  const [localName, setLocalName] = useState(
+    () => localStorage.getItem('lastViewedSymbolName') || '贵州茅台'
+  )
+
+  const symbol = activeSymbol ?? localSymbol
+  const symbolName = activeSymbolName ?? localName
+
   const [layerVisibility, setLayerVisibility] = useState(loadVisibility)
   const [showWatchlistMenu, setShowWatchlistMenu] = useState(false)
+  const [groupNames, setGroupNames] = useState([])
   const watchlistRef = useRef(null)
 
   const handleSelect = useCallback((stock) => {
     const sym = stock.symbol
     const sName = stock.name || stock.symbol
-    setSymbol(sym)
-    setSymbolName(sName)
-    localStorage.setItem('lastViewedSymbol', sym)
-    localStorage.setItem('lastViewedSymbolName', sName)
-  }, [])
+    if (onSymbolChange) {
+      onSymbolChange(sym, sName)
+    } else {
+      setLocalSymbol(sym)
+      setLocalName(sName)
+      localStorage.setItem('lastViewedSymbol', sym)
+      localStorage.setItem('lastViewedSymbolName', sName)
+    }
+  }, [onSymbolChange])
 
   const handleLayerChange = useCallback((vis) => {
     setLayerVisibility(vis)
@@ -63,16 +77,29 @@ export default function ChanView() {
             <div className="watchlist-dropdown-container">
               <button
                 className="add-watchlist-btn"
-                onClick={() => setShowWatchlistMenu(!showWatchlistMenu)}
+                onClick={() => {
+                  setGroupNames(watchlistRef.current?.getGroupNames?.() || [])
+                  setShowWatchlistMenu(!showWatchlistMenu)
+                }}
                 title="加入自选"
               >
                 ★
               </button>
               {showWatchlistMenu && (
                 <div className="watchlist-dropdown-menu">
-                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('观察')}>入观察</div>
-                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('重仓')}>入重仓</div>
-                  <div className="watchlist-dropdown-item" onClick={() => handleAddToWatchlist('短线')}>入短线</div>
+                  {groupNames.length === 0 ? (
+                    <div className="watchlist-dropdown-item" style={{ color: '#5a5c66', cursor: 'default' }}>暂无分组</div>
+                  ) : (
+                    groupNames.map((name) => (
+                      <div
+                        key={name}
+                        className="watchlist-dropdown-item"
+                        onClick={() => handleAddToWatchlist(name)}
+                      >
+                        入{name}
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>
@@ -80,11 +107,13 @@ export default function ChanView() {
           </div>
         </div>
 
-        {/* K 线图表 */}
-        <KlineChart symbol={symbol} layerVisibility={layerVisibility} />
-
-        {/* 推演雷达 */}
-        <TRadarV2 symbol={symbol} />
+        {/* 图表 + 雷达并排 */}
+        <div className="chan-content-row">
+          <KlineChart symbol={symbol} layerVisibility={layerVisibility} />
+          <div className="chan-radar-sidebar">
+            <TRadarV2 symbol={symbol} />
+          </div>
+        </div>
       </div>
     </div>
   )

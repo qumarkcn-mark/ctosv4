@@ -91,6 +91,12 @@ app.include_router(lake.router, prefix="/api/lake", tags=["data lake"])
 from server.api import multiverse
 app.include_router(multiverse.router, prefix="/api/multiverse", tags=["multiverse journal"])
 
+from server.api import rotation
+app.include_router(rotation.router, prefix="/api/rotation", tags=["rotation compass"])
+
+from server.api import watchlist
+app.include_router(watchlist.router, prefix="/api/watchlist", tags=["watchlist"])
+
 # Phase 2+:
 # from server.api import alerts, analysis
 # app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])

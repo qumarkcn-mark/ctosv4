@@ -145,3 +145,25 @@
 .stop-loss-watchdog.danger .watchdog-header .label { 
   color: var(--status-down); 
 }
+
+/* ─── 去看盘跳转按钮 ─── */
+.pos-view-btn {
+  display: none;
+  background: none;
+  border: 1px solid rgba(240,185,11,0.4);
+  color: var(--action-gold, #f0b90b);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.position-card:hover .pos-view-btn {
+  display: inline-block;
+}
+.pos-view-btn:hover {
+  background: rgba(240,185,11,0.15);
+}
+

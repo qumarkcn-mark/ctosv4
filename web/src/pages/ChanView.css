@@ -15,6 +15,40 @@
   min-width: 0;
   gap: 8px;
   padding: 8px 12px 12px;
+  overflow: hidden;
+}
+
+/* ─── 图表 + 雷达侧边栏并排行 */
+.chan-content-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  gap: 8px;
+}
+
+/* ─── 右侧雷达侧边栏 */
+.chan-radar-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 细滚动条 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+
+.chan-radar-sidebar::-webkit-scrollbar {
+  width: 5px;
+}
+.chan-radar-sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chan-radar-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 3px;
+}
+.chan-radar-sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.22);
 }
 
 /* ─── 顶部栏 */

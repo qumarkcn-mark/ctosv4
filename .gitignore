@@ -26,6 +26,8 @@ Thumbs.db
 *.sqlite3
 *.db-shm
 *.db-wal
+data/
+scratch/
 
 # WeChat Mini Program
 miniprogram/miniprogram_npm/

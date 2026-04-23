@@ -233,6 +233,126 @@ registerFigure({
   checkEventOn: () => false,
 })
 
+// ─────────────────────────────────────────────────────────────────
+// 高级分析 Figure（透明度严格 ≤ 0.10，绝不比主体 K 线更亮）
+// ─────────────────────────────────────────────────────────────────
+
+// 区间套投影：全宽色带，标示上级别中枢的价格区间
+// alpha 限定在 0.06 填充 + 0.18 边线，保证极度不干扰主图
+registerFigure({
+  name: 'chan_projection_band_figure',
+  draw: (ctx, attrs) => {
+    const { coordinates, type, renderOptions } = attrs
+    if (!coordinates || coordinates.length < 2) return
+    const [{ y: y1 }, { y: y2 }] = coordinates
+    const canvasWidth = renderOptions?.width || 4000
+    const topY   = Math.min(y1, y2)
+    const height = Math.abs(y2 - y1)
+    if (height < 1) return  // 高度为零时静默跳过
+
+    ctx.save()
+    ctx.beginPath()
+    if (type === 'UP_ZS') {
+      ctx.fillStyle   = 'rgba(239, 83, 80, 0.06)'
+      ctx.strokeStyle = 'rgba(239, 83, 80, 0.18)'
+    } else {
+      ctx.fillStyle   = 'rgba(38, 166, 154, 0.06)'
+      ctx.strokeStyle = 'rgba(38, 166, 154, 0.18)'
+    }
+    ctx.lineWidth = 1
+    ctx.setLineDash([3, 5])
+    ctx.rect(0, topY, canvasWidth, height)
+    ctx.fill()
+    // 仅画上下边线，不画左右，更简洁
+    ctx.beginPath()
+    ctx.moveTo(0, topY)
+    ctx.lineTo(canvasWidth, topY)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(0, topY + height)
+    ctx.lineTo(canvasWidth, topY + height)
+    ctx.stroke()
+    ctx.restore()
+  },
+  checkEventOn: () => false,
+})
+
+// 背驰辅助：在疑似背驰的笔端点处标注 MACD 面积衰减百分比气泡
+registerFigure({
+  name: 'chan_momentum_compare_figure',
+  draw: (ctx, attrs) => {
+    const { coordinates, area, prevArea, isDiverge } = attrs
+    if (!coordinates || coordinates.length < 1) return
+    const { x, y } = coordinates[0]
+    if (area == null || prevArea == null) return
+
+    const ratio = prevArea > 0 ? Math.round(area / prevArea * 100) : 0
+    const label = `${ratio}%`
+
+    ctx.save()
+    ctx.font = 'bold 9px Arial'
+    const textW = ctx.measureText(label).width
+    const pad = 3
+    const w = textW + pad * 2
+    const h = 13
+    const bx = x - w / 2
+    // 买点（下方笔端）标签向下，卖点（上方笔端）标签向上
+    const by = isDiverge ? y - h - 5 : y + 5
+
+    // 背驰用橙黄色，普通用低调灰
+    ctx.fillStyle = isDiverge
+      ? 'rgba(255, 152, 0, 0.82)'
+      : 'rgba(90, 90, 110, 0.65)'
+    ctx.beginPath()
+    if (ctx.roundRect) {
+      ctx.roundRect(bx, by, w, h, 2)
+    } else {
+      ctx.rect(bx, by, w, h)
+    }
+    ctx.fill()
+
+    ctx.fillStyle = '#ffffff'
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+    ctx.fillText(label, x, by + h / 2)
+    ctx.restore()
+  },
+  checkEventOn: () => false,
+})
+
+// 走势切分：全高垂直虚线，划分线段走势区域
+// alpha 严格 ≤ 0.12，线极细，不干扰 K 线主体
+registerFigure({
+  name: 'chan_decomposition_grid_figure',
+  draw: (ctx, attrs) => {
+    const { coordinates, label, renderOptions } = attrs
+    if (!coordinates || coordinates.length < 1) return
+    const { x } = coordinates[0]
+    const canvasHeight = renderOptions?.height || 3000
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.setLineDash([3, 5])
+    ctx.lineWidth = 1
+    ctx.strokeStyle = 'rgba(255, 213, 79, 0.12)'
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, canvasHeight)
+    ctx.stroke()
+
+    // 顶部走势方向小标签（↑向上趋势结束 / ↓向下趋势结束）
+    if (label) {
+      ctx.setLineDash([])
+      ctx.fillStyle = 'rgba(255, 213, 79, 0.40)'
+      ctx.font = '10px Arial'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'top'
+      ctx.fillText(label, x, 4)
+    }
+    ctx.restore()
+  },
+  checkEventOn: () => false,
+})
+
 // 水平支撑/压力线
 registerFigure({
   name: 'chan_support_line_figure',
@@ -364,6 +484,40 @@ const overlayConfigs = [
       ]
     },
   },
+  // ── 高级分析 Overlay ──
+  {
+    name: 'chan_projection_band',
+    totalStep: 3,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ coordinates, overlay, bounding }) => {
+      const type = overlay.extendData?.type || 'UP_ZS'
+      return [{ type: 'chan_projection_band_figure', attrs: { coordinates, type, renderOptions: { width: bounding.width } } }]
+    },
+  },
+  {
+    name: 'chan_momentum_compare',
+    totalStep: 2,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ coordinates, overlay }) => {
+      const { area, prevArea, isDiverge } = overlay.extendData || {}
+      return [{ type: 'chan_momentum_compare_figure', attrs: { coordinates, area, prevArea, isDiverge } }]
+    },
+  },
+  {
+    name: 'chan_decomposition_grid',
+    totalStep: 2,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ coordinates, overlay, bounding }) => {
+      const label = overlay.extendData?.label || ''
+      return [{ type: 'chan_decomposition_grid_figure', attrs: { coordinates, label, renderOptions: { height: bounding.height } } }]
+    },
+  },
 ]
 
 // 批量注册所有 Overlay
@@ -377,24 +531,33 @@ overlayConfigs.forEach((config) => registerOverlay(config))
  * 将后端 chan_detail_service 返回的结构数据批量渲染到图表上。
  *
  * V4 后端格式 (chan_detail_service.py):
- *   bis:       [{ x0, y0, x1, y1, is_up, is_sure }, ...]
- *   zhongshus: [{ begin_date, end_date, zg, zd, gg, dd }, ...]
- *   bsps:      [{ time, price, type, is_buy }, ...]  (TODO: 待后端实现)
+ *   bis:             [{ x0, y0, x1, y1, is_up, is_sure, momentum }, ...]
+ *   segs:            [{ x0, y0, x1, y1, is_up, is_sure, momentum }, ...]
+ *   bi_zhongshus:    [{ begin_date, end_date, zg, zd, gg, dd }, ...]
+ *   bsps:            [{ time, price, type, is_buy }, ...]
+ *   higher_zhongshus:[{ begin_date, end_date, zg, zd }, ...]  ← 上级别中枢（区间套投影）
+ *   vis:             { projection, momentum_compare, support_wall, decomp_grid, ... }
  *
- * @param {object} chart - KLineCharts 实例
- * @param {object} data  - 后端返回的 { bis, zhongshus, bsps }
- * @param {boolean} isDay - 是否日线（影响时间戳格式）
- * @param {boolean} clearFirst - 是否先清除旧标注（默认 true，外部已清时传 false避免重复）
+ * @param {object}  chart      - KLineCharts 实例
+ * @param {object}  data       - 后端返回的数据 + 高级分析可选字段
+ * @param {boolean} isDay      - 是否日线（影响时间戳格式）
+ * @param {boolean} clearFirst - 是否先清除旧标注（默认 true，外部已清时传 false）
  */
 export function renderChanOverlays(chart, data, isDay = true, clearFirst = true) {
   if (!chart || !data) return
 
-  // P2-FIX #6: 只在需要时清除，避免双重清除
+  const vis = data.vis || {}
+
+  // 清除所有缠论图层（含高级图层）
   if (clearFirst) {
     chart.removeOverlay({ groupId: 'chan_bi_group' })
     chart.removeOverlay({ groupId: 'chan_seg_group' })
     chart.removeOverlay({ groupId: 'chan_zs_group' })
     chart.removeOverlay({ groupId: 'chan_bsp_group' })
+    chart.removeOverlay({ groupId: 'chan_projection_group' })
+    chart.removeOverlay({ groupId: 'chan_momentum_group' })
+    chart.removeOverlay({ groupId: 'chan_decomp_group' })
+    chart.removeOverlay({ groupId: 'chan_support_wall_group' })
   }
 
   const overlays = []
@@ -438,7 +601,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
       let zsType = 'UP_ZS'
       if (data.bis?.length > 0) {
         const firstBi = data.bis.find(bi => bi.x0 >= zs.begin_date)
-        if (firstBi) zsType = firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
+        if (firstBi) zsType = !firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
       }
       overlays.push({
         groupId: 'chan_bi_zs_group',
@@ -459,7 +622,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
       let zsType = 'UP_ZS'
       if (data.bis?.length > 0) {
         const firstBi = data.bis.find(bi => bi.x0 >= zs.begin_date)
-        if (firstBi) zsType = firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
+        if (firstBi) zsType = !firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
       }
       overlays.push({
         groupId: 'chan_bi_zs_decomp_group',
@@ -480,7 +643,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
       let zsType = 'UP_ZS'
       if (data.segs?.length > 0) {
         const firstSeg = data.segs.find(s => s.x0 >= zs.begin_date)
-        if (firstSeg) zsType = firstSeg.is_up ? 'UP_ZS' : 'DOWN_ZS'
+        if (firstSeg) zsType = !firstSeg.is_up ? 'UP_ZS' : 'DOWN_ZS'
       }
       overlays.push({
         groupId: 'chan_seg_zs_group',
@@ -510,6 +673,114 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // 高级分析图层（alpha ≤ 0.10，空数据静默跳过）
+  // ──────────────────────────────────────────────────────────────
+
+  // 4. 区间套投影 — 上级别中枢横向色带
+  // 互斥约束已在 LayerPanel 状态机处理，此处无需重复检查
+  if (vis.projection && data.higher_zhongshus?.length > 0) {
+    for (const zs of data.higher_zhongshus) {
+      // 推断中枢方向：用 ZG 相对于 ZD 的位置简单判断（实际方向由首根进入笔决定）
+      const zsType = 'UP_ZS'  // 色带颜色由外部传 type 覆盖，这里用默认
+      overlays.push({
+        groupId:    'chan_projection_group',
+        name:       'chan_projection_band',
+        lock:       true,
+        extendData: { type: zsType },
+        points: [
+          { timestamp: toTs(zs.begin_date), value: zs.zg },
+          { timestamp: toTs(zs.end_date),   value: zs.zd },
+        ],
+      })
+    }
+  }
+
+  // 5. 背驰辅助 — 同向相邻笔 MACD 面积衰减比标注
+  // 原理：bis[i] 与 bis[i+2] 方向相同（隔一根反向笔），比较 momentum.area
+  //       衰减超过 25% 视为疑似背驰（isDiverge=true），用橙色气泡标出
+  if (vis.momentum_compare && data.bis?.length > 3) {
+    const momentumPairs = []
+    for (let i = 0; i < data.bis.length - 2; i++) {
+      const b1 = data.bis[i]
+      const b2 = data.bis[i + 2]
+      if (b1.is_up !== b2.is_up) continue
+      const a1 = b1.momentum?.area ?? 0
+      const a2 = b2.momentum?.area ?? 0
+      if (a1 < 0.0005) continue  // 忽略近零面积（合并K等情况）
+      const isDiverge = a2 < a1 * 0.75
+      momentumPairs.push({ bi: b2, area: a2, prevArea: a1, isDiverge })
+    }
+    for (const p of momentumPairs) {
+      overlays.push({
+        groupId:    'chan_momentum_group',
+        name:       'chan_momentum_compare',
+        lock:       true,
+        extendData: { area: p.area, prevArea: p.prevArea, isDiverge: p.isDiverge },
+        points:     [{ timestamp: toTs(p.bi.x1), value: p.bi.y1 }],
+      })
+    }
+  }
+
+  // 6. 走势切分 — 线段边界垂直虚线
+  // 在每根已确认线段结束处画全高竖线，区分向上/向下/盘整走势区块
+  if (vis.decomp_grid && data.segs?.length > 1) {
+    // 不画最后一根线段的结束点（当前走势尚未结束，防止最右侧出现孤立竖线）
+    for (let i = 0; i < data.segs.length - 1; i++) {
+      const seg = data.segs[i]
+      if (!seg.is_sure) continue  // 未确认线段不画切分线
+      overlays.push({
+        groupId:    'chan_decomp_group',
+        name:       'chan_decomposition_grid',
+        lock:       true,
+        extendData: { label: seg.is_up ? '↓' : '↑' },
+        points:     [{ timestamp: toTs(seg.x1), value: seg.y1 }],
+      })
+    }
+  }
+
+  // 7. 防线预警 — 顶/底分型密集价位聚类
+  // 算法：收集所有笔端点（顶/底分型），在 ±1.5% 价格带内若有 3+ 个点则画一条防线
+  if (vis.support_wall && data.bis?.length > 5) {
+    const tops    = data.bis.filter(b =>  b.is_up).map(b => b.y1).sort((a, b) => a - b)
+    const bottoms = data.bis.filter(b => !b.is_up).map(b => b.y1).sort((a, b) => a - b)
+
+    const walls = []
+    const clusterPrices = (prices, isBullish) => {
+      if (prices.length < 3) return
+      let start = 0
+      for (let i = 1; i <= prices.length; i++) {
+        // 超出 1.5% 带宽或到达末尾时，结算当前聚类
+        if (i === prices.length || prices[i] > prices[start] * 1.015) {
+          const cluster = prices.slice(start, i)
+          if (cluster.length >= 3) {
+            const med = cluster[Math.floor(cluster.length / 2)]
+            walls.push({ price: med, strength: cluster.length, isBullish })
+          }
+          start = i
+        }
+      }
+    }
+    clusterPrices(tops,    false)  // 顶分型 → 压力位
+    clusterPrices(bottoms, true)   // 底分型 → 支撑位
+
+    // 按强度降序，最多渲染 8 条防线（控制视觉密度）
+    walls.sort((a, b) => b.strength - a.strength)
+    const anchorTs = data.bis.length > 0
+      ? toTs(data.bis[data.bis.length - 1].x1)
+      : 0
+    for (const wall of walls.slice(0, 8)) {
+      const text = `${wall.isBullish ? '支撑' : '压力'} ×${wall.strength}`
+      overlays.push({
+        groupId:    'chan_support_wall_group',
+        name:       'chan_support_line',
+        lock:       true,
+        extendData: { text },
+        points:     [{ timestamp: anchorTs, value: wall.price }],
+      })
+    }
+  }
+
   if (overlays.length > 0) {
     chart.createOverlay(overlays)
   }
@@ -518,6 +789,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
     `[ChanOverlay] 渲染: 笔=${data.bis?.length || 0}, ` +
     `线段=${data.segs?.length || 0}, ` +
     `笔中枢=${data.bi_zhongshus?.length || 0}, ` +
-    `段中枢=${data.seg_zhongshus?.length || 0}`
+    `段中枢=${data.seg_zhongshus?.length || 0}, ` +
+    `买卖点=${data.bsps?.length || 0}`
   )
 }

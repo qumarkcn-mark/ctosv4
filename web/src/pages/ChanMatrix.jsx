@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import KlineChart from '../components/KlineChart.jsx'
+import { loadVisibility } from '../store/layerState.js'
 import './ChanMatrix.css'
 
 const API_BASE = 'http://localhost:8000/api'
@@ -130,7 +131,7 @@ export default function ChanMatrix() {
 
       {/* K 线图表 — 全功能缠论沙盘（笔 / 中枢 / MACD） */}
       {symbol && (
-        <KlineChart symbol={symbol} />
+        <KlineChart symbol={symbol} layerVisibility={loadVisibility()} />
       )}
 
       {/* 级别卡片 */}

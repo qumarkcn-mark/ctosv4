@@ -5,14 +5,20 @@ import './Dashboard.css'
 
 const API = ''  // Vite proxy 会转发到后端
 
-export default function Dashboard() {
+export default function Dashboard({ onViewInChan }) {
   const [positions, setPositions] = useState([])
   const [overview, setOverview] = useState(null)
   const [trades, setTrades] = useState([])
+  const [t1Locked, setT1Locked] = useState([])   // 今日买入 T+1 锁定列表
   const [showTradeForm, setShowTradeForm] = useState(false)
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({})
+
+  // 最近交易 — 折叠 + 筛选
+  const [tradesOpen, setTradesOpen] = useState(true)
+  const [filterDir, setFilterDir] = useState('ALL')   // ALL | BUY | SELL
+  const [filterKeyword, setFilterKeyword] = useState('')
 
   // 加载数据
   const fetchData = async () => {
@@ -26,6 +32,7 @@ export default function Dashboard() {
 
       setOverview(posData)
       setPositions(posData.positions || [])
+      setT1Locked(posData.t1_locked || [])
       setTrades(tradeData.trades || [])
     } catch (err) {
       console.error('加载数据失败:', err)
@@ -140,7 +147,23 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* 预警 */}
+        {/* T+1 锁仓横幅 */}
+        {t1Locked.length > 0 && (
+          <div className="t1-locked-banner">
+            <span className="t1-locked-icon">🔒</span>
+            <div className="t1-locked-body">
+              <span className="t1-locked-title">T+1 今日锁仓</span>
+              <span className="t1-locked-desc">
+                以下持仓今日买入，按A股T+1规则明日方可卖出：
+                {t1Locked.map((s, i) => (
+                  <strong key={s.symbol}>{i > 0 ? '、' : ' '}{s.name || s.symbol}</strong>
+                ))}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* 风险预警 */}
         {overview?.warnings?.length > 0 && (
           <div className="warnings">
             {overview.warnings.map((w, i) => (
@@ -152,6 +175,7 @@ export default function Dashboard() {
         )}
       </section>
 
+
       {/* 交易录入表单 (折叠) */}
       {showTradeForm && (
         <section className="trade-form-section animate-fade-in">
@@ -162,23 +186,94 @@ export default function Dashboard() {
       {/* 持仓列表 */}
       <section className="positions-section animate-fade-in" style={{ animationDelay: '0.1s' }}>
         <h2 className="section-title">当前持仓</h2>
-        <PositionList positions={positions} />
+        <PositionList positions={positions} onViewInChan={onViewInChan} />
       </section>
 
       {/* 最近交易 */}
       <section className="trades-section animate-fade-in" style={{ animationDelay: '0.2s' }}>
-        <h2 className="section-title">最近交易</h2>
-        {trades.length === 0 ? (
-          <div className="empty-state">
-            <p className="text-secondary">暂无交易记录</p>
-            <button className="btn" onClick={() => setShowTradeForm(true)}>
-              录入第一笔交易
-            </button>
-          </div>
-        ) : (
-          <div className="trade-list">
-            {trades.map((t) => (
-              <div key={t.id} className={`trade-item ${editingId === t.id ? 'editing' : ''}`}>
+
+        {/* ── 标题行：折叠 + 筛选 ── */}
+        <div className="trades-header">
+          <button
+            className="trades-collapse-btn"
+            onClick={() => setTradesOpen(o => !o)}
+            title={tradesOpen ? '收起' : '展开'}
+          >
+            <span className={`collapse-arrow ${tradesOpen ? 'open' : ''}`}>›</span>
+            <h2 className="section-title" style={{ margin: 0 }}>
+              最近交易
+              {trades.length > 0 && (
+                <span className="trades-count-badge">{trades.length}</span>
+              )}
+            </h2>
+          </button>
+
+          {tradesOpen && trades.length > 0 && (
+            <div className="trades-filter-bar">
+              {/* 方向筛选 */}
+              <div className="filter-dir-group">
+                {['ALL', 'BUY', 'SELL'].map(d => (
+                  <button
+                    key={d}
+                    type="button"
+                    className={`filter-dir-btn ${filterDir === d ? 'active ' + d.toLowerCase() : ''}`}
+                    onClick={() => setFilterDir(d)}
+                  >
+                    {d === 'ALL' ? '全部' : d === 'BUY' ? '买入' : '卖出'}
+                  </button>
+                ))}
+              </div>
+              {/* 关键字搜索 */}
+              <div className="filter-keyword-wrap">
+                <span className="filter-kw-icon">🔍</span>
+                <input
+                  className="filter-keyword-input"
+                  type="text"
+                  value={filterKeyword}
+                  onChange={e => setFilterKeyword(e.target.value)}
+                  placeholder="股票名/代码"
+                />
+                {filterKeyword && (
+                  <button
+                    type="button"
+                    className="filter-kw-clear"
+                    onClick={() => setFilterKeyword('')}
+                  >✕</button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── 列表内容 ── */}
+        {tradesOpen && (() => {
+          const kw = filterKeyword.trim().toLowerCase()
+          const filtered = trades.filter(t => {
+            if (filterDir !== 'ALL' && t.direction !== filterDir) return false
+            if (kw && !((t.name || '').toLowerCase().includes(kw)) && !(t.symbol || '').toLowerCase().includes(kw)) return false
+            return true
+          })
+
+          if (trades.length === 0) return (
+            <div className="empty-state">
+              <p className="text-secondary">暂无交易记录</p>
+              <button className="btn" onClick={() => setShowTradeForm(true)}>
+                录入第一笔交易
+              </button>
+            </div>
+          )
+          if (filtered.length === 0) return (
+            <div className="trades-filter-empty">
+              没有符合条件的交易记录
+              <button type="button" className="filter-reset-btn" onClick={() => { setFilterDir('ALL'); setFilterKeyword('') }}>
+                清除筛选
+              </button>
+            </div>
+          )
+          return (
+            <div className="trade-list">
+              {filtered.map((t) => (
+                <div key={t.id} className={`trade-item ${editingId === t.id ? 'editing' : ''}`}>
                 {editingId === t.id ? (
                   /* ── 编辑模式 ── */
                   <div className="trade-edit-form">
@@ -270,9 +365,11 @@ export default function Dashboard() {
                   </>
                 )}
               </div>
-            ))}
+            ))
+          }
           </div>
-        )}
+          )
+        })()}
       </section>
     </div>
   )

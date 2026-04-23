@@ -1,0 +1,932 @@
+/* ═══════════════════════════════════════════════════════════════
+   TRadarV2.css — V2 专属样式
+   字体：Inter / Roboto Mono（数字）+ 系统无衬线（中文）
+   色彩：Action-Green #10B981 · Red #EF4444 · Yellow #F59E0B
+   背景：#121212 面板：#1E1E1E 边框：#333
+   ═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Roboto+Mono:wght@400;600&display=swap');
+
+/* ── 骨架屏动画 ── */
+@keyframes skeleton-shine {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.tv2-skeleton {
+  border-radius: 4px;
+  background: linear-gradient(90deg, #1E1E1E 25%, #2a2a2a 50%, #1E1E1E 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shine 1.5s infinite;
+}
+
+.tv2-skeleton-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.tv2-skeleton-card {
+  flex: 1;
+  background: #1E1E1E;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Toast ── */
+.tv2-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  background: #1E1E1E;
+  border: 1px solid #F59E0B;
+  color: #E5E5E5;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  max-width: 320px;
+}
+
+.tv2-toast-icon {
+  font-size: 14px;
+  color: #F59E0B;
+  flex-shrink: 0;
+}
+
+.tv2-toast-close {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 0 0 0 8px;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ── 待刷新徽标 ── */
+@keyframes badge-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+.tv2-refresh-badge {
+  margin-left: 6px;
+  background: rgba(245,158,11,0.18);
+  border: 1px solid #F59E0B;
+  color: #F59E0B;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  cursor: pointer;
+  animation: badge-blink 1.2s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+.tv2-refresh-badge:hover {
+  background: rgba(245,158,11,0.3);
+}
+
+/* ── 持仓徽标 ── */
+.tv2-holding-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #F59E0B;
+  background: rgba(245,158,11,0.10);
+  border: 1px solid rgba(245,158,11,0.3);
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-holding-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ── 过期数据警告条 ── */
+.tv2-stale-banner {
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.35);
+  border-radius: 5px;
+  padding: 7px 12px;
+  font-size: 11px;
+  color: #F59E0B;
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+/* ── 当下定位条 ── */
+.tv2-position-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 5px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #aaa;
+  line-height: 1.5;
+}
+
+.tv2-position-label { flex-shrink: 0; }
+.tv2-position-text { flex: 1; }
+
+/* ══ 行动卡片行（甲/乙/丙）══ */
+.tv2-cards-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* ── 单张行动卡片 ── */
+.tv2-action-card {
+  flex: 1;
+  min-width: 0;
+  background: #1E1E1E;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 44px;  /* A11y: 最小触摸目标 44px */
+  position: relative;
+  border-left-width: 3px;  /* 指示条位置预留，默认与背景同色 */
+  border-left-color: #2a2a2a;
+}
+
+.tv2-action-card:hover {
+  border-color: #444;
+  background: rgba(255,255,255,0.025);
+}
+
+/* 激活态：左侧指示条高亮 + 背景着色 */
+.tv2-action-card--active {
+  border-left-color: var(--card-color) !important;
+  background: rgba(from var(--card-color) r g b / 0.08) !important;
+}
+/* fallback for browsers without color() */
+@supports not (background: rgba(from red r g b / 0.08)) {
+  .tv2-action-card--active {
+    background: #1f2a1f !important;  /* 通用绿色底，后由inline style覆盖 */
+  }
+}
+
+/* 非激活态：极度降权，退到背景 */
+.tv2-action-card:not(.tv2-action-card--active) {
+  border-color: #2a2a2a;
+  border-left-color: #2a2a2a;
+}
+.tv2-action-card:not(.tv2-action-card--active) .tv2-card-label {
+  color: #444 !important;
+}
+.tv2-action-card:not(.tv2-action-card--active) .tv2-card-action {
+  color: #4a4a4a !important;
+  font-weight: 500;
+}
+.tv2-action-card:not(.tv2-action-card--active) .tv2-card-condition {
+  color: #383838 !important;
+}
+
+.tv2-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.tv2-card-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #888;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: Inter, -apple-system, sans-serif;
+}
+
+.tv2-card-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 10px;
+  letter-spacing: 0.3px;
+}
+
+.tv2-card-toggle {
+  font-size: 9px;
+  color: #555;
+  flex-shrink: 0;
+}
+
+.tv2-action-card .tv2-card-action {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #E5E5E5;
+  font-family: Inter, -apple-system, "PingFang SC", sans-serif;
+}
+
+.tv2-card-condition {
+  font-size: 10px;
+  color: #888;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tv2-card-detail {
+  border-top: 1px solid #333;
+  padding-top: 8px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tv2-card-veto {
+  font-size: 10px;
+  color: #EF4444;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(239,68,68,0.25);
+  line-height: 1.4;
+}
+
+/* ── Key-Value Row ── */
+.tv2-kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+  gap: 8px;
+}
+
+.tv2-kv-label {
+  font-size: 11px;
+  color: #888888;
+  flex-shrink: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-kv-value {
+  font-size: 12px;
+  color: #E5E5E5;
+  text-align: right;
+  line-height: 1.4;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+/* ── 通用数据面板 ── */
+.tv2-panel {
+  background: #1E1E1E;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* 紧凑面板变体（结构快照用）*/
+.tv2-panel--compact {
+  padding: 8px 12px;
+}
+
+/* 危险状态变体（止损区）*/
+.tv2-panel--danger {
+  border-color: rgba(239,68,68,0.5);
+  background: rgba(239,68,68,0.04);
+}
+
+/* 结构走势单行 */
+.tv2-struct-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.tv2-struct-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 4px;
+  border: 1px solid #2a2a2a;
+}
+
+.tv2-struct-chip-name {
+  font-size: 10px;
+  color: #666;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-struct-chip-type {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+/* 价格单行 */
+.tv2-struct-prices {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  border-top: 1px solid #252525;
+  padding-top: 6px;
+}
+
+.tv2-struct-price-item {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 0 8px 0 0;
+  margin-right: 4px;
+  border-right: 1px solid #2a2a2a;
+}
+.tv2-struct-price-item:last-child {
+  border-right: none;
+}
+
+.tv2-struct-price-label {
+  font-size: 9px;
+  color: #555;
+  font-family: -apple-system, sans-serif;
+}
+
+.tv2-struct-price-val {
+  font-size: 11px;
+  font-weight: 600;
+  color: #C0C0C0;
+  font-family: "Roboto Mono", "Courier New", monospace;
+}
+
+
+.tv2-panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #888;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: Inter, -apple-system, sans-serif;
+}
+
+.tv2-panel-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tv2-panel-divider {
+  height: 1px;
+  background: #333;
+  margin: 6px 0;
+}
+
+/* ── 入场条件列表项 ── */
+.tv2-checklist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  border-bottom: 1px solid #252525;
+  min-height: 28px;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+
+/* 已满足的条件行：绿色左边框高亮 */
+.tv2-checklist-item--pass {
+  border-left: 2px solid #10B981;
+  padding-left: 8px;
+  background: rgba(16,185,129,0.04);
+}
+
+.tv2-checklist-item:last-of-type {
+  border-bottom: none;
+}
+
+.tv2-all-passed {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #10B981;
+  text-align: center;
+  padding: 5px 0;
+  border-top: 1px solid #2a2a2a;
+}
+
+/* ── 顶背驰警告 ── */
+.tv2-diverge-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.35);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: #EF4444;
+  font-weight: 600;
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+/* ── 大级别否决行 ── */
+.tv2-veto-row {
+  font-size: 10px;
+  color: #EF4444;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(239,68,68,0.15);
+  line-height: 1.4;
+}
+
+/* ── 数据论据层 ── */
+.tv2-data-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-bottom: 4px;
+}
+
+/* 横向行：入场条件 + 结构快照 并排 */
+.tv2-data-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+/* 左列：入场五条件 / 持仓面板 */
+.tv2-data-col--left {
+  flex: 0 0 56%;
+  min-width: 0;
+}
+
+/* 右列：结构快照 */
+.tv2-data-col--right {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 列内的面板去掉自带 margin-bottom（由 row gap 控制）*/
+.tv2-data-col .tv2-panel {
+  margin-bottom: 0;
+  height: 100%;     /* 两列等高对齐 */
+}
+
+
+/* ── StatusBar 摘要行 ── */
+.tv2-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid #2a2a2a;
+  border-radius: 5px;
+  margin-bottom: 8px;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.tv2-status-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tv2-status-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.tv2-status-mode {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  font-family: Inter, -apple-system, sans-serif;
+}
+.tv2-status-mode--empty {
+  background: rgba(255,255,255,0.05);
+  color: #888;
+  border: 1px solid #333;
+}
+.tv2-status-mode--holding {
+  background: rgba(16,185,129,0.12);
+  color: #10B981;
+  border: 1px solid rgba(16,185,129,0.3);
+}
+
+.tv2-status-stage {
+  font-size: 11px;
+  color: #F59E0B;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-status-desc {
+  font-size: 10px;
+  color: #777;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-status-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.tv2-status-price-label {
+  font-size: 9px;
+  color: #555;
+  font-family: -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.tv2-status-price-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: #E5E5E5;
+  font-family: "Roboto Mono", "Courier New", monospace;
+  line-height: 1;
+}
+
+/* ── 入场条件进度条 ── */
+.tv2-checklist-progress-wrap {
+  height: 3px;
+  background: #252525;
+  border-radius: 2px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.tv2-checklist-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease, background 0.3s;
+}
+
+/* ── 矩阵折叠区 ── */
+.tv2-matrix-wrap {
+  margin-top: 4px;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 4px;
+}
+
+.tv2-matrix-toggle {
+  background: none;
+  border: none;
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.tv2-matrix-toggle:hover { color: #aaa; }
+
+.tv2-matrix-rows {
+  margin-top: 4px;
+}
+
+/* ── AI 折叠入口 ── */
+.tv2-ai-footer {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a2a;
+  margin-top: 4px;
+}
+
+.tv2-ai-expand {
+  flex: 1;
+  background: transparent;
+  border: 1px solid #333;
+  color: #888;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  min-height: 32px;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+.tv2-ai-expand:hover {
+  border-color: #F59E0B;
+  color: #F59E0B;
+  background: rgba(245,158,11,0.06);
+}
+
+/* 降权版 — 更小、更静 */
+.tv2-ai-expand--slim {
+  min-height: 32px;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.tv2-ai-section-wrap {
+  border-top: 1px solid #2a2a2a;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.tv2-ai-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tv2-ai-disclaimer {
+  font-size: 10px;
+  color: #555;
+  text-align: center;
+  padding-bottom: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   移动端竖屏适配（< 768px）
+   ═══════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  .tv2-cards-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* 移动端：数据行回到纵向 */
+  .tv2-data-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .tv2-data-col--left,
+  .tv2-data-col--right {
+    flex: none;
+    width: 100%;
+  }
+  .tv2-data-col .tv2-panel {
+    height: auto;
+  }
+
+  .tv2-action-card {
+    width: 100%;
+    flex: none;
+  }
+
+  .tv2-action-card .tv2-card-action {
+    font-size: 12px;
+  }
+
+  .tv2-kv-row {
+    flex-wrap: wrap;
+  }
+
+  .tv2-kv-value {
+    text-align: left;
+  }
+
+  .tv2-toast {
+    bottom: 16px;
+    right: 12px;
+    left: 12px;
+    max-width: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   移动端横屏适配（宽 ≥ 568px 且高 < 430px）
+   ═══════════════════════════════════════════════════════════════ */
+@media (min-width: 568px) and (max-height: 430px) {
+  .tv2-cards-row {
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .tv2-action-card .tv2-card-action {
+    font-size: 12px;
+  }
+
+  .tv2-action-card .tv2-card-condition {
+    display: none;   /* 横屏省略次要文字 */
+  }
+
+  .tv2-panel {
+    column-count: 2;
+    column-gap: 12px;
+  }
+
+  .tv2-ai-footer {
+    display: none;   /* 横屏隐藏 AI 入口，节省纵向空间 */
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   A11y — 颜色以外的状态区分
+   所有红/黄/绿状态在 JSX 里已附加图标或文字标签([警示])
+   ═══════════════════════════════════════════════════════════════ */
+.tv2-action-card:focus-visible,
+.tv2-ai-expand:focus-visible,
+.tv2-refresh-badge:focus-visible {
+  outline: 2px solid #F59E0B;
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   六阶段状态机 — Stage Indicator & 新增面板元素
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 6圆点阶段进度条 */
+.tv2-stage-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+
+.tv2-stage-dot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+}
+
+.tv2-stage-dot-circle {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #333;
+  border: 1.5px solid #444;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.tv2-stage-dot--active .tv2-stage-dot-circle {
+  border-color: transparent;
+}
+
+.tv2-stage-dot-label {
+  font-size: 9px;
+  color: #666;
+  font-family: 'Inter', sans-serif;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.tv2-stage-dot--active .tv2-stage-dot-label {
+  font-weight: 600;
+}
+
+/* Stage 0 验证状态区域 */
+.tv2-validation-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ccc;
+}
+
+.tv2-validation-status-label {
+  color: #F59E0B;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.tv2-validation-bars {
+  font-family: 'Roboto Mono', monospace;
+  color: #888;
+  font-size: 10px;
+}
+
+/* Stage 4/5 操作建议高亮 */
+.tv2-action-suggest {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: 'Inter', sans-serif;
+}
+
+.tv2-action-suggest--warn {
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #F59E0B;
+}
+
+.tv2-action-suggest--danger {
+  background: rgba(239, 68, 68, 0.10);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #EF4444;
+  font-weight: 600;
+}
+
+/* ── Task #17: 战法标签 ── */
+.tradar-v2-vtag-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tv2-strategy-badge {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Inter', sans-serif;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ── Task #16/#18: 空仓专属 ── */
+.tv2-observe-note {
+  padding: 8px 0 4px;
+  border-bottom: 1px solid #333;
+  margin-bottom: 8px;
+}
+
+.tv2-strategy-sub-title {
+  font-size: 11px;
+  font-weight: 700;
+  margin: 4px 0 4px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* ── Task #17: 结构完整状态卡 ── */
+.tv2-action-suggest--intact {
+  background: rgba(16, 185, 129, 0.09);
+  border: 1px solid rgba(16, 185, 129, 0.30);
+  color: #6ee7b7;
+  font-weight: 600;
+}
+
+/* ── 面板危险边框（结构失效时）── */
+.tv2-panel--danger {
+  border-color: rgba(239, 68, 68, 0.40) !important;
+}
