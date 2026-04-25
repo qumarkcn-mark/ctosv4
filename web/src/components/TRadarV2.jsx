@@ -143,6 +143,97 @@ function readBoard(matrix, week, nestingData, forwardAnalysis) {
   }
 }
 
+function normalizeRadarContract(data) {
+  if (!data || data.api_version !== 'radar.v1') return data
+
+  const levels = data.structure?.levels || {}
+  const day = normalizeRadarLevel(levels.day, 'day')
+  const m30 = normalizeRadarLevel(levels['30'], 'm30')
+  const m5 = normalizeRadarLevel(levels['5'], 'm5')
+  const m60 = normalizeRadarLevel(levels['60'], 'm60')
+  const m15 = normalizeRadarLevel(levels['15'], 'm15')
+  const week = normalizeRadarLevel(levels.week, 'week')
+
+  const entryChecklist = entryChecklistFromPlan(data.entry_plan)
+  const holdingStatus = data.holding_plan?.legacy_status || (
+    data.holding_plan
+      ? {
+          stage: data.holding_plan.stage,
+          label: data.holding_plan.stage ? `Stage ${data.holding_plan.stage}` : '持仓管理',
+          stair_stop_price: data.holding_plan.risk?.trailing_stop || 0,
+          locked_profit_pct: 0,
+          action: data.holding_plan.risk?.invalid_if || '',
+        }
+      : { stage: 'empty', label: '空仓' }
+  )
+
+  return {
+    api_version: data.api_version,
+    symbol: data.symbol,
+    mode: data.mode,
+    matrix_a: [day, m30, m5].filter(Boolean),
+    matrix_b: [day, m60, m15].filter(Boolean),
+    week,
+    interval_nesting_a: data.structure?.systems?.short_term?.interval_nesting || null,
+    interval_nesting_b: data.structure?.systems?.swing?.interval_nesting || null,
+    forward_analysis_a: {
+      current_position: data.entry_plan?.title || data.holding_plan?.plan_id || '',
+      forward_classes: data.entry_plan?.plans || null,
+    },
+    forward_analysis_b: {
+      current_position: data.entry_plan?.title || data.holding_plan?.plan_id || '',
+      forward_classes: null,
+    },
+    entry_checklist: entryChecklist,
+    holding_status: holdingStatus,
+    holding_stage_v2: holdingStatus,
+    strategy_classification: {
+      ...(data.strategy || {}),
+      strategy_type: data.strategy?.strategy_type || '观察中',
+      summary: data.strategy?.name || data.strategy?.strategy_type || 'Radar Contract',
+    },
+    stop_atr_check: null,
+    targets: data.entry_plan?.targets || null,
+    reward_ratio: data.entry_plan?.reward_ratio || null,
+    data_freshness: data.freshness,
+    radar_contract: data,
+  }
+}
+
+function normalizeRadarLevel(level, fallbackLevel) {
+  if (!level) return null
+  const active = level.active_zhongshu || {}
+  const recentKlines = (level.recent_klines || []).map(k => ({
+    ...k,
+    date: k.date || k.time,
+  }))
+  return {
+    ...level,
+    level: fallbackLevel,
+    price: level.price || recentKlines.at(-1)?.close || 0,
+    zg: level.zg || active.zg || 0,
+    zd: level.zd || active.zd || 0,
+    zs_operative_zg: level.zs_operative_zg || level.zg || active.zg || 0,
+    zs_operative_zd: level.zs_operative_zd || level.zd || active.zd || 0,
+    detail_bis: level.detail_bis || level.recent_bis || level.bis || [],
+    recent_klines: recentKlines,
+    patterns: level.patterns || [],
+    zoushi_type: level.zoushi_type || { type: '数据不足', zs_count: 0 },
+    classifications: level.classifications || [],
+    state: level.state || 'UNKNOWN',
+  }
+}
+
+function entryChecklistFromPlan(plan) {
+  if (!plan?.conditions) return null
+  const checklist = {}
+  for (const condition of plan.conditions) {
+    checklist[condition.condition_id] = condition.status === 'PASS'
+  }
+  checklist.all_passed = plan.status === 'TRIGGERED'
+  return checklist
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 子组件
 // ═══════════════════════════════════════════════════════════════
@@ -1053,10 +1144,10 @@ export default function TRadarV2({ symbol }) {
     const h = holdingData !== undefined ? holdingData : holdingRef.current
     const params = (h && h.cost > 0 && h.qty > 0) ? `?cost=${h.cost}&qty=${h.qty}` : ''
     try {
-      const res  = await fetch(`${API_BASE}/chan/matrix/v2/${symbol}${params}`)
+      const res  = await fetch(`${API_BASE}/radar/${symbol}${params}`)
       const json = await res.json()
       if (json.status === 'success') {
-        const d = json.data
+        const d = normalizeRadarContract(json.data)
 
         // 检测持仓阶段是否发生变化（切换空仓↔持仓，Task #19）
         const newStage = d.holding_status?.stage
