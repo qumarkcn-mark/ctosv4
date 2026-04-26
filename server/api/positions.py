@@ -89,7 +89,14 @@ def get_position(symbol: str, user_id: int = 1):
             (user_id, symbol),
         ).fetchone()
         if not row:
-            raise HTTPException(404, f"未持有 {symbol}")
-        return dict(row)
+            return {
+                "symbol": symbol,
+                "user_id": user_id,
+                "quantity": 0,
+                "is_holding": False,
+            }
+        item = dict(row)
+        item["is_holding"] = True
+        return item
     finally:
         conn.close()

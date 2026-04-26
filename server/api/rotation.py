@@ -21,12 +21,20 @@ from server.services.rotation_scorer import score_symbol
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+ROTATION_ANALYSIS_TIMEOUT_SECONDS = 8
+ROTATION_TOTAL_TIMEOUT_SECONDS = 5
+ROTATION_ANALYSIS_CONCURRENCY = 3
+
 
 # ═══════════════════════════════════════════════════════════════
 # 工具：分析单只 + 打分
 # ═══════════════════════════════════════════════════════════════
 
-async def _analyze_one(row: dict, is_holding: bool) -> dict:
+async def _analyze_one(
+    row: dict,
+    is_holding: bool,
+    semaphore: Optional[asyncio.Semaphore] = None,
+) -> dict:
     """拉取 analyze_matrix_state → 排序评分 → 甲乙丙预案"""
     symbol = row["symbol"]
     base = {
@@ -39,23 +47,40 @@ async def _analyze_one(row: dict, is_holding: bool) -> dict:
         "category": "持仓" if is_holding else "候选",
     }
     try:
-        matrix = await analyze_matrix_state(symbol)
+        if semaphore is None:
+            matrix = await asyncio.wait_for(
+                analyze_matrix_state(symbol),
+                timeout=ROTATION_ANALYSIS_TIMEOUT_SECONDS,
+            )
+        else:
+            async with semaphore:
+                matrix = await asyncio.wait_for(
+                    analyze_matrix_state(symbol),
+                    timeout=ROTATION_ANALYSIS_TIMEOUT_SECONDS,
+                )
         score_pkg = score_symbol(matrix, is_holding=is_holding)
         return build_rotation_item({**base, **score_pkg, "error": None}, is_holding)
+    except asyncio.TimeoutError:
+        logger.warning("rotation score timed out for %s", symbol)
+        return _fallback_rotation_item(base, is_holding, "analysis timeout")
     except Exception as e:
         logger.warning("rotation score failed for %s: %s", symbol, e)
-        fallback = {
-            **base,
-            "sort_score": 0,
-            "state_label": "接口异常",
-            "lifecycle_node": "",
-            "distance_pct": None,
-            "stop_loss": None,
-            "price": None,
-            "main_action": "",
-            "error": str(e)[:120],
-        }
-        return build_rotation_item(fallback, is_holding)
+        return _fallback_rotation_item(base, is_holding, str(e)[:120])
+
+
+def _fallback_rotation_item(base: dict, is_holding: bool, error: str) -> dict:
+    fallback = {
+        **base,
+        "sort_score": 0,
+        "state_label": "结构待确认",
+        "lifecycle_node": "分析超时" if error == "analysis timeout" else "接口异常",
+        "distance_pct": None,
+        "stop_loss": None,
+        "price": None,
+        "main_action": "当前结构分析未完成，请稍后回到 Radar 单票复核。",
+        "error": error,
+    }
+    return build_rotation_item(fallback, is_holding)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -68,11 +93,60 @@ async def rotation_compass(user_id: int = 1):
     positions, watchlist = await run_in_threadpool(_fetch_rows, user_id)
 
     # 并行打分（chan_service 内部已有数据湖缓存，批量不会很慢）
-    tasks = [
-        *[_analyze_one(p, is_holding=True) for p in positions],
-        *[_analyze_one(w, is_holding=False) for w in watchlist],
+    semaphore = asyncio.Semaphore(ROTATION_ANALYSIS_CONCURRENCY)
+    task_specs = [
+        *[(p, True) for p in positions],
+        *[(w, False) for w in watchlist],
     ]
-    rows = await asyncio.gather(*tasks)
+    task_by_handle = {
+        asyncio.create_task(_analyze_one(row, is_holding=is_holding, semaphore=semaphore)): (row, is_holding)
+        for row, is_holding in task_specs
+    }
+    done, pending = await asyncio.wait(
+        task_by_handle.keys(),
+        timeout=ROTATION_TOTAL_TIMEOUT_SECONDS,
+    )
+    for task in pending:
+        task.cancel()
+
+    rows = []
+    for task in done:
+        try:
+            rows.append(task.result())
+        except Exception as exc:
+            row, is_holding = task_by_handle[task]
+            rows.append(
+                _fallback_rotation_item(
+                    {
+                        "symbol": row["symbol"],
+                        "name": row.get("name"),
+                        "quantity": row.get("quantity"),
+                        "avg_cost": row.get("avg_cost"),
+                        "current_price": row.get("current_price"),
+                        "pnl_pct": row.get("pnl_pct"),
+                        "category": "持仓" if is_holding else "候选",
+                    },
+                    is_holding,
+                    str(exc)[:120],
+                )
+            )
+    for task in pending:
+        row, is_holding = task_by_handle[task]
+        rows.append(
+            _fallback_rotation_item(
+                {
+                    "symbol": row["symbol"],
+                    "name": row.get("name"),
+                    "quantity": row.get("quantity"),
+                    "avg_cost": row.get("avg_cost"),
+                    "current_price": row.get("current_price"),
+                    "pnl_pct": row.get("pnl_pct"),
+                    "category": "持仓" if is_holding else "候选",
+                },
+                is_holding,
+                "analysis timeout",
+            )
+        )
 
     holdings = sorted(
         [r for r in rows if r["category"] == "持仓"],

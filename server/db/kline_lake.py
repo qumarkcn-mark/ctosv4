@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 #       写入时（upsert_klines）仍使用独立短连接，确保线程安全。
 _thread_local = threading.local()
 _wal_init_lock = threading.Lock()  # 串行化首次 WAL 初始化，消除竞态
+_write_locks = {
+    "tdx": threading.Lock(),
+    "baostock": threading.Lock(),
+}
 
 # K 线数据湖拆分：
 #   TDX_LAKE_PATH      = 全市场日线事实源（freq=day, adjustflag=3），供 scanner 使用
@@ -330,38 +334,39 @@ def upsert_klines(
     if not rows:
         return 0
 
-    # 写入使用独立短连接（不污染线程本地读连接的事务状态）
-    conn = get_lake_write_connection(source)
-    try:
-        data = [
-            (symbol, freq, r["date"], r["open"], r["high"], r["low"],
-             r["close"], r.get("volume", 0), r.get("amount", 0), adjustflag)
-            for r in rows
-        ]
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO klines
-                (symbol, freq, date, open, high, low, close, volume, amount, adjustflag)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            data,
-        )
-
-        # 更新 sync_meta
-        last_date = max(r["date"] for r in rows)
-        if update_meta:
-            conn.execute(
+    # 写入使用独立短连接；同一物理 lake 内串行写，避免并发冷启动拉取互抢 SQLite 写锁。
+    with _write_locks[source]:
+        conn = get_lake_write_connection(source)
+        try:
+            data = [
+                (symbol, freq, r["date"], r["open"], r["high"], r["low"],
+                 r["close"], r.get("volume", 0), r.get("amount", 0), adjustflag)
+                for r in rows
+            ]
+            conn.executemany(
                 """
-                INSERT OR REPLACE INTO kline_sync_meta (symbol, freq, last_date)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO klines
+                    (symbol, freq, date, open, high, low, close, volume, amount, adjustflag)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, freq, last_date),
+                data,
             )
-        conn.commit()
-        logger.debug("upsert %d klines for %s/%s, last_date=%s", len(data), symbol, freq, last_date)
-        return len(data)
-    finally:
-        conn.close()
+
+            # 更新 sync_meta
+            last_date = max(r["date"] for r in rows)
+            if update_meta:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO kline_sync_meta (symbol, freq, last_date)
+                    VALUES (?, ?, ?)
+                    """,
+                    (symbol, freq, last_date),
+                )
+            conn.commit()
+            logger.debug("upsert %d klines for %s/%s, last_date=%s", len(data), symbol, freq, last_date)
+            return len(data)
+        finally:
+            conn.close()
 
 
 def count_klines(symbol: str, freq: str, source: LakeSource = "baostock") -> int:

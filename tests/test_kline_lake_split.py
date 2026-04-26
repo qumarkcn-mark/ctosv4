@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -102,3 +103,32 @@ def test_init_lake_migrates_legacy_single_lake(monkeypatch, tmp_path):
     bao_rows = kline_lake.query_klines("sh.600000", "30", adjustflag="2")
     assert len(tdx_rows) == 1
     assert len(bao_rows) == 1
+
+
+def test_concurrent_upserts_to_same_lake_are_serialized(monkeypatch, tmp_path):
+    reset_lake_paths(monkeypatch, tmp_path)
+
+    def write_symbol(index: int) -> int:
+        return kline_lake.upsert_klines(
+            f"sh.60{index:04d}",
+            "30",
+            [
+                {
+                    "date": f"2026-04-24 10:{index % 60:02d}:00",
+                    "open": 10 + index,
+                    "high": 11 + index,
+                    "low": 9 + index,
+                    "close": 10.5 + index,
+                    "volume": 1000,
+                    "amount": 10000,
+                }
+            ],
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        written = list(pool.map(write_symbol, range(16)))
+
+    assert sum(written) == 16
+    conn = kline_lake.get_lake_connection("baostock")
+    count = conn.execute("SELECT COUNT(*) FROM klines WHERE freq='30'").fetchone()[0]
+    assert count == 16
