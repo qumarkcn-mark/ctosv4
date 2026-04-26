@@ -182,6 +182,9 @@ def test_empty_mode_returns_entry_plan_and_no_holding_plan(monkeypatch):
     assert data["data_source"]["structure"]["provider"] == "baostock"
     assert data["data_source"]["structure"]["adjustflag"] == "2"
     assert data["plans"][0]["plan_type"] == "ENTRY"
+    assert data["strategy"]["strategy_id"] == "war1_third_buy"
+    assert data["strategy"]["strategy_version"] == "1.0.0"
+    assert data["strategy"]["freshness_required"] is True
 
 
 def test_success_uses_chan_adapter_structure_when_available(monkeypatch):
@@ -258,8 +261,39 @@ def test_holding_mode_returns_holding_plan_and_no_entry_plan(monkeypatch):
     assert data["entry_plan"] is None
     assert data["holding_plan"] is not None
     assert data["holding_plan"]["plan_type"] == "HOLDING"
-    assert data["plans"][0]["plan_type"] == "HOLDING"
-    assert data["disclaimer"] == radar.DISCLAIMER
+    assert data["strategy"]["strategy_id"] == "holding_stage_manager"
+    assert data["strategy"]["strategy_version"] == "1.0.0"
+
+
+def test_holding_plan_includes_entry_thesis_from_position():
+    from server.engines.decision.radar_planner import build_radar_decision
+
+    thesis = {
+        "strategy_type": "战法二",
+        "entry_level": "5m",
+        "original_stop_loss": 9.2,
+    }
+    strategy, entry_plan, holding_plan, plans = build_radar_decision(
+        {},
+        {
+            "day": {"price": 12.0, "patterns": [], "zg": 11.0, "zd": 10.0},
+            "m30": {"patterns": [], "zg": 10.5, "detail_bis": []},
+            "m5": {},
+        },
+        {
+            "cost": 10.0,
+            "qty": 100,
+            "strategy_type": "未知",
+            "entry_thesis": thesis,
+        },
+        "仅供参考",
+    )
+
+    assert entry_plan is None
+    assert holding_plan["entry_thesis"] == thesis
+    assert holding_plan["risk"]["original_stop_loss"] == 9.2
+    assert holding_plan["legacy_status"]["strategy_type"] == "战法二"
+    assert plans == [holding_plan]
 
 
 def test_engine_error_returns_stable_error_envelope(monkeypatch):

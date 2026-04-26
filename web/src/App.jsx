@@ -5,6 +5,7 @@ import BehaviorReport from './pages/BehaviorReport.jsx'
 import SandTable from './pages/SandTable.jsx'
 import RotationCompass from './pages/RotationCompass.jsx'
 import ChanMatrix from './pages/ChanMatrix.jsx'
+import Scanner from './pages/Scanner.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import './App.css'
 
@@ -63,6 +64,12 @@ function App() {
             📈 行为分析
           </button>
           <button
+            className={`nav-tab ${page === 'scanner' ? 'active' : ''}`}
+            onClick={() => navigate('scanner')}
+          >
+            🎯 今日机会
+          </button>
+          <button
             className={`nav-tab ${page === 'chan' ? 'active' : ''}`}
             onClick={() => navigate('chan')}
           >
@@ -94,6 +101,7 @@ function App() {
       <main className="main-content">
         {page === 'dashboard' && <Dashboard onViewInChan={handleViewInChan} />}
         {page === 'analysis' && <BehaviorReport onViewInChan={handleViewInChan} />}
+        {page === 'scanner' && <Scanner onViewInChan={handleViewInChan} />}
         {page === 'chan' && (
           <ChanView
             activeSymbol={activeSymbol}

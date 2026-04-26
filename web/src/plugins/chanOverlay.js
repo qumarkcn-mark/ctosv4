@@ -552,7 +552,9 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
   if (clearFirst) {
     chart.removeOverlay({ groupId: 'chan_bi_group' })
     chart.removeOverlay({ groupId: 'chan_seg_group' })
-    chart.removeOverlay({ groupId: 'chan_zs_group' })
+    chart.removeOverlay({ groupId: 'chan_bi_zs_group' })        // 笔中枢（全局扫描）
+    chart.removeOverlay({ groupId: 'chan_bi_zs_decomp_group' }) // 笔中枢（同级别分解）
+    chart.removeOverlay({ groupId: 'chan_seg_zs_group' })       // 段中枢
     chart.removeOverlay({ groupId: 'chan_bsp_group' })
     chart.removeOverlay({ groupId: 'chan_projection_group' })
     chart.removeOverlay({ groupId: 'chan_momentum_group' })
@@ -595,14 +597,19 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
     }
   }
 
+  // 中枢方向辅助：找最接近 begin_date 的笔（x0 >= begin_date 的第一笔）
+  // 上升中枢：第一笔通常是向下笔（从中枢上方回调进入），is_up=false → UP_ZS
+  // 下降中枢：第一笔通常是向上笔（从中枢下方反弹进入），is_up=true  → DOWN_ZS
+  const getZsType = (strokeList, beginDate) => {
+    const first = strokeList?.find(s => s.x0 >= beginDate)
+    if (!first) return 'UP_ZS'
+    return first.is_up ? 'DOWN_ZS' : 'UP_ZS'
+  }
+
   // 2. 笔中枢（全局扫描，小级别，虚线矩形）
   if (data.bi_zhongshus?.length > 0) {
     for (const zs of data.bi_zhongshus) {
-      let zsType = 'UP_ZS'
-      if (data.bis?.length > 0) {
-        const firstBi = data.bis.find(bi => bi.x0 >= zs.begin_date)
-        if (firstBi) zsType = !firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
-      }
+      const zsType = getZsType(data.bis, zs.begin_date)
       overlays.push({
         groupId: 'chan_bi_zs_group',
         name: 'chan_zs',
@@ -619,11 +626,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
   // 2.1 笔中枢（同级别分解，紫色虚线矩形）
   if (data.bi_zhongshus_decomp?.length > 0) {
     for (const zs of data.bi_zhongshus_decomp) {
-      let zsType = 'UP_ZS'
-      if (data.bis?.length > 0) {
-        const firstBi = data.bis.find(bi => bi.x0 >= zs.begin_date)
-        if (firstBi) zsType = !firstBi.is_up ? 'UP_ZS' : 'DOWN_ZS'
-      }
+      const zsType = getZsType(data.bis, zs.begin_date)
       overlays.push({
         groupId: 'chan_bi_zs_decomp_group',
         name: 'chan_zs_decomp',
@@ -640,11 +643,7 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
   // 2.5 线段中枢（大级别，实线矩形，更醒目）
   if (data.seg_zhongshus?.length > 0) {
     for (const zs of data.seg_zhongshus) {
-      let zsType = 'UP_ZS'
-      if (data.segs?.length > 0) {
-        const firstSeg = data.segs.find(s => s.x0 >= zs.begin_date)
-        if (firstSeg) zsType = !firstSeg.is_up ? 'UP_ZS' : 'DOWN_ZS'
-      }
+      const zsType = getZsType(data.segs, zs.begin_date)
       overlays.push({
         groupId: 'chan_seg_zs_group',
         name: 'chan_zs',

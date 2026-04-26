@@ -13,7 +13,7 @@
 
 import asyncio
 import logging
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 
 from server.services.chan_detail_service import get_chan_detail, _compute_macd
 
@@ -414,11 +414,23 @@ def _check_interval_nesting(levels_data, level_names=None) -> Optional[dict]:
                 break  # 方向不一致或无背驰，链条断了
 
     if len(nesting) >= 3:
-        return {"depth": 3, "label": "三级区间套确认", "direction": nesting_direction, "levels": nesting}
+        return {
+            "depth": 3, "label": "三级区间套确认",
+            "direction": nesting_direction, "levels": nesting,
+            "confidence_gate": "HIGH",    # 允许全量操作信号
+        }
     elif len(nesting) >= 2:
-        return {"depth": 2, "label": "两级区间套", "direction": nesting_direction, "levels": nesting}
+        return {
+            "depth": 2, "label": "两级区间套",
+            "direction": nesting_direction, "levels": nesting,
+            "confidence_gate": "MEDIUM",  # 半仓信号
+        }
     elif len(nesting) >= 1:
-        return {"depth": 1, "label": "单级别背驰", "direction": nesting_direction, "levels": nesting}
+        return {
+            "depth": 1, "label": "单级别背驰",
+            "direction": nesting_direction, "levels": nesting,
+            "confidence_gate": "LOW",     # 仅观察，不触发操作
+        }
     return None
 
 
@@ -1747,79 +1759,78 @@ def _detect_dead_cat_bounce(bis: list, price: float) -> str:
     return ""
 
 
-def _build_zs_context(klines: list, level: str) -> dict:
-    """用 chan_engine 计算当前级别的区间套数据。
+def _build_zs_context(
+    zhongshus: list,
+    bis: Optional[Union[list, str]] = None,
+    klines: Optional[list] = None,
+    level: Optional[str] = None,
+) -> dict:
+    """从 chan_detail_service 已算好的中枢和笔数据中提取区间套信息。
+
+    数据源改为 chan.py 的正确结构（接收方传入），不再由 chan_engine 滚动窗口重算中枢。
+    操作中枢选取逻辑不变；free_bis 改从 chan.py 笔列表中按时间截取。
+
+    Args:
+        zhongshus: chan_detail_service 输出的中枢列表（dict，含 zg/zd/begin_date/end_date）
+        bis:       chan_detail_service 输出的笔列表（dict，含 x0/x1/y0/y1/is_up）
+        klines:    原始K线（仅用于取当前收盘价）
+        level:     级别名称（用于日志）
 
     返回：
-      zs_operative_zd/zg   操作中枢（距当前价最近的中枢）边界
+      zs_operative_zd/zg   操作中枢边界
       zs_free_bis_count     最后中枢之后的自由笔数量
       zs_free_bis_dir       自由笔整体方向（"up"/"down"/"none"）
       zs_free_high/low      自由笔段极值（用于止损锚定）
       zs_last_centers       最近3个中枢的 ZD/ZG 列表（从旧到新）
       zs_departure          价格相对操作中枢的状态（"above"/"below"/"inside"）
     """
+    # 兼容旧测试/旧调用方：历史签名是 _build_zs_context(klines, level)。
+    if level is None and isinstance(bis, str):
+        level = bis
+        klines = zhongshus
+        zhongshus = []
+        bis = []
+
     _empty = {
         "zs_operative_zd": 0, "zs_operative_zg": 0,
         "zs_free_bis_count": 0, "zs_free_bis_dir": "none",
         "zs_free_high": 0, "zs_free_low": 0,
         "zs_last_centers": [], "zs_departure": "unknown",
-        "zs_data_ok": False,  # E1: 标记数据降级，供下游检测
+        "zs_data_ok": False,
     }
-    if not _CHAN_ENGINE_AVAILABLE or not klines:
+
+    if not zhongshus or not klines:
         return _empty
 
     try:
-        raw = [ChanKLine(
-            date=k.get("time", k.get("date", "")),
-            open=float(k.get("open", 0)),
-            close=float(k.get("close", 0)),
-            high=float(k.get("high", 0)),
-            low=float(k.get("low", 0)),
-            volume=float(k.get("volume", 0)),
-        ) for k in klines if k.get("close")]
-
-        if len(raw) < 10:
-            return _empty
-
-        merged   = ChanParser.merge_klines(raw)
-        fenxings = ChanParser.find_fenxings(merged)
-        bis      = ChanParser.build_bis(fenxings, merged)
-        zhongshus, free_bis = ChanFSM.identify_zhongshu(bis)
-
-        price = raw[-1].close
-
-        if not zhongshus:
+        price = float(klines[-1].get("close", 0))
+        if price == 0:
             return _empty
 
         # ── 操作中枢选取（缠论区间套逻辑）──
         # 规则优先级：
         #   1. 价格在某中枢内部 → 直接用该中枢（departure=inside）
-        #   2. 价格在所有中枢上方 → 用最新形成的中枢（价格刚突破的那个）
-        #   3. 价格在所有中枢下方 → 用最新形成的中枢
-        #   4. 价格夹在两个中枢之间（上穿低枢未进高枢）→
-        #      用价格所在位置上方最近的已突破中枢（即低枢），dep=above
-        #      而不是用尚未进入的高枢，否则 dep 会被误判为 below
+        #   2. 价格在所有中枢上方 → 用 ZG 最高的中枢（最近突破的支撑面）
+        #   3. 价格在所有中枢下方 → 用 ZD 最低的中枢（最近压力位）
 
         # 步骤1：检查是否在某中枢内
         operative_zs = None
         for zs in zhongshus:
-            if zs.ZD <= price <= zs.ZG:
+            if zs["zd"] <= price <= zs["zg"]:
                 operative_zs = zs
-                break   # 取第一个包含当前价的中枢
+                break
 
         if operative_zs is None:
-            # 步骤2：价格在所有中枢上方——选 ZG 最高的中枢
-            # 理由：ZG 最高 = 价格最近突破的支撑面，是缠论意义上的操作止损锚
-            # （不用列表末位，因为 FSM 输出顺序不严格按时间）
-            above_centers = [zs for zs in zhongshus if price > zs.ZG]
+            above_centers = [zs for zs in zhongshus if price > zs["zg"]]
             if above_centers:
-                operative_zs = max(above_centers, key=lambda z: z.ZG)
+                # 步骤2：价格在中枢上方 → ZG 最高 = 最近突破的止损锚
+                operative_zs = max(above_centers, key=lambda z: z["zg"])
             else:
-                # 步骤3：价格在所有中枢下方，选 ZD 最低的中枢（最近压力位）
-                operative_zs = min(zhongshus, key=lambda z: z.ZD)
+                # 步骤3：价格在所有中枢下方 → ZD 最低 = 最近压力位
+                operative_zs = min(zhongshus, key=lambda z: z["zd"])
 
-        op_zg = round(operative_zs.ZG, 2)
-        op_zd = round(operative_zs.ZD, 2)
+        op_zg = round(operative_zs["zg"], 2)
+        op_zd = round(operative_zs["zd"], 2)
 
         if price > op_zg:
             departure = "above"
@@ -1828,21 +1839,32 @@ def _build_zs_context(klines: list, level: str) -> dict:
         else:
             departure = "inside"
 
-        # 自由笔分析
-        free_count = len(free_bis)
+        # ── 自由笔：最后中枢结束后的笔 ──
+        last_zs_end = zhongshus[-1].get("end_date", "")
+        if last_zs_end and bis:
+            # 取起点在最后中枢结束日期之后的笔（严格大于，排除离开段本身）
+            free_bis_list = [b for b in bis if b.get("x0", "") > last_zs_end]
+        else:
+            free_bis_list = []
+
+        free_count = len(free_bis_list)
         if free_count == 0:
             free_dir = "none"
             free_high = free_low = 0.0
         else:
-            free_high = max(b.high for b in free_bis)
-            free_low  = min(b.low  for b in free_bis)
-            # 整体方向：看第一笔离开时是向上还是向下
-            first_free = free_bis[0]
-            free_dir = "up" if first_free.direction.value == 1 else "down"
+            # 上涨笔：高点=y1，低点=y0；下跌笔：高点=y0，低点=y1
+            free_high = max(
+                (b["y1"] if b["is_up"] else b["y0"]) for b in free_bis_list
+            )
+            free_low = min(
+                (b["y0"] if b["is_up"] else b["y1"]) for b in free_bis_list
+            )
+            # 整体方向：看第一笔离开时的方向
+            free_dir = "up" if free_bis_list[0].get("is_up") else "down"
 
         # 最近3个中枢（从旧到新）
         last_centers = [
-            {"zd": round(zs.ZD, 2), "zg": round(zs.ZG, 2)}
+            {"zd": round(zs["zd"], 2), "zg": round(zs["zg"], 2)}
             for zs in zhongshus[-3:]
         ]
 
@@ -1858,7 +1880,6 @@ def _build_zs_context(klines: list, level: str) -> dict:
             "zs_data_ok": True,
         }
     except Exception as e:
-        # E1 修复：升级为 warning，生产日志可见；zs_data_ok=False 供下游检测降级状态
         logger.warning("_build_zs_context failed for level=%s: %s", level, e)
         return _empty
 
@@ -1987,8 +2008,8 @@ async def _analyze_single_level(symbol: str, level: str,
         for k in klines[-5:]
     ] if klines else []
 
-    # ── 区间套数据（chan_engine 提供精确的 free_bis 和中枢序列） ──
-    zs_context = _build_zs_context(klines, level)
+    # ── 区间套数据（使用 chan_detail_service 的正确中枢，不再由 chan_engine 重算）──
+    zs_context = _build_zs_context(zhongshus, bis, klines, level)
 
     # 优先使用 chan_engine 操作中枢边界；若不可用则保留 chan_detail_service 旧值。
     # 这样所有下游（_describe_current_position / 狙击位检测 / 前端 readBoard）
@@ -2407,6 +2428,107 @@ def _assess_center_context(l1: dict, l2: dict, l3: Optional[dict] = None) -> dic
             }
 
 
+def _detect_coiling_near_pivot(l3: dict, target_price: float,
+                                tolerance: float = 0.012) -> dict:
+    """检测5分级别是否在目标价位（通常是大级别ZG/3买上沿）附近窄幅震荡。
+
+    窄幅震荡三个必要条件：
+      1. 当前价贴近目标位（偏差 < tolerance，默认1.2%）
+      2. 自由笔振幅极小（< 2%）——说明多空在此胶着蓄力
+      3. 自由笔数量 >= 2——说明已形成盘整而非刚刚到位
+
+    A股假突破检测（主力洗盘特征）：
+      - 某根K线的 low 跌破盘整低点，但随后立即收回
+      - 假跌破深度 < 0.5%，持续不超过2根K线
+      - 假跌破次数 1~2 次：信号强化（洗盘完成）
+      - 假跌破次数 >= 3 次：降级，疑似真实下跌
+
+    Returns:
+      {
+        "is_coiling": bool,
+        "range_pct": float,          # 盘整振幅（free_bis极值/价格）
+        "distance_pct": float,       # 当前价偏离目标价的距离
+        "trigger_line": float,       # 突破触发线（盘整高点）
+        "stop_line": float,          # 止损线（盘整低点，假跌破后更新）
+        "fake_breakdown": bool,      # 是否出现假跌破
+        "fake_breakdown_count": int,
+        "signal_level": str,         # "无" / "备战" / "备战_强化"
+      }
+    """
+    _empty = {
+        "is_coiling": False, "range_pct": 0.0, "distance_pct": 0.0,
+        "trigger_line": 0.0, "stop_line": 0.0,
+        "fake_breakdown": False, "fake_breakdown_count": 0,
+        "signal_level": "无",
+    }
+    if not l3 or target_price <= 0:
+        return _empty
+
+    price = l3.get("price", 0)
+    if price <= 0:
+        return _empty
+
+    free_count = l3.get("zs_free_bis_count", 0)
+    free_high  = l3.get("zs_free_high", 0)
+    free_low   = l3.get("zs_free_low", 0)
+
+    # 振幅
+    range_pct = ((free_high - free_low) / free_high
+                 if (free_count >= 2 and free_high > 0 and free_low > 0)
+                 else 1.0)
+
+    # 距离目标价
+    distance_pct = abs(price - target_price) / target_price
+
+    # 主条件
+    is_coiling = (range_pct < 0.02 and distance_pct < tolerance and free_count >= 2)
+    if not is_coiling:
+        return _empty
+
+    # 假跌破检测（recent_klines：最近5根5分K）
+    recent       = l3.get("recent_klines", [])
+    stop_line    = free_low
+    fake_count   = 0
+
+    for i, k in enumerate(recent):
+        if k.get("low", stop_line) < stop_line:
+            subsequent = recent[i + 1:]
+            if subsequent and subsequent[0].get("close", 0) > stop_line:
+                depth = (stop_line - k["low"]) / stop_line
+                if depth < 0.005:  # 假跌破深度 < 0.5%
+                    fake_count += 1
+                    # 假跌破最低点作为更精确的止损锚
+                    stop_line = min(stop_line, k["low"])
+
+    # fake_count >= 3 说明压力真实，降级
+    if fake_count >= 3:
+        return _empty
+
+    # ── 买点支撑检测（文章核心过滤：盘整低点必须有小级别买点）──
+    # 只有盘整低点处形成了5分底背驰（1买）或底分型确认，突破才是"位置3"级别的信号。
+    # 没有买点支撑的突破 = 文章中的"位置1/位置2"，进场后大概率被止损。
+    l3_patterns_str = " ".join(l3.get("patterns", []) or [])
+    l3_div          = l3.get("div_info") or {}
+    has_buy_point_support = (
+        l3_div.get("type") == "底背驰"
+        or "底背驰" in l3_patterns_str
+        or l3.get("has_bottom_fractal", False)
+    )
+
+    signal = "备战_强化" if fake_count >= 1 else "备战"
+    return {
+        "is_coiling": True,
+        "range_pct": round(range_pct, 4),
+        "distance_pct": round(distance_pct, 4),
+        "trigger_line": round(free_high, 2),
+        "stop_line": round(stop_line, 2),
+        "fake_breakdown": fake_count >= 1,
+        "fake_breakdown_count": fake_count,
+        "signal_level": signal,
+        "has_buy_point_support": has_buy_point_support,  # 盘整低点是否有买点结构
+    }
+
+
 # ═══════════════════════════════════════════════════════════════
 # 八A、买卖点生命周期节点识别（空仓路径核心）
 # ═══════════════════════════════════════════════════════════════
@@ -2490,18 +2612,106 @@ def _detect_lifecycle_node(l2: dict, l3: Optional[dict] = None) -> dict:
                     f"守住{fine_stop:.2f}→结构完整，跌破→类二买失败"
                 ),
                 "entry_zone": (round(fine_stop, 2), round(free_low * 1.02, 2)),
-                "next_watch": f"守住{fine_stop:.2f}出现向上分型→入场；跌破→观望等结构重建",
-                "action": f"类二买：回踩守住{stop_desc}，出现向上分型后入场",
+                "next_watch": (
+                    f"守住{fine_stop:.2f}，{l3_name}突破确认→入场；跌破→观望等结构重建"
+                    if l3_op_zg > 0 else
+                    f"守住{fine_stop:.2f}出现向上分型→入场；跌破→观望等结构重建"
+                ),
+                "action": (
+                    f"类二买：回踩守住{stop_desc}，{l3_name}突破确认后入场"
+                    if l3_op_zg > 0 else
+                    f"类二买：回踩守住{stop_desc}，出现向上分型后入场"
+                ),
                 "position_hint": "30-50%",
             }
 
-        # A2. 中枢上方无回踩（或回踩已跌破ZG，等待重建）→ 三买酝酿/涨停板等待
-        # 止损参考 = 操作中枢 ZG，不是历史旧低
+        # A2. 中枢上方无明显回踩 → 先检测5分级别是否在ZG附近窄幅盘整
+        # 窄幅震荡说明多空在此胶着蓄力，一旦盘整上沿突破=精确入场点
+        coiling = _detect_coiling_near_pivot(l3, op_zg)
+        if coiling["is_coiling"]:
+            fake_note = (
+                f"，已出现{coiling['fake_breakdown_count']}次假跌破后收回，主力洗盘完成，阻力出清"
+                if coiling["fake_breakdown"] else ""
+            )
+            has_bp = coiling.get("has_buy_point_support", False)
+
+            if has_bp:
+                # ── 有买点支撑：文章"位置3"，有效突破信号 ──
+                conf = "高" if coiling["fake_breakdown"] else "中"
+                hint = "50-70%" if coiling["fake_breakdown"] else "30-50%"
+                return {
+                    "node": "三买上沿_盘整",
+                    "confidence": conf,
+                    "stop_loss": coiling["stop_line"],
+                    "stop_basis": (
+                        f"盘整低点{coiling['stop_line']:.2f}（{l3_name}底背驰支撑，止损锚精确）{fake_note}；"
+                        f"跌破说明盘整买点失效，不入场"
+                    ),
+                    "entry_zone": (coiling["stop_line"], coiling["trigger_line"]),
+                    "next_watch": (
+                        f"盯住{coiling['trigger_line']:.2f}突破→入场，"
+                        f"止损={coiling['stop_line']:.2f}"
+                    ),
+                    "action": (
+                        f"{'⚡ 洗盘完成，信号强化！' if coiling['fake_breakdown'] else ''}"
+                        f"三买上沿盘整 + {l3_name}底背驰买点支撑，"
+                        f"突破{coiling['trigger_line']:.2f}即入场，"
+                        f"止损={coiling['stop_line']:.2f}（振幅{coiling['range_pct']*100:.1f}%）"
+                    ),
+                    "position_hint": hint,
+                    "coiling_info": coiling,
+                }
+            else:
+                # ── 无买点支撑：文章"位置1/2"，降级为观察 ──
+                # 盘整存在但低点没有底背驰，突破后容易被止损，不操作
+                return {
+                    "node": "三买上沿_盘整",
+                    "confidence": "低",
+                    "stop_loss": coiling["stop_line"],
+                    "stop_basis": (
+                        f"盘整低点{coiling['stop_line']:.2f}，但{l3_name}底部无背驰/买点结构，"
+                        f"属于位置1/2，突破后容易被止损"
+                    ),
+                    "entry_zone": None,
+                    "next_watch": (
+                        f"等待{l3_name}盘整低点出现底背驰后再关注突破，"
+                        f"当前突破不操作"
+                    ),
+                    "action": (
+                        f"⚠️ 三买上沿盘整，但{l3_name}低点无买点支撑（位置1/2），"
+                        f"观察为主，等底背驰形成后再考虑入场"
+                    ),
+                    "position_hint": "观望",
+                    "coiling_info": coiling,
+                }
+
+        # A2b. 无盘整 → 流畅运行 or 等待回踩
         stop_ref = l3_op_zg if l3_op_zg > op_zg else op_zg
         stop_label = (f"{l3_name}ZG={stop_ref:.2f}" if stop_ref == l3_op_zg
                       else f"{l2_name}ZG={op_zg:.2f}")
-        next_entry = (f"等回踩守住{stop_label}，出现底分型→入场"
-                      if free_count == 0 else f"等回踩稳定在{l2_name}ZG={op_zg:.2f}以上后入场")
+
+        # ── 流畅上涨段识别：中枢上方无自由笔（刚突破），趋势流畅不追入 ──
+        # 文章："当走势步入流畅运行阶段，这样的回调位置就没有了"
+        if free_count == 0:
+            return {
+                "node": "流畅上涨_不追入",
+                "confidence": "中",
+                "stop_loss": round(op_zg, 2),
+                "stop_basis": f"{l2_name}ZG={op_zg:.2f}，跌回以下=突破失效",
+                "entry_zone": None,
+                "next_watch": (
+                    f"趋势流畅运行中，无安全入场位。"
+                    f"等回踩形成新中枢后，在新中枢ZG附近寻找{l3_name}买点"
+                ),
+                "action": (
+                    f"🚫 流畅上涨段，不追入。"
+                    f"等价格回踩{stop_label}形成回调结构，再找买点入场"
+                ),
+                "position_hint": "观望",
+            }
+
+        # 有自由笔但未形成盘整：等回踩稳定
+        next_entry = f"等回踩稳定在{l2_name}ZG={op_zg:.2f}以上，{l3_name}出现突破确认→入场"
         return {
             "node": "三买_确认",
             "confidence": "中",
@@ -2509,7 +2719,7 @@ def _detect_lifecycle_node(l2: dict, l3: Optional[dict] = None) -> dict:
             "stop_basis": f"操作中枢ZG={op_zg:.2f}，跌回以下=上方趋势信号暂时失效",
             "entry_zone": (round(op_zg, 2), round(op_zg * 1.05, 2)),
             "next_watch": next_entry,
-            "action": f"中枢上方趋势持续，{next_entry}",
+            "action": f"中枢上方有回踩迹象，{next_entry}",
             "position_hint": "观望（等回踩确认后再入）",
         }
 
@@ -2602,7 +2812,11 @@ def _detect_lifecycle_node(l2: dict, l3: Optional[dict] = None) -> dict:
                 "stop_loss": round(prev_low, 2),
                 "stop_basis": f"前低（一买低点）{prev_low:.2f}，跌破=一买失败结构破坏",
                 "entry_zone": (round(curr_low, 2), round(curr_low * 1.03, 2)),
-                "next_watch": f"守住{curr_low:.2f}出现向上分型→入场；跌破{prev_low:.2f}→放弃",
+                "next_watch": (
+                    f"守住{curr_low:.2f}，{l3_name}突破确认→入场；跌破{prev_low:.2f}→放弃"
+                    if l3_op_zg > 0 else
+                    f"守住{curr_low:.2f}出现向上分型→入场；跌破{prev_low:.2f}→放弃"
+                ),
                 "action": "⭐ 二买！缠论最高性价比。止损=前低，入场仓位参考区间套深度",
                 "position_hint": "30-50%（有区间套则50-70%）",
             }
@@ -2698,19 +2912,26 @@ def _build_empty_position_classes(l1: dict, l2: dict, l3: Optional[dict] = None)
     entry_z   = node_info.get("entry_zone")
     hint      = node_info.get("position_hint", "观望")
 
+    # ── 入场触发描述：优先用5分突破，无数据退回向上分型 ──
+    def _entry_trigger(level_zg: float, level_name: str) -> str:
+        if level_zg > 0:
+            return f"{level_name}突破{level_zg:.2f}确认"
+        return "出现向上分型"
+
     # ── 二买（最高性价比） ──
     if node == "二买_形成":
         prev_low = stop
         curr_low = bots[-1] if bots else price
+        trigger  = _entry_trigger(l3_zg, l3_name)
         return [
             {
                 "id": "甲",
-                "condition": f"回调守住前低 {prev_low:.2f}，出现向上分型",
+                "condition": f"回调守住前低 {prev_low:.2f}，{trigger}",
                 "meaning": (
                     f"二买确认！前低={prev_low:.2f}已验证有买盘，此次不创新低说明多头结构成立。"
                     f"缠论最高性价比：止损={prev_low:.2f}，空间指向{l2_zg:.2f}以上。"
                 ),
-                "action": f"出现向上分型后入场，仓位 {hint}；止损 {prev_low:.2f}",
+                "action": f"{trigger}后入场，仓位 {hint}；止损 {prev_low:.2f}",
                 "stop_loss": round(prev_low, 2),
                 "stop_reason": f"前低（一买低点）{prev_low:.2f}，跌破=一买结构失败，立即止损",
                 "lifecycle_node": node,
@@ -2732,18 +2953,61 @@ def _build_empty_position_classes(l1: dict, l2: dict, l3: Optional[dict] = None)
             },
         ]
 
-    # ── 三买确认 ──
-    if node == "三买_确认":
-        pullback_low = stop if stop else l2_zg
+    # ── 三买上沿盘整（新节点：比三买_确认更精确的入场时机）──
+    if node == "三买上沿_盘整":
+        coiling = node_info.get("coiling_info", {})
+        trigger_line = coiling.get("trigger_line", l2_zg)
+        stop_line    = coiling.get("stop_line", l2_zg)
+        fake_note    = (
+            f"⚡ 洗盘完成（{coiling.get('fake_breakdown_count', 0)}次假跌破已收回），阻力出清，"
+            if coiling.get("fake_breakdown") else ""
+        )
+        trigger = _entry_trigger(l3_zg, l3_name) if l3_zg > 0 else f"突破盘整上沿{trigger_line:.2f}"
         return [
             {
                 "id": "甲",
-                "condition": f"守住ZG={l2_zg:.2f}回踩低点 {pullback_low:.2f}",
+                "condition": f"盘整上沿{trigger_line:.2f}向上突破确认",
+                "meaning": (
+                    f"{fake_note}5分级别在{l2_name}ZG={l2_zg:.2f}附近窄幅盘整"
+                    f"（振幅{coiling.get('range_pct', 0)*100:.1f}%），"
+                    f"止损={stop_line:.2f}（比大级别ZG更精确），"
+                    f"突破即确认{l2_name}三买成立。"
+                ),
+                "action": f"突破{trigger_line:.2f}后立即跟进，仓位 {hint}；止损={stop_line:.2f}",
+                "stop_loss": round(stop_line, 2),
+                "stop_reason": f"盘整低点{stop_line:.2f}跌破=盘整失败，三买结构未成立",
+                "lifecycle_node": node,
+                "confidence": node_info["confidence"],
+                "position_size": hint,
+                "next_watch": node_info["next_watch"],
+            },
+            {
+                "id": "乙",
+                "condition": f"跌破盘整低点{stop_line:.2f}",
+                "meaning": f"盘整失败，{l2_name}三买结构暂不成立，等待更低位重新蓄力",
+                "action": "不入场，等结构重建后重新判断",
+                "stop_loss": None,
+                "stop_reason": "空仓无止损",
+                "lifecycle_node": node,
+                "confidence": "高",
+                "position_size": "观望",
+                "next_watch": f"等{l2_name}ZG={l2_zg:.2f}附近再次形成底部结构",
+            },
+        ]
+
+    # ── 三买确认 ──
+    if node == "三买_确认":
+        pullback_low = stop if stop else l2_zg
+        trigger      = _entry_trigger(l3_zg, l3_name)
+        return [
+            {
+                "id": "甲",
+                "condition": f"守住ZG={l2_zg:.2f}回踩低点 {pullback_low:.2f}，{trigger}",
                 "meaning": (
                     f"三买确认：{l2_name}向上脱离中枢后回踩守住ZG={l2_zg:.2f}，结构完整。"
                     f"{l1_name}趋势延伸空间指向ZG={l1_zg:.2f}以上。"
                 ),
-                "action": f"出现向上分型后跟进，仓位 {hint}；止损={pullback_low:.2f}",
+                "action": f"{trigger}后跟进，仓位 {hint}；止损={pullback_low:.2f}",
                 "stop_loss": round(pullback_low, 2),
                 "stop_reason": f"ZG={l2_zg:.2f}回踩低点{pullback_low:.2f}跌破=三买失败",
                 "lifecycle_node": node,
@@ -2767,12 +3031,13 @@ def _build_empty_position_classes(l1: dict, l2: dict, l3: Optional[dict] = None)
 
     # ── 类二买 ──
     if node == "类二买":
+        trigger = _entry_trigger(l3_zg, l3_name)
         return [
             {
                 "id": "甲",
-                "condition": f"回踩守住低点 {stop:.2f}，不创新低",
+                "condition": f"回踩守住低点 {stop:.2f}，{trigger}",
                 "meaning": f"类二买形成：三买后回踩守住，止损={stop:.2f}，性价比仅次于二买",
-                "action": f"出现向上分型后入场，仓位 {hint}；止损={stop:.2f}",
+                "action": f"{trigger}后入场，仓位 {hint}；止损={stop:.2f}",
                 "stop_loss": round(stop, 2),
                 "stop_reason": f"回踩低点{stop:.2f}跌破=类二买失败",
                 "lifecycle_node": node,
@@ -2948,6 +3213,58 @@ def _build_empty_position_classes(l1: dict, l2: dict, l3: Optional[dict] = None)
                     "next_watch": bear_sc,
                 },
             ]
+
+    # ── 流畅上涨段（不追入，等回踩） ──
+    if node == "流畅上涨_不追入":
+        return [
+            {
+                "id": "甲",
+                "condition": f"价格回踩{l2_name}ZG={l2_zg:.2f}附近，形成回调结构",
+                "meaning": (
+                    f"趋势当前处于流畅上涨段，无安全入场位。"
+                    f"此阶段强行追入是「大级别做突破」的典型误区——"
+                    f"缺乏战略性止损锚，被止损概率极高。"
+                    f"等回踩形成新中枢后，在新中枢ZG附近寻找{l3_name}买点。"
+                ),
+                "action": (
+                    f"🚫 不追入。等回踩{l2_name}ZG={l2_zg:.2f}附近，"
+                    f"{l3_name}出现底背驰后再入场"
+                ),
+                "stop_loss": None,
+                "stop_reason": "空仓无止损",
+                "lifecycle_node": node,
+                "confidence": node_info["confidence"],
+                "position_size": "观望",
+                "next_watch": node_info.get("next_watch", ""),
+            }
+        ]
+
+    # ── 三买上沿盘整（无买点支撑，降级观察） ──
+    if node == "三买上沿_盘整" and node_info.get("confidence") == "低":
+        coiling = node_info.get("coiling_info", {})
+        trigger = coiling.get("trigger_line", l2_zg)
+        stop    = coiling.get("stop_line", l2_zg)
+        return [
+            {
+                "id": "甲",
+                "condition": f"{l3_name}盘整低点出现底背驰信号",
+                "meaning": (
+                    f"盘整形态存在（振幅{coiling.get('range_pct',0)*100:.1f}%），"
+                    f"但{l3_name}底部尚无底背驰/买点结构，属于文章描述的「位置1/2」。"
+                    f"此类突破进场后大概率被反复止损，等买点出现再操作。"
+                ),
+                "action": (
+                    f"观察等待。{l3_name}低点形成底背驰后，"
+                    f"再盯住{trigger:.2f}突破入场，止损={stop:.2f}"
+                ),
+                "stop_loss": None,
+                "stop_reason": "买点未形成，空仓无止损",
+                "lifecycle_node": node,
+                "confidence": "低",
+                "position_size": "观望",
+                "next_watch": f"等{l3_name}底部底背驰形成→突破{trigger:.2f}→入场",
+            }
+        ]
 
     # ── 卖点/主跌/构建中（空仓等待类） ──
     return [
@@ -3565,23 +3882,46 @@ def _build_forward_analysis(matrix: list, nesting: Optional[dict] = None,
     position = _describe_current_position(l1, l2)
     forward_classes = _build_forward_classes(l1, l2, l3, holding=holding)
 
-    # ── 区间套增益：根据深度强化甲情形的仓位建议 ──
-    if nesting and nesting.get("depth", 0) >= 2 and forward_classes:
-        nest_label = nesting.get("label", "")
-        nest_dir   = nesting.get("direction", "")
-        # 只有背驰方向与甲情形操作方向一致时才加权
+    # ── 区间套门控：depth 决定操作信号级别，不再仅是标签 ──
+    # confidence_gate:
+    #   HIGH   (depth=3) → 全量操作，仓位上限不压制
+    #   MEDIUM (depth=2) → 半仓信号，position_size 最高压到 50%
+    #   LOW    (depth=1) → 仅观察，不触发入场，甲情形降级为"观察"
+    #   无区间套          → 保持原始建议不变
+    if nesting and forward_classes:
+        gate        = nesting.get("confidence_gate", "")
+        nest_label  = nesting.get("label", "")
+        nest_dir    = nesting.get("direction", "")
         first_class = forward_classes[0]
+
         if first_class.get("id") == "甲":
             action_text = first_class.get("action", "")
-            nest_hint = f"【{nest_label}确认，胜率显著提升】"
-            if nest_dir == "bottom":  # 底背驰：买入增益
-                if "入场" in action_text or "加仓" in action_text or "持仓" in action_text:
-                    forward_classes[0]["action"] = nest_hint + action_text
-                    forward_classes[0]["nest_boost"] = True
-            elif nest_dir == "top":  # 顶背驰：卖出增益
-                if "离场" in action_text or "减仓" in action_text or "空仓" in action_text:
-                    forward_classes[0]["action"] = nest_hint + action_text
-                    forward_classes[0]["nest_boost"] = True
+            dir_match_buy  = (nest_dir == "bottom" and
+                              any(kw in action_text for kw in ("入场", "加仓", "持仓", "跟进", "突破")))
+            dir_match_sell = (nest_dir == "top" and
+                              any(kw in action_text for kw in ("离场", "减仓", "空仓", "清仓")))
+
+            if gate == "HIGH" and (dir_match_buy or dir_match_sell):
+                prefix = f"【{nest_label}，胜率显著提升】"
+                forward_classes[0]["action"] = prefix + action_text
+                forward_classes[0]["nest_boost"] = True
+
+            elif gate == "MEDIUM" and dir_match_buy:
+                # 半仓门控：position_size 中含 "70%" 或 "50-70%" 的压到 "30-50%"
+                ps = first_class.get("position_size", "")
+                if any(x in ps for x in ("70%", "50-70%", "50%~70%")):
+                    forward_classes[0]["position_size"] = "30-50%（两级区间套，未达全量条件）"
+                prefix = f"【{nest_label}，半仓跟进】"
+                forward_classes[0]["action"] = prefix + action_text
+                forward_classes[0]["nest_boost"] = True
+
+            elif gate == "LOW":
+                # 单级别背驰：不触发操作，把甲情形降级为观察
+                forward_classes[0]["action"] = (
+                    f"【仅单级别背驰，观察为主，不入场】" + action_text
+                )
+                forward_classes[0]["position_size"] = "观望"
+                forward_classes[0]["nest_boost"] = False
 
     # M1 修复：注入笔数归属字段，供用户和前端验证笔数漂移（36笔 vs 39笔）
     bi_attribution = {

@@ -1,18 +1,21 @@
 """CT-OS V4.0 — 调仓罗盘 API
 
 提供一个接口：将所有持仓 + watchlist 候选股，
-通过同一套缠论评分引擎打分，排序，并生成"砍/加/换"建议。
+通过同一套缠论评分引擎排序，并生成甲乙丙结构预案。
 
 GET /api/rotation/compass?user_id=1
 """
 
 import asyncio
 import logging
+from typing import Optional
 from fastapi import APIRouter
 from starlette.concurrency import run_in_threadpool
 
 from server.db.database import get_connection
+from server.engines.decision.strategy_definitions import build_strategy_contract
 from server.services.chan_service import analyze_matrix_state
+from server.services.rotation_planner import RISK_DISCLAIMER, build_rotation_item
 from server.services.rotation_scorer import score_symbol
 
 logger = logging.getLogger(__name__)
@@ -24,7 +27,7 @@ router = APIRouter()
 # ═══════════════════════════════════════════════════════════════
 
 async def _analyze_one(row: dict, is_holding: bool) -> dict:
-    """拉取 analyze_matrix_state → 打分 → 合并持仓基础字段"""
+    """拉取 analyze_matrix_state → 排序评分 → 甲乙丙预案"""
     symbol = row["symbol"]
     base = {
         "symbol": symbol,
@@ -38,13 +41,12 @@ async def _analyze_one(row: dict, is_holding: bool) -> dict:
     try:
         matrix = await analyze_matrix_state(symbol)
         score_pkg = score_symbol(matrix, is_holding=is_holding)
-        return {**base, **score_pkg, "error": None}
+        return build_rotation_item({**base, **score_pkg, "error": None}, is_holding)
     except Exception as e:
         logger.warning("rotation score failed for %s: %s", symbol, e)
-        return {
+        fallback = {
             **base,
             "sort_score": 0,
-            "state_emoji": "⚪",
             "state_label": "接口异常",
             "lifecycle_node": "",
             "distance_pct": None,
@@ -53,6 +55,7 @@ async def _analyze_one(row: dict, is_holding: bool) -> dict:
             "main_action": "",
             "error": str(e)[:120],
         }
+        return build_rotation_item(fallback, is_holding)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -61,7 +64,7 @@ async def _analyze_one(row: dict, is_holding: bool) -> dict:
 
 @router.get("/compass")
 async def rotation_compass(user_id: int = 1):
-    """调仓罗盘主接口 — 返回 holdings / candidates / suggestions。"""
+    """调仓罗盘主接口 — 返回 holdings / candidates 的横向预案。"""
     positions, watchlist = await run_in_threadpool(_fetch_rows, user_id)
 
     # 并行打分（chan_service 内部已有数据湖缓存，批量不会很慢）
@@ -87,10 +90,14 @@ async def rotation_compass(user_id: int = 1):
     return {
         "status": "success",
         "data": {
+            "strategy": _build_rotation_strategy(suggestions),
             "holdings": holdings,
             "candidates": candidates,
+            "comparison": _build_comparison(holdings, candidates),
+            # 兼容旧前端字段；新前端不再把它作为主视觉。
             "suggestions": suggestions,
             "summary": _build_summary(holdings, candidates, suggestions),
+            "risk_disclaimer": RISK_DISCLAIMER,
         },
     }
 
@@ -115,17 +122,18 @@ def _fetch_rows(user_id: int):
             (user_id,),
         ).fetchall()
 
-        # 候选 = watchlist 里未被持仓的股票
+        # 候选 = watchlist 分组里未被持仓的股票
         watch_rows = conn.execute(
             """
-            SELECT w.symbol, w.name
-              FROM watchlist w
-             WHERE w.user_id = ?
-               AND w.symbol NOT IN (
+            SELECT wi.symbol, wi.name
+              FROM watchlist_items wi
+              JOIN watchlist_groups wg ON wg.id = wi.group_id
+             WHERE wg.user_id = ?
+               AND wi.symbol NOT IN (
                    SELECT symbol FROM positions
                     WHERE user_id = ? AND quantity > 0
                )
-             ORDER BY w.added_at DESC
+             ORDER BY wg.sort_order, wi.sort_order, wi.id
             """,
             (user_id, user_id),
         ).fetchall()
@@ -184,6 +192,46 @@ def _build_suggestions(holdings: list, candidates: list) -> dict:
             })
 
     return out
+
+
+def _build_rotation_strategy(suggestions: dict) -> dict:
+    """调仓罗盘是横向比较策略，只输出 plans，不执行交易。"""
+    has_suggestion = any(suggestions.get(key) for key in ("cut", "add", "rotate"))
+    return build_strategy_contract(
+        "rotation_comparison",
+        "TRIGGERED" if has_suggestion else "WATCHING",
+        [
+            {
+                "condition_id": "rotation_candidates_available",
+                "status": "PASS" if has_suggestion else "WATCHING",
+            }
+        ],
+    )
+
+
+def _build_comparison(holdings: list, candidates: list) -> dict:
+    strongest_holding = holdings[0] if holdings else None
+    weakest_holding = holdings[-1] if holdings else None
+    strongest_candidate = candidates[0] if candidates else None
+    return {
+        "holdings_count": len(holdings),
+        "candidates_count": len(candidates),
+        "strongest_holding": _compact_symbol(strongest_holding),
+        "weakest_holding": _compact_symbol(weakest_holding),
+        "strongest_candidate": _compact_symbol(strongest_candidate),
+        "focus": "比较结构清晰度、风险防线和触发条件；分数只用于排序。",
+    }
+
+
+def _compact_symbol(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "symbol": row.get("symbol"),
+        "name": row.get("name"),
+        "state_label": row.get("state_label"),
+        "lifecycle_node": row.get("lifecycle_node"),
+    }
 
 
 def _build_summary(holdings: list, candidates: list, suggestions: dict) -> dict:

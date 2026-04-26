@@ -9,7 +9,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from server.config import DB_PATH
 
@@ -24,8 +24,15 @@ logger = logging.getLogger(__name__)
 _thread_local = threading.local()
 _wal_init_lock = threading.Lock()  # 串行化首次 WAL 初始化，消除竞态
 
-# K 线数据湖专属路径（与主库分离，方便单独维护/迁移）
-LAKE_PATH = str(Path(DB_PATH).parent / "kline_lake.db")
+# K 线数据湖拆分：
+#   TDX_LAKE_PATH      = 全市场日线事实源（freq=day, adjustflag=3），供 scanner 使用
+#   BAOSTOCK_LAKE_PATH = BaoStock 多级别缓存（day/week/60/30/15/5），供缠论/持仓/价格使用
+LakeSource = Literal["tdx", "baostock"]
+TDX_LAKE_PATH = str(Path(DB_PATH).parent / "tdx_lake.db")
+BAOSTOCK_LAKE_PATH = str(Path(DB_PATH).parent / "baostock_lake.db")
+
+# 兼容旧导入：历史代码里的 LAKE_PATH 代表 BaoStock 多级别缓存。
+LAKE_PATH = BAOSTOCK_LAKE_PATH
 
 LAKE_SCHEMA = """
 -- K 线主表：全品种、全级别合并存储，按 (symbol, freq, date) 唯一
@@ -53,14 +60,42 @@ CREATE TABLE IF NOT EXISTS kline_sync_meta (
     PRIMARY KEY (symbol, freq)
 );
 
+-- TDX 专属同步元信息表，避免污染 BaoStock 多级别缓存的同步状态。
+CREATE TABLE IF NOT EXISTS tdx_sync_meta (
+    symbol      TEXT NOT NULL,
+    freq        TEXT NOT NULL,
+    last_date   TEXT NOT NULL,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (symbol, freq)
+);
+
 CREATE INDEX IF NOT EXISTS idx_klines_symbol_freq_date ON klines(symbol, freq, date);
 """
 
 
-def _make_fresh_connection(wal: bool = True) -> sqlite3.Connection:
+def get_lake_path(source: LakeSource = "baostock") -> str:
+    """返回指定数据源的数据湖路径。"""
+    if source == "tdx":
+        return TDX_LAKE_PATH
+    if source == "baostock":
+        return BAOSTOCK_LAKE_PATH
+    raise ValueError(f"未知数据湖来源: {source}")
+
+
+def _infer_read_source(freq: str, adjustflag: str, source: Optional[LakeSource]) -> LakeSource:
+    """读路径默认按业务语义路由：TDX 只承载不复权日线。"""
+    if source:
+        return source
+    if freq == "day" and adjustflag == "3":
+        return "tdx"
+    return "baostock"
+
+
+def _make_fresh_connection(source: LakeSource = "baostock", wal: bool = True) -> sqlite3.Connection:
     """创建一个全新的数据湖连接，并完成 WAL / PRAGMA 初始化。"""
-    Path(LAKE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(LAKE_PATH, check_same_thread=False, timeout=15)
+    lake_path = get_lake_path(source)
+    Path(lake_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(lake_path, check_same_thread=False, timeout=15)
     conn.row_factory = sqlite3.Row
     if wal:
         try:
@@ -79,14 +114,15 @@ def _make_fresh_connection(wal: bool = True) -> sqlite3.Connection:
     return conn
 
 
-def get_lake_connection() -> sqlite3.Connection:
+def get_lake_connection(source: LakeSource = "baostock") -> sqlite3.Connection:
     """
     获取当前线程的数据湖连接（线程本地复用）。
 
     每个工作线程只在首次调用时创建连接，后续复用，避免并发
     PRAGMA journal_mode=WAL 时的 -shm 文件竞态（disk I/O error）。
     """
-    conn: Optional[sqlite3.Connection] = getattr(_thread_local, "lake_conn", None)
+    conns: dict[str, sqlite3.Connection] = getattr(_thread_local, "lake_conns", {})
+    conn: Optional[sqlite3.Connection] = conns.get(source)
     if conn is not None:
         # 检查连接是否仍有效（被关闭或数据库文件被替换）
         try:
@@ -95,28 +131,112 @@ def get_lake_connection() -> sqlite3.Connection:
         except Exception:
             pass  # 连接已失效，重建
 
-    conn = _make_fresh_connection()
-    _thread_local.lake_conn = conn
+    conn = _make_fresh_connection(source)
+    conns[source] = conn
+    _thread_local.lake_conns = conns
     return conn
 
 
-def get_lake_write_connection() -> sqlite3.Connection:
+def get_lake_write_connection(source: LakeSource = "baostock") -> sqlite3.Connection:
     """
     获取用于写入的独立短连接（不复用线程本地连接）。
     写操作完成后调用方必须 commit() + close()。
     """
-    return _make_fresh_connection()
+    return _make_fresh_connection(source)
 
 
 def init_lake():
-    """初始化 K 线数据湖 schema"""
-    conn = get_lake_write_connection()
+    """初始化 TDX 与 BaoStock 两个 K 线数据湖 schema。"""
+    for source in ("tdx", "baostock"):
+        conn = get_lake_write_connection(source)
+        try:
+            conn.executescript(LAKE_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+        logger.info("K线数据湖已初始化[%s]: %s", source, get_lake_path(source))
+    _maybe_migrate_legacy_lake()
+
+
+def _maybe_migrate_legacy_lake() -> None:
+    """首次启动时把旧单库拆到新双库，避免部署后历史 K 线不可见。"""
+    old_path = Path(DB_PATH).parent / "kline_lake.db"
+    if not old_path.exists():
+        return
+    if _lake_row_count("tdx") > 0 or _lake_row_count("baostock") > 0:
+        return
+
+    logger.warning("检测到旧 K 线数据湖，开始自动拆分迁移: %s", old_path)
+    tdx_conn = get_lake_write_connection("tdx")
+    bao_conn = get_lake_write_connection("baostock")
     try:
-        conn.executescript(LAKE_SCHEMA)
-        conn.commit()
+        for conn in (tdx_conn, bao_conn):
+            conn.execute("ATTACH DATABASE ? AS old_lake", (str(old_path),))
+
+        tdx_conn.execute(
+            """
+            INSERT OR REPLACE INTO klines
+                (symbol, freq, date, open, high, low, close, volume, amount, adjustflag)
+            SELECT symbol, freq, date, open, high, low, close, volume, amount, adjustflag
+              FROM old_lake.klines
+             WHERE freq='day' AND adjustflag='3'
+            """
+        )
+        tdx_conn.execute(
+            """
+            INSERT OR REPLACE INTO tdx_sync_meta (symbol, freq, last_date)
+            SELECT symbol, 'day', MAX(date)
+              FROM klines
+             WHERE freq='day' AND adjustflag='3'
+             GROUP BY symbol
+            """
+        )
+
+        bao_conn.execute(
+            """
+            INSERT OR REPLACE INTO klines
+                (symbol, freq, date, open, high, low, close, volume, amount, adjustflag)
+            SELECT symbol, freq, date, open, high, low, close, volume, amount, adjustflag
+              FROM old_lake.klines
+             WHERE NOT (freq='day' AND adjustflag='3')
+            """
+        )
+        bao_conn.execute(
+            """
+            INSERT OR REPLACE INTO kline_sync_meta (symbol, freq, last_date, updated_at)
+            SELECT symbol, freq, last_date, updated_at
+              FROM old_lake.kline_sync_meta
+             WHERE EXISTS (
+                   SELECT 1 FROM klines
+                    WHERE klines.symbol = old_lake.kline_sync_meta.symbol
+                      AND klines.freq = old_lake.kline_sync_meta.freq
+             )
+            """
+        )
+
+        tdx_conn.commit()
+        bao_conn.commit()
+        logger.warning(
+            "旧 K 线数据湖自动迁移完成: tdx=%d, baostock=%d",
+            _lake_row_count("tdx"),
+            _lake_row_count("baostock"),
+        )
+    except sqlite3.Error:
+        tdx_conn.rollback()
+        bao_conn.rollback()
+        logger.exception("旧 K 线数据湖自动迁移失败")
+        raise
+    finally:
+        tdx_conn.close()
+        bao_conn.close()
+
+
+def _lake_row_count(source: LakeSource) -> int:
+    conn = get_lake_write_connection(source)
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM klines").fetchone()[0])
     finally:
         conn.close()
-    logger.info("K线数据湖已初始化: %s", LAKE_PATH)
 
 
 def query_klines(
@@ -126,6 +246,7 @@ def query_klines(
     end_date: Optional[str] = None,
     limit: int = 2000,
     adjustflag: str = "2",  # 默认前复权
+    source: Optional[LakeSource] = None,
 ) -> list[dict]:
     """
     从本地数据湖快速读取 K 线数据。
@@ -143,7 +264,7 @@ def query_klines(
         [{"date": "2024-01-02", "open": 1800.0, "high": ..., "low": ..., "close": ..., "volume": ...}, ...]
     """
     # 使用线程本地复用连接（读操作，不 close）
-    conn = get_lake_connection()
+    conn = get_lake_connection(_infer_read_source(freq, adjustflag, source))
     conditions = ["symbol = ?", "freq = ?", "adjustflag = ?"]
     params: list = [symbol, freq, adjustflag]
 
@@ -181,9 +302,9 @@ def query_klines(
     return result
 
 
-def get_last_sync_date(symbol: str, freq: str) -> Optional[str]:
+def get_last_sync_date(symbol: str, freq: str, source: LakeSource = "baostock") -> Optional[str]:
     """查询某只股票某级别最后同步的日期，用于增量更新（线程本地复用连接）"""
-    conn = get_lake_connection()
+    conn = get_lake_connection(source)
     cursor = conn.execute(
         "SELECT last_date FROM kline_sync_meta WHERE symbol = ? AND freq = ?",
         (symbol, freq),
@@ -192,7 +313,14 @@ def get_last_sync_date(symbol: str, freq: str) -> Optional[str]:
     return row["last_date"] if row else None
 
 
-def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2", update_meta: bool = True) -> int:
+def upsert_klines(
+    symbol: str,
+    freq: str,
+    rows: list[dict],
+    adjustflag: str = "2",
+    update_meta: bool = True,
+    source: LakeSource = "baostock",
+) -> int:
     """
     增量写入 K 线数据（ON CONFLICT REPLACE）。
     返回实际写入的行数。
@@ -203,7 +331,7 @@ def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2
         return 0
 
     # 写入使用独立短连接（不污染线程本地读连接的事务状态）
-    conn = get_lake_write_connection()
+    conn = get_lake_write_connection(source)
     try:
         data = [
             (symbol, freq, r["date"], r["open"], r["high"], r["low"],
@@ -236,9 +364,9 @@ def upsert_klines(symbol: str, freq: str, rows: list[dict], adjustflag: str = "2
         conn.close()
 
 
-def count_klines(symbol: str, freq: str) -> int:
+def count_klines(symbol: str, freq: str, source: LakeSource = "baostock") -> int:
     """查询某只股票某级别的缓存 K 线总量，用于 cold-start 检测（线程本地复用连接）"""
-    conn = get_lake_connection()
+    conn = get_lake_connection(source)
     cursor = conn.execute(
         "SELECT COUNT(*) as cnt FROM klines WHERE symbol = ? AND freq = ?",
         (symbol, freq),
@@ -248,4 +376,5 @@ def count_klines(symbol: str, freq: str) -> int:
 
 if __name__ == "__main__":
     init_lake()
-    print(f"数据湖初始化完成: {LAKE_PATH}")
+    print(f"TDX 数据湖初始化完成: {TDX_LAKE_PATH}")
+    print(f"BaoStock 数据湖初始化完成: {BAOSTOCK_LAKE_PATH}")

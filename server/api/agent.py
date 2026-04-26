@@ -312,7 +312,15 @@ async def portfolio_strategy(request: PortfolioStrategyRequest):
         def _get_watchlist():
             conn = get_connection()
             try:
-                rows = conn.execute("SELECT symbol, name FROM watchlist WHERE user_id = 1").fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT wi.symbol, wi.name
+                      FROM watchlist_items wi
+                      JOIN watchlist_groups wg ON wg.id = wi.group_id
+                     WHERE wg.user_id = 1
+                     ORDER BY wg.sort_order, wi.sort_order, wi.id
+                    """
+                ).fetchall()
                 return [{"symbol": r["symbol"], "name": r["name"]} for r in rows]
             finally:
                 conn.close()

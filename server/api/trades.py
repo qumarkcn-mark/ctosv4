@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from server.db.database import get_connection
+from server.services.entry_thesis import build_entry_thesis_from_trade, persist_entry_thesis
 from server.services.position_calc import recalculate_position
 
 router = APIRouter()
@@ -30,6 +31,11 @@ class TradeCreate(BaseModel):
     strategy_type: Optional[str] = Field(None, description="入场战法：战法一/战法二/未知")
     # 入场时5分中枢ZG（BUY 时可传，用于结构失效判断）
     m5_entry_zg: Optional[float] = Field(None, description="入场时5分中枢ZG价格")
+    entry_level: Optional[str] = Field(None, description="入场级别，如 5m/30m/day")
+    entry_zg: Optional[float] = Field(None, description="入场中枢 ZG")
+    entry_zd: Optional[float] = Field(None, description="入场中枢 ZD")
+    initial_target: Optional[float] = Field(None, description="入场初始目标价")
+    trigger_conditions: Optional[list] = Field(None, description="入场触发条件列表")
 
 
 class TradeFromText(BaseModel):
@@ -188,25 +194,33 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
             if trade.direction == "BUY":
                 _st = trade.strategy_type
                 _zg = trade.m5_entry_zg
-                _today = datetime.now().strftime("%Y-%m-%d")
-                if _st and _st != "未知":
-                    conn.execute(
-                        """UPDATE positions
-                           SET strategy_type = ?,
-                               entry_date    = COALESCE(entry_date, ?),
-                               m5_entry_zg   = COALESCE(m5_entry_zg, ?)
-                           WHERE user_id = ? AND symbol = ?
-                             AND (strategy_type IS NULL OR strategy_type = '未知')""",
-                        (_st, _today, _zg, user_id, trade.symbol),
-                    )
-                else:
-                    # 战法未传但 entry_date 还没写 → 至少记录入场日期
-                    conn.execute(
-                        """UPDATE positions
-                           SET entry_date  = COALESCE(entry_date, ?)
-                           WHERE user_id = ? AND symbol = ?""",
-                        (_today, user_id, trade.symbol),
-                    )
+                _entry_date = traded_at[:10]
+                thesis = build_entry_thesis_from_trade(
+                    trade_id=trade_id,
+                    symbol=trade.symbol,
+                    source=trade.source,
+                    traded_at=traded_at,
+                    strategy_type=trade.strategy_type,
+                    entry_level=trade.entry_level,
+                    entry_zg=trade.entry_zg,
+                    entry_zd=trade.entry_zd,
+                    m5_entry_zg=trade.m5_entry_zg,
+                    original_stop_loss=stop_loss_price,
+                    initial_target=trade.initial_target,
+                    reason_text=trade.reason_text,
+                    reason_category=trade.reason_category,
+                    trend_direction=trade.trend_direction,
+                    trigger_conditions=trade.trigger_conditions,
+                )
+                persist_entry_thesis(
+                    conn,
+                    user_id=user_id,
+                    symbol=trade.symbol,
+                    thesis=thesis,
+                    strategy_type=_st,
+                    entry_date=_entry_date,
+                    m5_entry_zg=_zg,
+                )
 
             conn.commit()
             row = conn.execute(

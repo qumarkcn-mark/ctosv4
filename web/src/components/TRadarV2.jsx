@@ -39,6 +39,12 @@ const LEVEL_NAMES = {
 
 const PLAN_LABEL = ['甲', '乙', '丙']
 const PLAN_COLOR = [T.BULL, T.YELLOW, T.BEAR]
+const RISK_NOTE = '仅供参考，不构成交易建议。'
+
+function withRiskNote(text) {
+  if (!text) return text
+  return text.includes('仅供参考') ? text : `${text} ${RISK_NOTE}`
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 读盘引擎 V4.5 — 保持原有核心逻辑，忠于缠论原文
@@ -641,7 +647,7 @@ function StructureStatusCard({ holdingStatus, holdingStageV2 }) {
       {/* 结构失效 → 强醒目警示 */}
       {isFailed && (
         <div className="tv2-action-suggest tv2-action-suggest--danger" role="alert">
-          🔴 5分入场中枢已被跌破，入场假设失效。建议出场，不再等待。
+          {withRiskNote('🔴 5分入场中枢已被跌破，入场假设失效。请复核出场预案，不再等待。')}
         </div>
       )}
 
@@ -677,7 +683,7 @@ function StructureStatusCard({ holdingStatus, holdingStageV2 }) {
       {stageAction && (
         <div style={{ marginTop: 8, fontSize: 12, color: '#9ca3af' }}>
           {stageLabel && <span style={{ color: T.YELLOW, marginRight: 4 }}>[{stageLabel}]</span>}
-          {stageAction}
+          {withRiskNote(stageAction)}
         </div>
       )}
 
@@ -809,14 +815,14 @@ function HoldingPanel({ status, holdingStatus }) {
         if (isS2) {
           return (
             <div className="tv2-action-suggest tv2-action-suggest--warn" role="alert">
-              ⚠️ 30分转折背驰，减仓50%，剩余持仓等待日线顶背驰信号（手动操作后录入）
+              {withRiskNote('⚠️ 30分转折背驰，请复核减半仓预案，剩余持仓等待日线顶背驰信号（手动操作后录入）')}
             </div>
           )
         }
         // 战法一：任意30分顶背驰即减仓
         return (
           <div className="tv2-action-suggest tv2-action-suggest--warn" role="alert">
-            ⚠️ 30分顶背驰，减仓50%锁定利润（手动操作后录入）
+            {withRiskNote('⚠️ 30分顶背驰，请复核减仓锁利预案（手动操作后录入）')}
           </div>
         )
       })()}
@@ -824,7 +830,7 @@ function HoldingPanel({ status, holdingStatus }) {
       {/* Stage 5：清仓建议（红色） */}
       {stageNum === 5 && (
         <div className="tv2-action-suggest tv2-action-suggest--danger" role="alert">
-          🔴 趋势终结信号，建议全面清仓（日线顶背驰/跌破台阶止损）
+          {withRiskNote('🔴 趋势终结信号，请复核退出预案（日线顶背驰/跌破台阶止损）')}
         </div>
       )}
 
@@ -1142,7 +1148,7 @@ export default function TRadarV2({ symbol }) {
     if (!silent) setLoading(true)
     // 优先用传入的 holdingData，其次读 ref（轮询场景），最后 fallback 到 state
     const h = holdingData !== undefined ? holdingData : holdingRef.current
-    const params = (h && h.cost > 0 && h.qty > 0) ? `?cost=${h.cost}&qty=${h.qty}` : ''
+    const params = '?user_id=1'
     try {
       const res  = await fetch(`${API_BASE}/radar/${symbol}${params}`)
       const json = await res.json()
@@ -1442,7 +1448,7 @@ export default function TRadarV2({ symbol }) {
 
               {!loading && showAI && (
                 <div className="tv2-ai-section-wrap">
-                  <div className="tv2-ai-disclaimer">以下解读由算法规则生成，不构成买卖建议</div>
+                  <div className="tv2-ai-disclaimer">以下解读由算法规则生成，仅供参考，不构成交易建议</div>
                   <AISection
                     aiReport={aiReport}
                     deducing={deducing}

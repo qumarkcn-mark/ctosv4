@@ -1,98 +1,141 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { API_BASE } from '../config.js'
 import './RotationCompass.css'
 
-const STATE_COLORS = {
-  '🟢': 'state-green',
-  '🚀': 'state-fire',
-  '✅': 'state-green-soft',
-  '⚖️': 'state-neutral',
-  '📈': 'state-neutral-up',
-  '⚠️': 'state-warn',
-  '🔴': 'state-danger',
-  '🛑': 'state-danger-strong',
-  '⚪': 'state-muted',
+const MODE_LABEL = {
+  HOLDING: '持仓',
+  CANDIDATE: '候选',
 }
 
-// sort_score 驱动背景色深度（不显示数字，只影响行底色）
-function scoreDepthStyle(score) {
-  if (score >= 75) return { background: 'rgba(34,197,94,0.18)' }   // 强势绿
-  if (score >= 55) return { background: 'rgba(251,191,36,0.10)' }  // 偏多黄
-  if (score >= 35) return { background: 'rgba(148,163,184,0.06)' } // 中性
-  return { background: 'rgba(239,68,68,0.14)' }                    // 弱势红
+function price(value) {
+  if (value === null || value === undefined) return '--'
+  return Number(value).toFixed(2)
 }
 
-function Row({ r, showPnL, onViewInChan }) {
-  const colorClass = STATE_COLORS[r.state_emoji] || 'state-muted'
-  const depthStyle = scoreDepthStyle(r.sort_score || 0)
+function pct(value) {
+  if (value === null || value === undefined) return '--'
+  return `${Number(value).toFixed(2)}%`
+}
+
+function toneFromScore(score) {
+  if (score >= 75) return 'strong'
+  if (score >= 55) return 'watch'
+  if (score >= 35) return 'neutral'
+  return 'weak'
+}
+
+function PlanList({ plans }) {
   return (
-    <tr className={`rc-row ${colorClass}`} style={depthStyle}>
-      <td className="rc-sym">
-        <div className="sym-line">
-          <span className="sym-code">{r.symbol}</span>
-          {r.name && <span className="sym-name">{r.name}</span>}
-          {onViewInChan && (
-            <button
-              className="rc-view-btn"
-              title="缠论看盘"
-              onClick={() => onViewInChan(r.symbol, r.name)}
-            >
-              🔮
-            </button>
-          )}
-        </div>
-        {r.quantity ? (
-          <div className="sym-sub">
-            {r.quantity}股 · 成本 {r.avg_cost?.toFixed(2)}
+    <div className="rc-plan-list">
+      {(plans || []).map((plan) => (
+        <section key={plan.name} className="rc-plan">
+          <div className="rc-plan-marker">{plan.name}</div>
+          <div className="rc-plan-body">
+            <div className="rc-plan-title">{plan.title}</div>
+            <dl>
+              <div>
+                <dt>触发条件</dt>
+                <dd>{plan.condition}</dd>
+              </div>
+              <div>
+                <dt>结构论据</dt>
+                <dd>{plan.structure_evidence}</dd>
+              </div>
+              <div>
+                <dt>仓位动作</dt>
+                <dd>{plan.position_action}</dd>
+              </div>
+              <div>
+                <dt>雷达复核</dt>
+                <dd>{plan.radar_check}</dd>
+              </div>
+            </dl>
           </div>
-        ) : (
-          r.price && <div className="sym-sub">现价 {r.price.toFixed(2)}</div>
-        )}
-      </td>
-      <td className="rc-state">
-        <span className="state-emoji">{r.state_emoji}</span>
-        <span className="state-label">{r.state_label}</span>
-        {r.zoushi_type && <div className="zoushi-tag">{r.zoushi_type}</div>}
-      </td>
-      <td className="rc-node">
-        {r.lifecycle_node
-          ? <span className="node-tag">{r.lifecycle_node}</span>
-          : <span className="dist-na">—</span>}
-      </td>
-      <td className="rc-dist">
-        {r.distance_pct !== null && r.distance_pct !== undefined ? (
-          <span
-            className={
-              r.distance_pct <= 0
-                ? 'dist-broken'
-                : r.distance_pct < 3
-                ? 'dist-tight'
-                : 'dist-safe'
-            }
-          >
-            {r.distance_pct > 0 ? '+' : ''}
-            {r.distance_pct}%
-          </span>
-        ) : (
-          <span className="dist-na">—</span>
-        )}
-        {r.stop_loss ? (
-          <div className="dist-stop">防线 {r.stop_loss.toFixed(2)}</div>
-        ) : null}
-      </td>
-      <td className="rc-action">
-        {r.main_action
-          ? <div className="main-action-primary" title={r.main_action}>{r.main_action}</div>
-          : <span className="dist-na">—</span>}
-        {r.error && <div className="action-error">⚠ {r.error}</div>}
-      </td>
-      {showPnL && (
-        <td className={`rc-pnl ${r.pnl_pct >= 0 ? 'up' : 'down'}`}>
-          {r.pnl_pct > 0 ? '+' : ''}
-          {r.pnl_pct || 0}%
-        </td>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function SymbolCard({ item, expanded, onToggle, onViewInChan }) {
+  const summary = item.structure_summary || {}
+  const tone = toneFromScore(summary.sort_score || item.sort_score || 0)
+  const isHolding = item.mode === 'HOLDING'
+
+  return (
+    <article className={`rc-card rc-card--${tone}`}>
+      <button type="button" className="rc-card-main" onClick={onToggle} aria-expanded={expanded}>
+        <div className="rc-symbol-block">
+          <div className="rc-symbol-line">
+            <span className="rc-symbol">{item.symbol}</span>
+            {item.name && <span className="rc-name">{item.name}</span>}
+            <span className="rc-mode">{MODE_LABEL[item.mode] || item.category || item.mode}</span>
+          </div>
+          <div className="rc-symbol-sub">
+            {isHolding && item.quantity ? `${item.quantity}股 · 成本 ${price(item.avg_cost)}` : `现价 ${price(summary.price || item.price)}`}
+          </div>
+        </div>
+
+        <div className="rc-state-block">
+          <strong>{summary.state_label || item.state_label || '待定位'}</strong>
+          <span>{summary.zoushi_type || item.zoushi_type || '走势待确认'}</span>
+        </div>
+
+        <div className="rc-defense-block">
+          <span>防线 {price(summary.stop_loss)}</span>
+          <strong>{pct(summary.distance_pct)}</strong>
+        </div>
+
+        <div className="rc-expand-indicator">{expanded ? '收起' : '预案'}</div>
+      </button>
+
+      {expanded && (
+        <div className="rc-card-detail">
+          {summary.error && <div className="rc-card-error">{summary.error}</div>}
+          <div className="rc-node-row">
+            <span>当前节点</span>
+            <strong>{summary.lifecycle_node || item.lifecycle_node || '--'}</strong>
+          </div>
+          <PlanList plans={item.plans} />
+          <div className="rc-card-actions">
+            {onViewInChan && (
+              <button type="button" onClick={() => onViewInChan(item.symbol, item.name || item.symbol)}>
+                看盘
+              </button>
+            )}
+          </div>
+        </div>
       )}
-    </tr>
+    </article>
+  )
+}
+
+function SymbolColumn({ title, items, emptyText, expanded, setExpanded, onViewInChan }) {
+  return (
+    <section className="rc-column">
+      <div className="rc-column-head">
+        <h3>{title}</h3>
+        <span>{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="rc-empty">{emptyText}</div>
+      ) : (
+        <div className="rc-card-stack">
+          {items.map((item) => (
+            <SymbolCard
+              key={`${item.mode}-${item.symbol}`}
+              item={item}
+              expanded={expanded === `${item.mode}-${item.symbol}`}
+              onToggle={() => {
+                const key = `${item.mode}-${item.symbol}`
+                setExpanded((current) => (current === key ? null : key))
+              }}
+              onViewInChan={onViewInChan}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -101,21 +144,22 @@ export default function RotationCompass({ onViewInChan }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [loadedAt, setLoadedAt] = useState(null)
+  const [expanded, setExpanded] = useState(null)
 
   const load = () => {
     setLoading(true)
     setError(null)
     fetch(`${API_BASE}/rotation/compass`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.status === 'success') {
-          setData(j.data)
-          setLoadedAt(new Date())
-        } else {
-          setError(j.message || '接口异常')
-        }
+      .then((response) => {
+        if (!response.ok) throw new Error('调仓罗盘加载失败')
+        return response.json()
       })
-      .catch((e) => setError(e.message))
+      .then((json) => {
+        if (json.status !== 'success') throw new Error(json.message || '接口异常')
+        setData(json.data)
+        setLoadedAt(new Date())
+      })
+      .catch((err) => setError(err.message || '加载失败'))
       .finally(() => setLoading(false))
   }
 
@@ -123,11 +167,21 @@ export default function RotationCompass({ onViewInChan }) {
     load()
   }, [])
 
+  const comparison = data?.comparison || {}
+  const holdings = data?.holdings || []
+  const candidates = data?.candidates || []
+  const summaryCards = useMemo(() => ([
+    { label: '持仓', value: comparison.holdings_count ?? holdings.length },
+    { label: '候选', value: comparison.candidates_count ?? candidates.length },
+    { label: '最强持仓', value: comparison.strongest_holding?.symbol || '--' },
+    { label: '最强候选', value: comparison.strongest_candidate?.symbol || '--' },
+  ]), [comparison, holdings.length, candidates.length])
+
   if (loading) {
     return (
       <div className="rc-loading">
         <div className="spinner" />
-        <div>🧭 正在对照所有持仓与候选股…</div>
+        <div>正在对照持仓与候选</div>
       </div>
     )
   }
@@ -136,188 +190,64 @@ export default function RotationCompass({ onViewInChan }) {
     return (
       <div className="rc-error">
         <div>加载失败：{error}</div>
-        <button onClick={load}>重试</button>
+        <button type="button" onClick={load}>重试</button>
       </div>
     )
   }
 
   if (!data) return null
 
-  const { holdings, candidates, suggestions, summary } = data
-  const hasSuggestions =
-    suggestions &&
-    (suggestions.cut.length || suggestions.add.length || suggestions.rotate.length)
-
   return (
     <div className="rotation-compass">
-      <div className="rc-header">
+      <header className="rc-header">
         <div className="rc-title-group">
-          <h2>🧭 调仓罗盘</h2>
+          <h2>调仓罗盘</h2>
           <div className="rc-subtitle">
-            基于缠论结构的全仓位横向对比 · {summary.holdings_count} 只持仓 ·{' '}
-            {summary.candidates_count} 只候选
+            持仓与候选横向比较
             {loadedAt && (
-              <span className="rc-loaded-at">
-                {' '}· 更新于 {loadedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </span>
+              <span> · 更新于 {loadedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             )}
           </div>
+          <div className="rc-risk-note">{data.risk_disclaimer}</div>
         </div>
-        <button className="rc-refresh" onClick={load} disabled={loading}>
-          🔄 重新对照
+        <button className="rc-refresh" type="button" onClick={load} disabled={loading}>
+          重新对照
         </button>
-      </div>
+      </header>
 
-      {/* ── 顶部摘要条 ── */}
       <div className="rc-summary-bar">
-        <div className="summary-stat">
-          <div className="stat-val stat-good">{summary.top_holding_score}</div>
-          <div className="stat-lbl">最强持仓分</div>
-        </div>
-        <div className="summary-stat">
-          <div className={`stat-val ${summary.worst_holding_score < 45 ? 'stat-bad' : 'stat-mid'}`}>
-            {summary.worst_holding_score}
+        {summaryCards.map((card) => (
+          <div key={card.label} className="summary-stat">
+            <div className="stat-val">{card.value}</div>
+            <div className="stat-lbl">{card.label}</div>
           </div>
-          <div className="stat-lbl">最弱持仓分</div>
-        </div>
-        <div className="summary-stat">
-          <div className="stat-val">{summary.cut_count}</div>
-          <div className="stat-lbl">建议砍出</div>
-        </div>
-        <div className="summary-stat">
-          <div className="stat-val">{summary.add_count}</div>
-          <div className="stat-lbl">建议加仓</div>
-        </div>
-        <div className="summary-stat">
-          <div className="stat-val">{summary.rotate_count}</div>
-          <div className="stat-lbl">候选可换</div>
-        </div>
-        {summary.freed_cash_estimate > 0 && (
-          <div className="summary-stat stat-freed">
-            <div className="stat-val">¥{summary.freed_cash_estimate.toLocaleString()}</div>
-            <div className="stat-lbl">可腾挪现金</div>
-          </div>
-        )}
+        ))}
       </div>
 
-      {/* ── 建议调仓 ── */}
-      {hasSuggestions ? (
-        <div className="rc-suggestions">
-          <h3>🔀 今日建议调仓</h3>
-          <div className="sug-grid">
-            {suggestions.cut.length > 0 && (
-              <div className="sug-col sug-cut">
-                <h4>✂️ 砍 ({suggestions.cut.length})</h4>
-                {suggestions.cut.map((s, i) => (
-                  <div key={i} className="sug-item">
-                    <div className="sug-sym">
-                      {s.symbol} <span className="sug-name">{s.name}</span>
-                    </div>
-                    <div className="sug-act">{s.action}</div>
-                    <div className="sug-reason">{s.reason}</div>
-                    {s.freed ? (
-                      <div className="sug-freed">腾 ¥{s.freed.toLocaleString()}</div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
-            {suggestions.add.length > 0 && (
-              <div className="sug-col sug-add">
-                <h4>🔼 加 ({suggestions.add.length})</h4>
-                {suggestions.add.map((s, i) => (
-                  <div key={i} className="sug-item">
-                    <div className="sug-sym">
-                      {s.symbol} <span className="sug-name">{s.name}</span>
-                    </div>
-                    <div className="sug-act">{s.action}</div>
-                    <div className="sug-reason">{s.reason}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {suggestions.rotate.length > 0 && (
-              <div className="sug-col sug-rot">
-                <h4>🔄 换 ({suggestions.rotate.length})</h4>
-                {suggestions.rotate.map((s, i) => (
-                  <div key={i} className="sug-item">
-                    <div className="sug-sym">
-                      {s.symbol} <span className="sug-name">{s.name}</span>
-                    </div>
-                    <div className="sug-act">{s.action}</div>
-                    <div className="sug-reason">{s.reason}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="rc-no-suggestions">
-          ✅ 当前无明显调仓信号，持仓整体健康
-        </div>
-      )}
+      <div className="rc-focus">{comparison.focus || '比较结构清晰度、风险防线和触发条件。'}</div>
 
-      {/* ── 现有持仓 ── */}
-      <div className="rc-section">
-        <h3>📌 现有持仓 ({holdings.length})</h3>
-        {holdings.length === 0 ? (
-          <div className="rc-empty">当前空仓</div>
-        ) : (
-          <div className="rc-table-wrap">
-            <table className="rc-table">
-              <thead>
-                <tr>
-                  <th>标的</th>
-                  <th>结构状态</th>
-                  <th>买卖节点</th>
-                  <th>距防线</th>
-                  <th>结构指引</th>
-                  <th>浮盈</th>
-                </tr>
-              </thead>
-              <tbody>
-                {holdings.map((h) => (
-                  <Row key={h.symbol} r={h} showPnL onViewInChan={onViewInChan} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <div className="rc-columns">
+        <SymbolColumn
+          title="现有持仓"
+          items={holdings}
+          emptyText="当前空仓。"
+          expanded={expanded}
+          setExpanded={setExpanded}
+          onViewInChan={onViewInChan}
+        />
+        <SymbolColumn
+          title="观察候选"
+          items={candidates}
+          emptyText="观察库暂无候选。"
+          expanded={expanded}
+          setExpanded={setExpanded}
+          onViewInChan={onViewInChan}
+        />
       </div>
 
-      {/* ── 关注候选 ── */}
-      <div className="rc-section">
-        <h3>👀 关注候选 ({candidates.length})</h3>
-        {candidates.length === 0 ? (
-          <div className="rc-empty">
-            自选股为空。可在「缠论看盘」页搜索股票并加入自选列表。
-          </div>
-        ) : (
-          <div className="rc-table-wrap">
-            <table className="rc-table">
-              <thead>
-                <tr>
-                  <th>标的</th>
-                  <th>结构状态</th>
-                  <th>买卖节点</th>
-                  <th>距防线</th>
-                  <th>结构指引</th>
-                </tr>
-              </thead>
-              <tbody>
-                {candidates.map((c) => (
-                  <Row key={c.symbol} r={c} showPnL={false} onViewInChan={onViewInChan} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="rc-footer-note">
-        行颜色深度由结构强弱决定（绿深=强势 / 红深=弱势）。"买卖节点"为缠论客观结构节点，"结构指引"为甲情形首句操作叙述，仅供参考，不构成交易建议。
-      </div>
+      <footer className="rc-footer-note">
+        分数只用于排序和强弱底色，预案只给条件与复核路径，不替用户拍板。
+      </footer>
     </div>
   )
 }

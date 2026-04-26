@@ -5,12 +5,14 @@
 """
 
 import datetime as dt
+import json
 import logging
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
+from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.decision.radar_planner import build_radar_decision
 from server.engines.structure.chan_adapter import analyze_structure
@@ -42,8 +44,53 @@ def _query_float(value, default: float = 0.0) -> float:
             return default
 
 
+def _query_optional_int(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        default = getattr(value, "default", None)
+        return _query_optional_int(default)
+
+
 def _mode_from_holding(holding: Optional[dict]) -> str:
     return "HOLDING" if holding else "EMPTY"
+
+
+def _load_holding_from_position(user_id: Optional[int], symbol: str) -> Optional[dict]:
+    if not user_id:
+        return None
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT quantity, avg_cost, trailing_stop_price, entry_date,
+                   strategy_type, m5_entry_zg, entry_thesis_json
+              FROM positions
+             WHERE user_id = ? AND symbol = ? AND quantity > 0
+            """,
+            (user_id, symbol),
+        ).fetchone()
+        if not row:
+            return None
+        thesis = {}
+        if row["entry_thesis_json"]:
+            try:
+                thesis = json.loads(row["entry_thesis_json"])
+            except Exception:
+                thesis = {"schema_version": 1, "strategy_type": row["strategy_type"] or "未知"}
+        return {
+            "cost": row["avg_cost"],
+            "qty": row["quantity"],
+            "trailing_stop_price": row["trailing_stop_price"],
+            "entry_date": row["entry_date"],
+            "strategy_type": row["strategy_type"] or thesis.get("strategy_type") or "未知",
+            "m5_entry_zg": row["m5_entry_zg"],
+            "entry_thesis": thesis,
+        }
+    finally:
+        conn.close()
 
 
 def _public_level_name(level: str) -> str:
@@ -265,10 +312,13 @@ async def get_radar(
 ):
     """获取 Radar contract 形态的单票缠论分析。"""
     symbol_bs = _normalize_symbol(symbol)
+    user_id = _query_optional_int(user_id)
     account_value = _query_float(account_value, 0.0)
     risk_pct = _query_float(risk_pct, 0.01)
     atr = _query_float(atr, 0.0)
-    holding = {"cost": cost, "qty": qty} if cost > 0 and qty > 0 else None
+    holding = _load_holding_from_position(user_id, symbol_bs)
+    if holding is None and cost > 0 and qty > 0:
+        holding = {"cost": cost, "qty": qty, "strategy_type": "未知", "entry_thesis": {}}
     mode = _mode_from_holding(holding)
 
     adapter_result = {}

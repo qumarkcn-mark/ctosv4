@@ -46,8 +46,15 @@
 - Structure Engine 已拆出 `divergence.py`、`nesting.py`、`zhongshu.py`、`lifecycle.py`、`strategy_detector.py` 纯函数模块，`derived_facts.py` 退化为聚合入口。
 - 已新增 `server/engines/decision/risk_sizing.py` 和 `target_planner.py`，空仓目标价、持仓目标价、赔率、ATR 止损校验、固定风险仓位测算已从旧路径迁到 decision 层。
 - 已新增 `server/domain/enums.py`、`models.py`、`contracts.py`，覆盖 Radar/Level/Plan/Risk 的领域对象草案；`server/data/` 和 `server/engines/coach/` 目标目录已建立。
+- 已新增 `server/engines/decision/strategy_definitions.py`，落地 Strategy Contract 的版本化 strategy definitions；Radar 已消费 `war1_third_buy` 和 `holding_stage_manager`，Scanner API 已将旧 `war1` / `war2` 映射到 canonical strategy contract，Rotation API 已返回 `rotation_comparison` strategy contract，Push/Alerts 已在触发记录写入 strategy contract 快照。
+- 已新增 `server/services/rotation_planner.py`，RotationCompass 已从“砍/加/换建议面板”切为持仓/候选横向比较，每只票返回甲乙丙预案；分数只保留为排序和底色信号。
+- `BehaviorReport` 已收敛为纯交易行为分析，移除持仓防线扫描、`agent/radar_deduce` 和 `portfolio_strategy` 入口；行情结构复核回到 Radar / RotationCompass。
+- Coach/Event Log 已落地最小三表 `coach_events`、`strategy_triggers`、`alert_deliveries`；提醒候选、策略触发快照、Scanner 用户动作已开始写入统一事件线。
+- Phase D 持仓假设已落地：`positions.entry_thesis_json` 保存入场战法、级别、中枢、防守价、目标和触发条件；BUY 写入完整 thesis，CSV/缺结构路径写入未知降级 thesis，Radar 持仓模式读取该 thesis 做管理。
 - Radar API 已移除旧 matrix decision 输入兜底；当前 `/api/radar/{symbol}` 正常路径完全消费 adapter-derived levels。
 - `web/src/components/TRadarV2.jsx` 已切到 `/api/radar/{symbol}`，通过 `normalizeRadarContract()` 映射到现有 UI shape，视觉不改。
+- Phase E 推送闭环已落地：`server/engines/decision/push_rules.py` 统一结构失效、台阶止损、背驰、扫描器重点候选的规则、文案和 strategy contract；`price_monitor` 与 scanner worker 已接入，并写入 Coach/Event Log。
+- Phase F QMT 执行预留已新增 `docs/QMT_EXECUTION_ARCHITECTURE.md`，明确 Execution Layer、Risk Gate、Windows QMT Agent、QMT Adapter、Audit Log、dry-run、kill switch 和有底仓日内 T 前置条件；Phase 1/2 仍不暴露任何执行面。
 
 ## 一、核心判断
 

@@ -54,13 +54,13 @@ Status: complete.
 
 ### Phase 2: Frontend Switch
 
-Status: in progress.
+Status: complete for active Radar UI path.
 
 - `TRadarV2` now fetches `/api/radar/{symbol}`.
 - `TRadarV2` uses a frontend adapter to preserve its existing internal display shape.
 - Visual redesign is out of scope for this migration step.
 
-Remaining:
+Follow-up polish:
 
 - ChanView K-line detail should migrate from old mixed fields to `chan_adapter` detail fields.
 - UI should display Radar `data_source` and `freshness` explicitly.
@@ -68,7 +68,7 @@ Remaining:
 
 ### Phase 3: Legacy Freeze
 
-Status: next.
+Status: active.
 
 - Freeze `/api/chan/matrix/v2` behavior with tests only.
 - Do not add strategy, alert, scanner, rotation, or behavior-coach logic to it.
@@ -196,10 +196,19 @@ Current coverage:
 
 `/api/chan/matrix/v2` can be deprecated when all items are true:
 
-- [ ] No active frontend fetches `/api/chan/matrix/v2`.
-- [ ] ChanView has a Radar/detail compatible data adapter.
-- [ ] RotationCompass uses a dedicated planner contract.
-- [ ] Scanner no longer consumes matrix fields directly.
-- [ ] BehaviorReport no longer consumes market structure from matrix fields.
-- [ ] QA confirms empty and holding workflows through Radar.
-- [ ] Changelog documents the deprecation.
+- [x] No active frontend fetches `/api/chan/matrix/v2`.
+- [x] ChanView has a Radar/detail compatible data adapter.
+- [x] RotationCompass uses a dedicated planner contract.
+- [x] Scanner no longer consumes matrix fields directly.
+- [x] BehaviorReport no longer consumes market structure from matrix fields.
+- [x] QA confirms empty and holding workflows through Radar.
+- [x] Changelog documents the deprecation.
+
+2026-04-26 status:
+
+- `web/src/components/TRadarV2.jsx` fetches `/api/radar/{symbol}`.
+- `web/src/pages/ChanView.jsx` composes `KlineChart` detail + `TRadarV2`; it does not call `/api/chan/matrix/v2`.
+- `RotationCompass` consumes `/api/rotation/compass`.
+- `Scanner` consumes `/api/scan/*`.
+- `BehaviorReport` consumes `/api/behavior/report`.
+- Regression run passed with `139 passed`; frontend `npm run build` passed in the same migration window.

@@ -35,3 +35,6 @@ PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔
 
 # 推送
 DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
+
+# Scanner 管理接口保护。为空时保持本地开发兼容；生产应设置并通过 X-Scanner-Admin-Token 传入。
+SCANNER_ADMIN_TOKEN = os.getenv("SCANNER_ADMIN_TOKEN", "")

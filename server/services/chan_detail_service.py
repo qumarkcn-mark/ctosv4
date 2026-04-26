@@ -364,8 +364,12 @@ def _parse_chan_detail_sync(
     config = CChanConfig({
         "trigger_step": True,
         "kl_data_check": False,
-        "bi_strict": True,
-        "bi_fx_check": "loss",   # 修复涨停板笔识别：只验证分型K线本身
+        # bi_strict=False：允许跨度3根合并K线的短笔（原默认要求4根）
+        # A股5分/15分图涨停板合并K线后短笔跨度不足4，strict=True会漏笔
+        "bi_strict": False,
+        "bi_fx_check": "loss",   # 只验证分型K线本身，对应缠论原文，兼容涨停板
+        # gap_as_kl=True：跳空缺口计为1根K线，避免涨停板缺口导致跨度低估
+        "gap_as_kl": True,
         "print_warning": False,
         "print_err_time": False,
         "auto_skip_illegal_sub_lv": True,
@@ -743,8 +747,9 @@ def _parse_chan_multi_level_sync(
     config = CChanConfig({
         "trigger_step":             True,
         "kl_data_check":            False,
-        "bi_strict":                True,
-        "bi_fx_check":              "loss",   # 修复涨停板笔识别：与单级别detail接口保持一致
+        "bi_strict":                False,   # 允许3根合并K线短笔，兼容A股涨停板
+        "bi_fx_check":              "loss",  # 只验证分型K线本身，对应缠论原文
+        "gap_as_kl":                True,    # 跳空缺口计为1根K线，防止跨度低估
         "print_warning":            False,
         "print_err_time":           False,
         "auto_skip_illegal_sub_lv": True,

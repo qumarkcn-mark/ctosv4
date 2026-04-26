@@ -24,6 +24,29 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
   const [groupNames, setGroupNames] = useState([])
   const watchlistRef = useRef(null)
 
+  // 面板折叠状态（持久化到 localStorage）
+  const [watchlistCollapsed, setWatchlistCollapsed] = useState(
+    () => localStorage.getItem('chanview_watchlist_collapsed') === 'true'
+  )
+  const [radarCollapsed, setRadarCollapsed] = useState(
+    () => localStorage.getItem('chanview_radar_collapsed') === 'true'
+  )
+
+  const toggleWatchlist = useCallback(() => {
+    setWatchlistCollapsed(v => {
+      localStorage.setItem('chanview_watchlist_collapsed', String(!v))
+      return !v
+    })
+  }, [])
+
+  const toggleRadar = useCallback(() => {
+    setRadarCollapsed(v => {
+      localStorage.setItem('chanview_radar_collapsed', String(!v))
+      return !v
+    })
+  }, [])
+
+
   const handleSelect = useCallback((stock) => {
     const sym = stock.symbol
     const sName = stock.name || stock.symbol
@@ -59,8 +82,18 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
 
   return (
     <div className="chan-view">
-      {/* 左侧自选股面板 */}
-      <WatchlistPanel ref={watchlistRef} activeSymbol={symbol} onSelect={handleSelect} />
+      {/* 左侧自选股面板（可折叠） */}
+      <div className={`watchlist-collapse-wrapper${watchlistCollapsed ? ' collapsed' : ''}`}>
+        <WatchlistPanel ref={watchlistRef} activeSymbol={symbol} onSelect={handleSelect} />
+        {/* 右边缘折叠触发条 */}
+        <button
+          className="panel-toggle-strip panel-toggle-strip--left"
+          onClick={toggleWatchlist}
+          title={watchlistCollapsed ? '展开自选股' : '收起自选股'}
+        >
+          <span className="panel-toggle-icon">{watchlistCollapsed ? '›' : '‹'}</span>
+        </button>
+      </div>
 
       {/* 右侧主体 */}
       <div className="chan-main">
@@ -110,8 +143,20 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
         {/* 图表 + 雷达并排 */}
         <div className="chan-content-row">
           <KlineChart symbol={symbol} layerVisibility={layerVisibility} />
-          <div className="chan-radar-sidebar">
-            <TRadarV2 symbol={symbol} />
+
+          {/* 右侧雷达面板（可折叠） */}
+          <div className={`radar-collapse-wrapper${radarCollapsed ? ' collapsed' : ''}`}>
+            {/* 左边缘折叠触发条 */}
+            <button
+              className="panel-toggle-strip panel-toggle-strip--right"
+              onClick={toggleRadar}
+              title={radarCollapsed ? '展开雷达' : '收起雷达'}
+            >
+              <span className="panel-toggle-icon">{radarCollapsed ? '‹' : '›'}</span>
+            </button>
+            <div className="chan-radar-sidebar">
+              <TRadarV2 symbol={symbol} />
+            </div>
           </div>
         </div>
       </div>

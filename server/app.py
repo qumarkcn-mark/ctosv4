@@ -97,6 +97,9 @@ app.include_router(rotation.router, prefix="/api/rotation", tags=["rotation comp
 from server.api import watchlist
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["watchlist"])
 
+from server.api import scanner
+app.include_router(scanner.router, prefix="/api/scan", tags=["scanner"])
+
 from server.api import radar
 app.include_router(radar.router, prefix="/api/radar", tags=["radar"])
 

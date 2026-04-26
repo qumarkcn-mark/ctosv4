@@ -26,29 +26,42 @@
 
 目标：能展示缠论分析 K 线和雷达，让用户看懂一只股票当前结构。
 
-- [ ] K 线展示支持 `chan.py` 输出的笔、线段、中枢、买卖点。
-- [ ] Radar 展示多级别结构、数据源、复权口径、freshness。
-- [ ] 空仓/持仓模式在 UI 和 API contract 中严格分离。
-- [ ] 不做自动交易，不做策略执行，只展示结构和解释。
+- [x] K 线展示支持 `chan.py` 输出的笔、线段、中枢、买卖点。
+  - `KlineChart` 继续消费 `/api/chan/detail`，底层 detail 已以 `chan.py` 结构为权威并支持 overlay。
+- [x] Radar 展示多级别结构、数据源、复权口径、freshness。
+  - `/api/radar/{symbol}` 已返回 adapter-derived levels、`data_source`、`freshness` 和 disclaimer。
+- [x] 空仓/持仓模式在 UI 和 API contract 中严格分离。
+  - Radar contract 已定义 `EMPTY/HOLDING`；持仓模式读取 `positions.entry_thesis_json`，空仓/持仓 plan 互斥。
+- [x] 不做自动交易，不做策略执行，只展示结构和解释。
+  - Phase 1/2 输出 plans/alerts，QMT 执行被隔离到 Phase 3 Execution Layer 预留文档。
 
 ### Phase 2：Strategy Coach & Alerts
 
 目标：把已构思的策略系统化，展示候选股票、生成预案，并在条件触发时提醒用户。
 
-- [ ] 策略以 `Strategy Contract` 表达，不散落在 scanner/radar/rotation/push。
-- [ ] Scanner 输出候选股，Radar 展示单票预案，Rotation 展示横向比较。
-- [ ] Push/Alert 告诉用户“何时检查什么条件”，不自动下单。
-- [ ] Coach/Event Log 记录提醒依据、策略版本、用户响应和后续结果。
+- [x] 策略以 `Strategy Contract` 表达，不散落在 scanner/radar/rotation/push。
+  - `strategy_definitions.py` 已统一 war1/war2/holding/rotation/intraday-t contract。
+- [x] Scanner 输出候选股，Radar 展示单票预案，Rotation 展示横向比较。
+  - Scanner API/页面、Radar API/页面、RotationCompass planner 已形成三条独立 contract。
+- [x] Push/Alert 告诉用户“何时检查什么条件”，不自动下单。
+  - `push_rules.py` 统一提醒规则和教练式文案，全部带“仅供参考”。
+- [x] Coach/Event Log 记录提醒依据、策略版本、用户响应和后续结果。
+  - `coach_events`、`strategy_triggers`、`alert_deliveries` 已落地并接入 alerts/scanner actions。
 
 ### Phase 3：QMT Intraday T Execution
 
 目标：接入 QMT，在用户授权范围内对有底仓股票执行日内 T。
 
-- [ ] QMT 自动执行作为独立 Execution Layer，不耦合 Structure/Decision。
-- [ ] 所有自动交易先生成 `Execution Intent`。
-- [ ] 所有 intent 必须通过 `Risk Gate`。
-- [ ] 支持 dry-run、一键停止、最大日内交易次数、最大亏损、底仓保护。
-- [ ] 所有下单、撤单、成交、失败都写入 Audit Log。
+- [x] QMT 自动执行作为独立 Execution Layer，不耦合 Structure/Decision。
+  - 已在 `docs/QMT_EXECUTION_ARCHITECTURE.md` 定义边界；尚未实现 live QMT。
+- [x] 所有自动交易先生成 `Execution Intent`。
+  - 已在 `docs/EXECUTION_INTENT_CONTRACT.md` 定义 intent；当前仅 contract 预留。
+- [x] 所有 intent 必须通过 `Risk Gate`。
+  - 已定义 Risk Gate 必检项；当前尚未实现 live gate。
+- [x] 支持 dry-run、一键停止、最大日内交易次数、最大亏损、底仓保护。
+  - 已定义 dry-run qualification、kill switch 和有底仓日内 T 前置条件。
+- [x] 所有下单、撤单、成交、失败都写入 Audit Log。
+  - 已定义 Execution Audit Log 事件类别和必备字段；当前尚未接 QMT。
 
 ## Phase A：重构地基
 
@@ -221,31 +234,41 @@
 
 ## Phase C：产品闭环
 
-- [ ] Strategy Contract 落地。
+- [x] Strategy Contract 落地。
   - 将战法一、战法二、扫描器、调仓规则统一表达成 strategy definitions。
   - 策略输出 plans / alerts，不直接改 UI 文案或执行交易。
   - 策略版本写入触发记录，便于复盘。
+  - 已新增 `server/engines/decision/strategy_definitions.py`，覆盖 `war1_third_buy`、`war2_trend_step`、`holding_stage_manager`、`rotation_comparison`、`intraday_t_base_position`。
+  - Radar 已消费 versioned strategy definitions，不再返回 `legacy_matrix_strategy` / `legacy` 版本占位。
+  - Scanner API 已保留旧 `war1` / `war2` 字段，同时补充 canonical `strategy_id`、`strategy_version`、`strategy_name` 和 `strategy_contract`。
+  - Rotation API 已返回 `rotation_comparison` strategy contract，并保留原 `holdings/candidates/suggestions` shape。
+  - Push/Alerts 已在触发记录中写入 `strategy_id`、`strategy_version`、`strategy_contract`，并统一补充“仅供参考”风险提示。
 
-- [ ] Scanner 闭环复核。
+- [x] Scanner 闭环复核。
   - 确认 `server/api/scanner.py`、`web/src/pages/Scanner.jsx`、`web/src/components/ScanCard.jsx` 已满足当前 PRD。
   - 确认候选展示、加入观察库、删除候选、状态统计都可用。
+  - 前端已优先展示 canonical `strategy_name`，并保留旧 `strategy` 字段兼容。
 
-- [ ] Scanner 测试补齐。
+- [x] Scanner 测试补齐。
   - 候选只展示 `ready` 状态。
   - 加入观察库后删除对应 `scan_results`。
   - 删除候选后列表不再出现。
   - 手动触发扫描时 job 状态可轮询。
+  - `tests/test_scanner_api.py` 已覆盖上述闭环。
 
-- [ ] 重做 `RotationCompass`。
+- [x] 重做 `RotationCompass`。
   - 后端从 `rotation_scorer.py` 过渡到 `rotation_planner.py`。
   - 输出每只票的甲乙丙预案。
   - 分数只做排序，不做主视觉。
   - 前端不再以“建议砍出/建议加仓”为核心表达。
+  - 已新增 `server/services/rotation_planner.py`，API 返回 `comparison`、`structure_summary`、`plans`。
+  - `web/src/pages/RotationCompass.jsx` 已切成持仓/候选横向预案卡片。
 
-- [ ] 收敛 `BehaviorReport`。
+- [x] 收敛 `BehaviorReport`。
   - 只保留交易行为分析。
   - 移除持仓防线扫描、行情结构判断入口。
   - 行情结构功能回到 Radar 或 RotationCompass。
+  - `web/src/pages/BehaviorReport.jsx` 已移除 `agent/radar_deduce`、`portfolio_strategy` 和旧扫描结果面板。
 
 - [x] `TRadarV2` 切换到 Radar contract。
   - 不再直接依赖 `chan_service.py` 内部字段。
@@ -253,89 +276,107 @@
   - AI 叙事只展示 contract 中的结构化结论翻译。
   - 已新增前端 contract adapter：`normalizeRadarContract()`，保持视觉不变，仅切换数据来源。
 
-- [ ] Coach/Event Log 落地。
+- [x] Coach/Event Log 落地。
   - 新增 coach event 写入路径。
   - 每次策略触发、提醒发送、用户操作都记录事件。
   - 行为报告从事件和交易结果中复盘，不从临时 UI 状态推断。
+  - 已新增 `coach_events`、`strategy_triggers`、`alert_deliveries` 三张最小表。
+  - `server/engines/coach/event_log.py` 已提供幂等事件写入 helper。
+  - `price_monitor` 提醒创建会写 coach event、strategy trigger 和 alert delivery 记录。
+  - Scanner 删除候选、加入观察库会写用户动作事件。
 
 ## Phase D：数据库与持仓假设
 
-- [ ] 新增 `positions.entry_thesis_json`。
+- [x] 新增 `positions.entry_thesis_json`。
   - 保存入场战法。
   - 保存入场级别。
   - 保存入场中枢 ZG/ZD。
   - 保存原始止损。
   - 保存初始目标。
   - 保存入场触发条件。
+  - 已新增 `server/services/entry_thesis.py`，统一生成 schema_version=1 的入场假设 JSON。
 
-- [ ] 买入记录写入持仓时生成入场假设。
+- [x] 买入记录写入持仓时生成入场假设。
   - 手动交易、语音交易、CSV 导入都要有合理降级。
   - 缺失结构信息时标记 `strategy_type = 未知`，不要伪造。
+  - `create_trade` 的 BUY 路径写入完整 thesis；`recalculate_position` 会为 CSV/缺结构持仓写入未知降级 thesis。
 
-- [ ] 持仓模式只使用入场假设做管理。
+- [x] 持仓模式只使用入场假设做管理。
   - 不再每天重新判断“现在能不能买”。
   - 不展示入场 checklist。
   - 只展示结构是否有效、什么时候减、什么时候出。
+  - Radar 持仓模式会从 `positions.entry_thesis_json` 读取入场假设，并写入 `holding_plan.entry_thesis`。
 
-- [ ] 增加迁移测试。
+- [x] 增加迁移测试。
   - 新库 schema 包含 `entry_thesis_json`。
   - 老库迁移后包含 `entry_thesis_json`。
   - 旧持仓缺失该字段时 API 不崩。
+  - 已补 `tests/test_entry_thesis.py`、`tests/test_trades_entry_thesis.py` 和 migration 覆盖。
 
 ## Phase E：推送闭环
 
-- [ ] 新增 `server/engines/decision/push_rules.py`。
+- [x] 新增 `server/engines/decision/push_rules.py`。
   - 结构失效推送。
   - 台阶止损触发推送。
   - 30分转折顶背驰推送。
   - 日线顶背驰推送。
   - 扫描器重点候选推送。
+  - 已新增纯规则层，覆盖 price alerts、scanner top candidate、strategy contract 映射和统一文案。
 
-- [ ] 增加推送去重策略。
+- [x] 增加推送去重策略。
   - 同一 symbol、同一规则、同一结构节点不重复推。
   - 明确冷却时间。
   - 记录触发历史。
+  - 已通过 `PushAlertCandidate.dedupe_node/cooldown_hours` 表达规则节点；worker 维持每日同 symbol/rule 防重，并写入 `coach_events/alert_deliveries`。
 
-- [ ] 接入 worker。
+- [x] 接入 worker。
   - 持仓类推送接入 `price_monitor` 或独立 worker。
   - 扫描候选推送接入 scanner worker。
+  - `price_monitor` 已接入 `evaluate_price_alerts`；scanner worker 已在 ready 高分候选阶段创建 `SCANNER_TOP_CANDIDATE` 提醒。
 
-- [ ] 推送文案规范。
+- [x] 推送文案规范。
   - 必须包含触发条件。
   - 必须包含风险线。
   - 必须包含“仅供参考”。
   - 不写“立即买入/立即卖出”等交易机器人语气。
+  - 已统一走 `build_alert_message()`，移除“立即执行/建议清仓”等机器人语气，保留教练式复核提示。
 
 ## Phase F：QMT Execution 预留
 
-- [ ] 新增 `docs/QMT_EXECUTION_ARCHITECTURE.md`。
+- [x] 新增 `docs/QMT_EXECUTION_ARCHITECTURE.md`。
   - 定义 Execution Layer、Risk Gate、QMT Adapter、Audit Log 的职责边界。
   - 明确 Phase 3 才允许执行交易。
+  - 已明确 CT-OS Core、Structure Engine、Decision Engine、LLM、策略代码均不得直接调用 QMT。
 
-- [ ] 定义有底仓日内 T 的前置条件。
+- [x] 定义有底仓日内 T 的前置条件。
   - 用户显式授权 symbol。
   - 系统确认底仓数量。
   - 配置最大单笔金额、最大日内交易次数、最大日内亏损。
   - 配置可交易时间段和禁止交易时段。
+  - 已定义 protected base position、单 symbol 授权、风险预算和禁交易窗口。
 
-- [ ] 定义 dry-run 模式。
+- [x] 定义 dry-run 模式。
   - 所有策略先跑模拟 intent。
   - dry-run 记录虚拟下单、虚拟成交、风险检查结果。
   - dry-run 通过前不得连接实盘 QMT。
+  - 已规定 live submit 前必须完成 dry-run qualification、kill switch、stale data 和 idempotency 测试。
 
-- [ ] 定义 kill switch。
+- [x] 定义 kill switch。
   - 支持全局停止自动交易。
   - 支持单 symbol 停止。
   - 支持连续失败/滑点异常/行情 stale 自动停止。
+  - 已定义 global/agent/account/symbol/strategy 多级手动开关和自动触发条件。
 
-- [ ] 定义 QMT Adapter 边界。
+- [x] 定义 QMT Adapter 边界。
   - Adapter 只负责账户查询、持仓查询、下单、撤单、成交回报。
   - Adapter 不做策略判断。
   - Adapter 不读取 `chan.py` 结构。
+  - 已明确 Adapter 是 QMT/XtQuant 薄封装，不读取 radar/scanner/rotation/LLM。
 
-- [ ] 定义 Execution Audit Log。
+- [x] 定义 Execution Audit Log。
   - 记录 intent、risk checks、order request、order response、fill、cancel、error。
   - 每条记录包含 strategy_id、strategy_version、data_source、price_source。
+  - 已定义 append-only execution audit event 类别和必备字段。
 
 ## 第一批开工任务
 

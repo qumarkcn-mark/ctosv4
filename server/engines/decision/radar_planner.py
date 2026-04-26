@@ -11,6 +11,7 @@ from typing import Optional
 from server.engines.decision.entry_planner import compute_entry_checklist
 from server.engines.decision.holding_manager import compute_holding_status
 from server.engines.decision.risk_sizing import calculate_position_size, check_stop_atr
+from server.engines.decision.strategy_definitions import build_strategy_contract
 from server.engines.decision.target_planner import calculate_targets, check_reward_ratio
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,6 @@ def _build_empty_plan(
     day = levels.get("day", {})
     m30 = levels.get("m30", {})
     m5 = levels.get("m5", {})
-    strategy = matrix_data.get("strategy_classification") or {}
     entry_checklist = compute_entry_checklist(day, m30, m5)
     conditions = _condition_list_from_entry_checklist(entry_checklist)
     entry_price = m5.get("price", 0) or day.get("price", 0)
@@ -119,15 +119,7 @@ def _build_empty_plan(
         "reward_ratio": reward_ratio,
         "disclaimer": disclaimer,
     }
-    strategy_contract = {
-        "strategy_id": strategy.get("strategy_id", "legacy_matrix_strategy"),
-        "strategy_version": strategy.get("strategy_version", "legacy"),
-        "strategy_type": strategy.get("strategy_type", "观察中"),
-        "name": strategy.get("summary", "旧 matrix 战法分类"),
-        "status": plan["status"],
-        "conditions": conditions,
-        "legacy": strategy,
-    }
+    strategy_contract = build_strategy_contract("war1_third_buy", plan["status"], conditions)
     return strategy_contract, plan, [plan]
 
 
@@ -141,12 +133,19 @@ def _build_holding_plan(
     m30 = levels.get("m30", {})
     m5 = levels.get("m5", {})
     forward_a = matrix_data.get("forward_analysis_a", {})
+    entry_thesis = holding.get("entry_thesis") or {}
+    strategy_type = (
+        entry_thesis.get("strategy_type")
+        or holding.get("strategy_type")
+        or "未知"
+    )
     holding_status = compute_holding_status(
         day,
         m30,
         holding,
         forward_a,
         m30_bis=m30.get("detail_bis", []),
+        strategy_type=strategy_type,
     )
 
     stage = holding_status.get("stage", "UNKNOWN")
@@ -157,8 +156,10 @@ def _build_holding_plan(
         "status": "WATCHING",
         "stage": stage,
         "conditions": [],
+        "entry_thesis": entry_thesis,
         "risk": {
             "trailing_stop": trailing_stop,
+            "original_stop_loss": entry_thesis.get("original_stop_loss"),
             "invalid_if": "跌破台阶止损或结构破坏",
         },
         "reduce_plan": None,
@@ -167,12 +168,5 @@ def _build_holding_plan(
         "legacy_stage_v2": None,
         "disclaimer": disclaimer,
     }
-    strategy_contract = {
-        "strategy_id": "holding_stage_manager",
-        "strategy_version": "legacy",
-        "strategy_type": holding.get("strategy_type", "持仓管理"),
-        "name": "持仓阶段管理",
-        "status": plan["status"],
-        "conditions": [],
-    }
+    strategy_contract = build_strategy_contract("holding_stage_manager", plan["status"], [])
     return strategy_contract, plan, [plan]

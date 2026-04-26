@@ -3,6 +3,8 @@
 import sqlite3
 from datetime import datetime
 
+from server.services.entry_thesis import ensure_unknown_entry_thesis
+
 
 def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
     """
@@ -88,6 +90,7 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
         (user_id, symbol, name, total_qty, round(avg_cost, 4), days_held,
          datetime.now().isoformat()),
     )
+    ensure_unknown_entry_thesis(conn, user_id=user_id, symbol=symbol)
 
     return {
         "symbol": symbol,

@@ -1,9 +1,10 @@
 """CT-OS V4.0 数据湖元数据服务
 ================================
-扫描 kline_lake.db，聚合每只股票的缓存状态。
+扫描 BaoStock 数据湖，聚合每只股票的缓存状态。
 提供概览、WAL清理、数据生命周期管理。
 
-V4 架构：单一 kline_lake.db + klines 表（全品种合并存储）
+V4.1 架构：TDX 日线与 BaoStock 多级别缓存物理拆库。
+本服务只管理 BaoStock lake，scanner 使用 TDX lake。
 """
 
 import logging
