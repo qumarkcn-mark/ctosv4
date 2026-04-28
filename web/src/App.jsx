@@ -4,8 +4,8 @@ import ChanView from './pages/ChanView.jsx'
 import BehaviorReport from './pages/BehaviorReport.jsx'
 import SandTable from './pages/SandTable.jsx'
 import RotationCompass from './pages/RotationCompass.jsx'
-import ChanMatrix from './pages/ChanMatrix.jsx'
 import Scanner from './pages/Scanner.jsx'
+import DailyPlaybook from './pages/DailyPlaybook.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import './App.css'
 
@@ -64,28 +64,34 @@ function App() {
             📈 行为分析
           </button>
           <button
+            className={`nav-tab ${page === 'playbook' ? 'active' : ''}`}
+            onClick={() => navigate('playbook')}
+          >
+            今日作战
+          </button>
+          <button
             className={`nav-tab ${page === 'scanner' ? 'active' : ''}`}
             onClick={() => navigate('scanner')}
           >
-            🎯 今日机会
+            今日机会
           </button>
           <button
             className={`nav-tab ${page === 'chan' ? 'active' : ''}`}
             onClick={() => navigate('chan')}
           >
-            🔮 缠论看盘
+            缠论看盘
           </button>
           <button
             className={`nav-tab ${page === 'rotation' ? 'active' : ''}`}
             onClick={() => navigate('rotation')}
           >
-            🧭 调仓罗盘
+            调仓罗盘
           </button>
           <button
             className={`nav-tab ${page === 'sand-table' ? 'active' : ''}`}
             onClick={() => navigate('sand-table')}
           >
-            🎮 模拟训练
+            模拟训练
           </button>
         </nav>
         <div className="status-bar-right">
@@ -101,6 +107,7 @@ function App() {
       <main className="main-content">
         {page === 'dashboard' && <Dashboard onViewInChan={handleViewInChan} />}
         {page === 'analysis' && <BehaviorReport onViewInChan={handleViewInChan} />}
+        {page === 'playbook' && <DailyPlaybook onViewInChan={handleViewInChan} />}
         {page === 'scanner' && <Scanner onViewInChan={handleViewInChan} />}
         {page === 'chan' && (
           <ChanView

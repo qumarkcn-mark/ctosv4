@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import './BehaviorReport.css'
-
-const API_BASE = 'http://localhost:8000/api'
+import { API_BASE } from '../config.js'
 
 const LEVEL_ICONS = { critical: '🔴', warning: '🟡', success: '🟢', info: '🔵' }
 
@@ -85,6 +84,8 @@ export default function BehaviorReport() {
             <div className="metric-item"><span className="metric-val">{m.win_rate}%</span><span className="metric-lbl">胜率</span></div>
             <div className="metric-item"><span className="metric-val">{m.profit_loss_ratio}</span><span className="metric-lbl">盈亏比</span></div>
             <div className="metric-item"><span className="metric-val">{m.avg_hold_days}d</span><span className="metric-lbl">平均持仓</span></div>
+            <div className="metric-item"><span className="metric-val">{m.plan_adherence_rate ?? '—'}{m.plan_adherence_rate != null ? '%' : ''}</span><span className="metric-lbl">计划执行</span></div>
+            <div className="metric-item"><span className="metric-val">{m.unplanned_trades ?? 0}</span><span className="metric-lbl">计划外交易</span></div>
           </div>
         </div>
 

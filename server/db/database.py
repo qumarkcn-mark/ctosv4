@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS trades (
     trend_direction TEXT,
     source TEXT DEFAULT 'MANUAL' CHECK(source IN
         ('VOICE', 'MANUAL', 'CSV_IMPORT')),
+    playbook_item_id INTEGER,
+    plan_relationship TEXT DEFAULT 'UNKNOWN',
+    discipline_tag TEXT,
+    coach_event_id TEXT,
     traded_at DATETIME NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -272,6 +276,40 @@ CREATE INDEX IF NOT EXISTS idx_coach_events_symbol ON coach_events(symbol, occur
 CREATE INDEX IF NOT EXISTS idx_strategy_triggers_user ON strategy_triggers(user_id, strategy_id, triggered_at);
 CREATE INDEX IF NOT EXISTS idx_alert_deliveries_event ON alert_deliveries(event_id);
 
+-- 今日作战台：盘前计划、盘中响应、盘后复盘的纪律闭环
+CREATE TABLE IF NOT EXISTS daily_playbooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    trade_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    source_json TEXT,
+    summary_json TEXT,
+    UNIQUE(user_id, trade_date)
+);
+
+CREATE TABLE IF NOT EXISTS daily_playbook_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    playbook_id INTEGER NOT NULL REFERENCES daily_playbooks(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    name TEXT,
+    mode TEXT NOT NULL,
+    plan_id TEXT,
+    strategy_id TEXT,
+    status TEXT NOT NULL DEFAULT 'WATCHING',
+    trigger_json TEXT,
+    invalidation_json TEXT,
+    radar_snapshot_json TEXT,
+    response_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_playbook_user_date ON daily_playbooks(user_id, trade_date);
+CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_playbook ON daily_playbook_items(playbook_id);
+CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_symbol ON daily_playbook_items(user_id, symbol);
+
 -- ── 选股扫描结果表 ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scan_results (
     id              INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -331,6 +369,11 @@ def run_migrations(conn: sqlite3.Connection):
         "ALTER TABLE positions ADD COLUMN m5_entry_zg REAL",
         # 迁移 M008：positions 表新增 entry_thesis_json（统一入场假设）
         "ALTER TABLE positions ADD COLUMN entry_thesis_json TEXT",
+        # 迁移 M009：trades 表新增计划关系，用于计划内/计划外复盘
+        "ALTER TABLE trades ADD COLUMN playbook_item_id INTEGER",
+        "ALTER TABLE trades ADD COLUMN plan_relationship TEXT DEFAULT 'UNKNOWN'",
+        "ALTER TABLE trades ADD COLUMN discipline_tag TEXT",
+        "ALTER TABLE trades ADD COLUMN coach_event_id TEXT",
         # 迁移 M004：alerts 表补充新类型（不修改 CHECK 约束，软兼容）
         # 迁移 M005：scan_results 表新增 fundamental（LLM 调研原始上下文）
         "ALTER TABLE scan_results ADD COLUMN fundamental TEXT",
@@ -398,6 +441,41 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_coach_events_symbol ON coach_events(symbol, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_strategy_triggers_user ON strategy_triggers(user_id, strategy_id, triggered_at)",
         "CREATE INDEX IF NOT EXISTS idx_alert_deliveries_event ON alert_deliveries(event_id)",
+        # 迁移 M010：今日作战台
+        """
+        CREATE TABLE IF NOT EXISTS daily_playbooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            trade_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            source_json TEXT,
+            summary_json TEXT,
+            UNIQUE(user_id, trade_date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS daily_playbook_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            playbook_id INTEGER NOT NULL REFERENCES daily_playbooks(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            name TEXT,
+            mode TEXT NOT NULL,
+            plan_id TEXT,
+            strategy_id TEXT,
+            status TEXT NOT NULL DEFAULT 'WATCHING',
+            trigger_json TEXT,
+            invalidation_json TEXT,
+            radar_snapshot_json TEXT,
+            response_json TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_daily_playbook_user_date ON daily_playbooks(user_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_playbook ON daily_playbook_items(playbook_id)",
+        "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_symbol ON daily_playbook_items(user_id, symbol)",
     ]
     for sql in migrations:
         try:

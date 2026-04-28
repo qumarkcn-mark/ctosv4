@@ -1,6 +1,6 @@
 # CT-OS V4.0 Database Architecture
 
-CT-OS uses three SQLite databases with clear ownership boundaries. The product database stores user and coach state. The two market-data lakes store large K-line caches by source.
+CT-OS uses source-specific SQLite databases with clear ownership boundaries. The product database stores user and coach state. Market-data lakes store large K-line caches by source.
 
 ```text
 data/ctos.db
@@ -11,6 +11,9 @@ data/tdx_lake.db
 
 data/baostock_lake.db
   BaoStock cache: day/week/60/30/15/5, usually adjustflag=2
+
+data/qmt_lake.db
+  QMT closed realtime bars: intraday minute bars, adjustflag=3
 ```
 
 ## Product Database
@@ -102,6 +105,64 @@ BaoStock
   -> chan_detail_service / price_service / sand_table / lake_meta
 ```
 
+## QMT Lake
+
+Path: `data/qmt_lake.db`
+
+Owner: QMT read-only bridge client.
+
+Rule: only closed QMT bars are cached here. Forming bars may be returned to the UI as preview data, but they must not be committed as formal structure evidence.
+
+Expected rows:
+
+```sql
+freq IN ('1', '5', '15', '30', '60', 'day')
+adjustflag = '3'
+```
+
+Main flows:
+
+```text
+Windows QMT Client
+  -> qmt_sse_gateway / qmt_bridge
+  -> server.services.qmt_bridge_client
+  -> data/qmt_lake.db
+  -> realtime preview / Kline display / future Radar data_mode=realtime_preview
+```
+
+Current diagnostic endpoints:
+
+```text
+GET /api/data/qmt/health
+GET /api/data/qmt/klines/{symbol}
+GET /api/data/qmt/stream-probe/{symbol}
+```
+
+QMT data is read-only market data in Phase 1/2. It is not an execution channel.
+
+## TDX Local 1-Minute
+
+TDX local 1-minute files are read directly from `vipdoc/{sh,sz}/minline/*.lc1`.
+
+They are not stored in `tdx_lake.db` in the first version. They are a display and replay supplement for the Kline chart.
+
+Main flows:
+
+```text
+Windows TDX vipdoc share
+  -> SMB mount on Mac, for example /Users/markqu/Desktop/tdx_vipdoc_mount
+  -> server.services.tdx_minute_service
+  -> /api/data/tdx/minute/{symbol}
+  -> Kline 1分 display mode
+```
+
+Rule:
+
+```text
+TDX local 1m may support display and replay.
+TDX local 1m must not replace QMT closed 1m as the live Radar confirmation source.
+```
+
 ## Data Access Rules
 
 All code should go through `server/db/kline_lake.py`.
@@ -115,8 +176,9 @@ Default routing:
 | `upsert_klines(...)` | BaoStock lake |
 | `get_lake_connection('tdx')` | TDX lake |
 | `get_lake_connection('baostock')` | BaoStock lake |
+| `get_lake_connection('qmt')` | QMT lake |
 
-Callers that know their source should pass it explicitly. Scanner code should pass or obtain `tdx`. Charting and price code should pass or obtain `baostock`.
+Callers that know their source should pass it explicitly. Scanner code should pass or obtain `tdx`. Charting and price code should pass or obtain `baostock`. Realtime preview code should pass or obtain `qmt`.
 
 ## Migration Rules
 

@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
 
+from server.api import radar as radar_api
 from server.db.database import get_connection
 from server.engines.coach.event_log import log_alert_candidate
 from server.engines.decision.push_rules import (
@@ -43,8 +44,9 @@ class PriceMonitor:
             try:
                 await self._check_stop_losses()
 
-                # 每隔 20 个周期 (约 10 分钟) 跑一次低频的缠论长线日线推演 (减少API负担)
-                if self._loop_count % 20 == 0:
+                # 每隔 20 个周期 (约 10 分钟) 跑一次低频缠论推演。
+                # 启动首轮先跳过，避免用户打开页面时和 Radar/CChan 结构计算抢 CPU。
+                if self._loop_count > 0 and self._loop_count % 20 == 0:
                     await self._check_chan_buys()
 
                 # Task #10：每日收盘后（15:05-15:30 窗口）自动更新台阶止损
@@ -87,7 +89,6 @@ class PriceMonitor:
             return
 
         try:
-            from server.services.chan_service import analyze_matrix_state
             positions = await run_in_threadpool(self._db_get_positions)
             if not positions:
                 return
@@ -95,10 +96,8 @@ class PriceMonitor:
             for pos in positions:
                 sym = pos["symbol"]
                 try:
-                    result = await analyze_matrix_state(sym, holding=None)
-                    matrix_a = result.get("matrix_a", [])
-                    m30 = matrix_a[1] if len(matrix_a) > 1 else {}
-                    new_m30_zg = m30.get("zs_operative_zg", 0) or m30.get("zg", 0)
+                    response = await radar_api.get_radar(sym, user_id=pos.get("user_id"))
+                    new_m30_zg = _m30_trailing_stop_from_radar(response.get("data") or {})
                     if new_m30_zg > 0:
                         _persist_trailing_stop(sym, new_m30_zg)
                         logger.info(
@@ -214,7 +213,7 @@ class PriceMonitor:
         ③ 30分底背驰（空仓关注股）→ 入场条件进展
         ④ 入场五条件全满足（关注股）→ 入场信号触发
         """
-        from server.services.chan_service import analyze_matrix_state, ChanState
+        from server.services.chan_service import analyze_matrix_state
 
         positions = await run_in_threadpool(self._db_get_positions)
         watchlist = await run_in_threadpool(self._db_get_watchlist)
@@ -530,3 +529,16 @@ class PriceMonitor:
 
 # 单例实例
 monitor = PriceMonitor()
+
+
+def _m30_trailing_stop_from_radar(radar_data: dict) -> float:
+    """从 Radar contract 提取 30 分钟台阶止损候选价。"""
+    levels = ((radar_data.get("structure") or {}).get("levels") or {})
+    m30 = levels.get("30") or {}
+    active_zs = m30.get("active_zhongshu") or {}
+    return (
+        m30.get("zs_operative_zg")
+        or m30.get("zg")
+        or active_zs.get("zg")
+        or 0
+    )

@@ -119,6 +119,38 @@ def test_init_migrations_create_coach_event_tables():
     assert {"coach_events", "strategy_triggers", "alert_deliveries"}.issubset(tables)
 
 
+def test_init_migrations_create_daily_playbook_tables():
+    conn = make_old_alerts_conn()
+    conn.execute(
+        """
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            price REAL NOT NULL,
+            quantity INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            traded_at DATETIME NOT NULL
+        )
+        """
+    )
+    from server.db.database import run_migrations
+
+    run_migrations(conn)
+
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    trade_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    assert {"daily_playbooks", "daily_playbook_items"}.issubset(tables)
+    assert {"playbook_item_id", "plan_relationship", "discipline_tag", "coach_event_id"}.issubset(trade_columns)
+
+
 def test_run_migrations_adds_position_entry_thesis_json():
     conn = make_old_alerts_conn()
     from server.db.database import run_migrations

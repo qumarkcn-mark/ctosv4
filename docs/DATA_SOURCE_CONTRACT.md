@@ -12,9 +12,10 @@ The goal is to prevent hidden mixing of data sources, adjustment modes, symbol f
 | Source | Role | Database / Access |
 |---|---|---|
 | TDX local `.day` files | full-market daily scanner facts | `data/tdx_lake.db` |
+| TDX local 1-minute files | local 1-minute display and replay supplement | future `tdx_minute_lake.db` or source-specific lake |
 | BaoStock | formal multi-level Chan structure facts | `data/baostock_lake.db` |
 | Tencent quote API | UI current price, real-time preview K-line, normal price alerts | HTTP |
-| QMT / XtQuant | private Phase 3 execution quotes, account, orders, fills | Windows QMT Agent |
+| QMT / XtQuant | read-only realtime market data now; private Phase 3 execution data later | Windows QMT Gateway / Agent |
 | `ctos.db` | user facts and product state | `data/ctos.db` |
 
 Market data lakes are shared market facts.
@@ -57,6 +58,7 @@ All API handlers should normalize input before calling data, structure, decision
 | Radar/Chan formal structure | BaoStock | front-adjusted, `adjustflag=2` |
 | UI current price | Tencent | real current price |
 | UI real-time preview K-line | Tencent | real current price aggregated or Tencent minute K |
+| QMT read-only preview | QMT | realtime quote/tick/minute context, no orders |
 | User trades | user input / broker statement | actual trade price |
 | Positions | product state | actual cost/current price |
 | QMT execution | QMT | executable quote/order context |
@@ -73,6 +75,7 @@ Rules:
 | Feature | Primary Source | Fallback | Can fallback drive formal structure? |
 |---|---|---|---|
 | K-line chart historical bars | BaoStock lake | Tencent K-line for display only | No |
+| K-line chart 1-minute bars | QMT realtime 1m | TDX local 1m for display/replay | No for forming/replay-only bars |
 | Chan formal structure | BaoStock lake | None for formal result | No |
 | Radar | BaoStock lake | stale/error state | No |
 | Scanner initial filter | TDX lake | None | N/A |
@@ -194,17 +197,31 @@ Preview K-line rule:
 Tencent quote/minute data may render a preview last bar, but that bar is not committed to formal structure until the official lake source updates.
 ```
 
-## Phase 3 QMT Source Contract
+## QMT Source Contract
 
-QMT data is private Phase 3 execution data.
+QMT has two separate roles:
+
+| Role | Phase | Allowed |
+|---|---|---|
+| Read-only market data | Phase 1/2 private workstation setup | health, stream probe, quotes, closed minute bars, display preview |
+| Execution data and orders | future private Phase 3 | account, positions, order submit/cancel/status, fills |
+
+The read-only market data role does not grant execution permission.
 
 Authoritative source:
 
 ```text
-Windows QMT Agent -> QMT / XtQuant
+Windows QMT Gateway / Agent -> QMT / XtQuant
 ```
 
-QMT provides:
+QMT read-only market data may provide:
+
+- realtime quote/tick context
+- closed intraday minute bars
+- forming bar preview labels
+- bridge health and subscriptions
+
+Future QMT execution provides:
 
 - executable quote context
 - account state
@@ -275,6 +292,7 @@ Allowed:
 
 - Tencent quote fallback for UI current price.
 - Tencent K-line fallback for display-only preview.
+- TDX local 1-minute fallback for Kline display and historical replay only.
 - Deterministic LLM fallback summary for scanner fundamental analysis.
 - Cached last price for UI display when clearly marked stale.
 
@@ -282,6 +300,7 @@ Not allowed:
 
 - Tencent fallback for formal Chan structure.
 - TDX fallback for Radar minute levels.
+- TDX local 1-minute fallback for live Radar confirmation when QMT is unavailable.
 - BaoStock front-adjusted price as execution price.
 - AI fallback for deterministic structure fields.
 - QMT fallback to Tencent for execution order price.

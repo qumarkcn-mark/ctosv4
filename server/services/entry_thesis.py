@@ -8,6 +8,8 @@ import json
 from datetime import datetime
 from typing import Optional
 
+from server.domain.symbols import symbol_aliases, to_tencent_symbol
+
 
 UNKNOWN_STRATEGY = "未知"
 
@@ -90,10 +92,11 @@ def persist_entry_thesis(
 ) -> None:
     if not _positions_has_column(conn, "entry_thesis_json"):
         return
+    aliases = symbol_aliases(symbol)
 
     existing = conn.execute(
-        "SELECT entry_thesis_json FROM positions WHERE user_id = ? AND symbol = ?",
-        (user_id, symbol),
+        "SELECT entry_thesis_json FROM positions WHERE user_id = ? AND symbol IN (?, ?, ?)",
+        (user_id, *aliases),
     ).fetchone()
     thesis_json = json.dumps(thesis, ensure_ascii=False, sort_keys=True)
     existing_json = existing["entry_thesis_json"] if existing else None
@@ -109,7 +112,7 @@ def persist_entry_thesis(
                END,
                entry_date = COALESCE(entry_date, ?),
                m5_entry_zg = COALESCE(m5_entry_zg, ?)
-         WHERE user_id = ? AND symbol = ?
+         WHERE user_id = ? AND symbol IN (?, ?, ?)
         """,
         (
             next_json,
@@ -117,7 +120,7 @@ def persist_entry_thesis(
             entry_date,
             m5_entry_zg,
             user_id,
-            symbol,
+            *aliases,
         ),
     )
 
@@ -125,13 +128,15 @@ def persist_entry_thesis(
 def ensure_unknown_entry_thesis(conn, *, user_id: int, symbol: str) -> None:
     if not _positions_has_column(conn, "entry_thesis_json"):
         return
+    aliases = symbol_aliases(symbol)
+    position_symbol = to_tencent_symbol(symbol)
     position = conn.execute(
         """
         SELECT entry_thesis_json
           FROM positions
-         WHERE user_id = ? AND symbol = ? AND quantity > 0
+         WHERE user_id = ? AND symbol IN (?, ?, ?) AND quantity > 0
         """,
-        (user_id, symbol),
+        (user_id, *aliases),
     ).fetchone()
     if not position or position["entry_thesis_json"]:
         return
@@ -141,11 +146,11 @@ def ensure_unknown_entry_thesis(conn, *, user_id: int, symbol: str) -> None:
         SELECT id, symbol, source, traded_at, stop_loss_price, reason_text,
                reason_category, trend_direction
           FROM trades
-         WHERE user_id = ? AND symbol = ? AND direction = 'BUY'
+         WHERE user_id = ? AND symbol IN (?, ?, ?) AND direction = 'BUY'
          ORDER BY traded_at ASC
          LIMIT 1
         """,
-        (user_id, symbol),
+        (user_id, *aliases),
     ).fetchone()
     if not first_buy:
         return
@@ -154,7 +159,7 @@ def ensure_unknown_entry_thesis(conn, *, user_id: int, symbol: str) -> None:
     persist_entry_thesis(
         conn,
         user_id=user_id,
-        symbol=symbol,
+        symbol=position_symbol,
         thesis=thesis,
         strategy_type=UNKNOWN_STRATEGY,
         entry_date=(first_buy["traded_at"] or "")[:10],

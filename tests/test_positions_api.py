@@ -50,3 +50,18 @@ def test_get_position_returns_empty_shape_for_non_holding(monkeypatch):
         "quantity": 0,
         "is_holding": False,
     }
+
+
+def test_get_position_accepts_canonical_symbol_for_compact_row(monkeypatch):
+    conn = make_conn()
+    conn.execute(
+        "INSERT INTO positions (user_id, symbol, name, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)",
+        (1, "sh600519", "贵州茅台", 100, 1600.0),
+    )
+    monkeypatch.setattr(positions, "get_connection", lambda: ConnWrapper(conn))
+
+    response = positions.get_position("sh.600519", user_id=1)
+
+    assert response["is_holding"] is True
+    assert response["symbol"] == "sh600519"
+    assert response["quantity"] == 100

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
+from server.domain.symbols import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,7 @@ def _get_all_tracked_symbols() -> list[str]:
             ).fetchall()
             for row in rows:
                 raw = row["symbol"]
-                # 转换格式: sh600519 -> sh.600519
-                if "." not in raw and len(raw) >= 7:
-                    raw = f"{raw[:2]}.{raw[2:]}"
-                symbols.add(raw)
+                symbols.add(normalize_symbol(raw))
         finally:
             conn.close()
     except Exception as e:

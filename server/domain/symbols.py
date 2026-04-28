@@ -63,6 +63,16 @@ def to_tencent_symbol(raw_symbol: str) -> str:
     return parse_symbol(raw_symbol).tencent
 
 
+def symbol_aliases(raw_symbol: str) -> tuple[str, str, str]:
+    """Return common persisted forms for a symbol.
+
+    旧数据里同时存在 sh600519 / sh.600519 / 600519。查询用户持仓等
+    人工录入数据时必须兼容这些形态，结构和行情内部仍使用 canonical。
+    """
+    parsed = parse_symbol(raw_symbol)
+    return (parsed.canonical, parsed.tencent, parsed.code)
+
+
 def to_tdx_filename(raw_symbol: str) -> str:
     """Convert any supported symbol input to TDX .day filename."""
     return parse_symbol(raw_symbol).tdx_filename

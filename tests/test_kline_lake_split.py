@@ -14,6 +14,7 @@ def reset_lake_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(kline_lake, "DB_PATH", str(tmp_path / "ctos.db"))
     monkeypatch.setattr(kline_lake, "TDX_LAKE_PATH", str(tmp_path / "tdx_lake.db"))
     monkeypatch.setattr(kline_lake, "BAOSTOCK_LAKE_PATH", str(tmp_path / "baostock_lake.db"))
+    monkeypatch.setattr(kline_lake, "QMT_LAKE_PATH", str(tmp_path / "qmt_lake.db"))
     monkeypatch.setattr(kline_lake, "LAKE_PATH", str(tmp_path / "baostock_lake.db"))
     kline_lake._thread_local.lake_conns = {}
     kline_lake.init_lake()
@@ -94,6 +95,7 @@ def test_init_lake_migrates_legacy_single_lake(monkeypatch, tmp_path):
     monkeypatch.setattr(kline_lake, "DB_PATH", str(tmp_path / "ctos.db"))
     monkeypatch.setattr(kline_lake, "TDX_LAKE_PATH", str(tmp_path / "tdx_lake.db"))
     monkeypatch.setattr(kline_lake, "BAOSTOCK_LAKE_PATH", str(tmp_path / "baostock_lake.db"))
+    monkeypatch.setattr(kline_lake, "QMT_LAKE_PATH", str(tmp_path / "qmt_lake.db"))
     monkeypatch.setattr(kline_lake, "LAKE_PATH", str(tmp_path / "baostock_lake.db"))
     kline_lake._thread_local.lake_conns = {}
 

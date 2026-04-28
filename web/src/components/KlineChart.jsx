@@ -18,6 +18,7 @@ const PARENT_FREQ_MAP = {
   m30:  { freq: 'day',  count: 500 },  // 30分 ← 日线中枢
   m15:  { freq: '30',   count: 800 },  // 15分 ← 30分中枢
   m5:   { freq: '30',   count: 1000 }, // 5分  ← 30分中枢
+  m1:   null,                          // 1分仅展示/盯盘，不叠加正式上级别投影
 }
 
 const INTERVALS = [
@@ -27,6 +28,7 @@ const INTERVALS = [
   { key: 'm30', label: '30分', freq: '30', count: 2500 },
   { key: 'm15', label: '15分', freq: '15', count: 2500 },
   { key: 'm5', label: '5分', freq: '5', count: 2500 },
+  { key: 'm1', label: '1分', freq: '1', count: 240, displayOnly: true },
 ]
 
 function loadToolbar() {
@@ -34,7 +36,7 @@ function loadToolbar() {
     const s = localStorage.getItem(TOOLBAR_KEY)
     if (s) {
       const parsed = JSON.parse(s)
-      // 回退不受支持的级别（如 m1）到 m5
+      // 回退不受支持的级别到 m5
       if (!INTERVALS.find(i => i.key === parsed.interval)) {
         parsed.interval = 'm5'
       }
@@ -70,12 +72,33 @@ export default function KlineChart({ symbol, layerVisibility }) {
   const [loading, setLoading] = useState(false)
   const [isInferring, setIsInferring] = useState(false)
   const [stats, setStats] = useState(null)
+  const [configMeta, setConfigMeta] = useState(null)
+  const [dataBadge, setDataBadge] = useState(null)
+  const [oneMinuteAvailable, setOneMinuteAvailable] = useState(true)
   const [error, setError] = useState(null)
+  const cchanPreset = layerVisibility?.cchan_preset || 'live_tolerant'
 
   // 同步 layerVisibility 到 ref（每次渲染都更新，不触发 effect）
   useEffect(() => {
     layerVisibilityRef.current = layerVisibility
   })
+
+  useEffect(() => {
+    if (!symbol) return
+    let cancelled = false
+    Promise.allSettled([
+      fetch(`${API_BASE}/data/qmt/health`).then((r) => r.ok ? r.json() : null),
+      fetch(`${API_BASE}/data/tdx/minute/health?symbol=${encodeURIComponent(symbol)}`).then((r) => r.ok ? r.json() : null),
+    ]).then(([qmt, tdx]) => {
+      if (cancelled) return
+      const qmtAvailable = qmt.status === 'fulfilled' && Boolean(qmt.value?.available)
+      const tdxAvailable = tdx.status === 'fulfilled' && Boolean(tdx.value?.available)
+      setOneMinuteAvailable(qmtAvailable || tdxAvailable)
+    }).catch(() => {
+      if (!cancelled) setOneMinuteAvailable(false)
+    })
+    return () => { cancelled = true }
+  }, [symbol])
 
   // ─── 核心 Effect: 初始化图表 + 加载数据 (symbol/interval 变化时完全重建)
   useEffect(() => {
@@ -84,9 +107,13 @@ export default function KlineChart({ symbol, layerVisibility }) {
     const iv = INTERVALS.find((i) => i.key === interval)
     const freq = iv?.freq ?? 'day'
     const isDay = interval === 'day' || interval === 'week'
+    const isDisplayOnly = Boolean(iv?.displayOnly)
 
     setLoading(true)
     setError(null)
+    setStats(null)
+    setConfigMeta(null)
+    setDataBadge(null)
 
     // 销毁旧实例
     if (chartRef.current) {
@@ -193,21 +220,28 @@ export default function KlineChart({ symbol, layerVisibility }) {
     })
     resizeObserver.observe(chartContainerRef.current)
 
-    // 发起数据请求
-    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${freq}&count=${iv?.count ?? 500}`)
-      .then((r) => r.json())
+    // 发起数据请求。1分只做 K 线展示，不进入正式 CChan 结构链。
+    const request = isDisplayOnly
+      ? loadDisplayOnlyKlines(symbol, iv?.count ?? 240)
+      : fetch(`${API_BASE}/chan/detail/${symbol}?freq=${freq}&count=${iv?.count ?? 500}&cchan_preset=${encodeURIComponent(cchanPreset)}`)
+          .then((r) => r.json())
+
+    request
       .then((json) => {
-        if (!json?.data?.klines?.length) {
+        const payload = normalizeChartPayload(json, { isDisplayOnly })
+        if (!payload.klines.length) {
           setError('暂无数据')
           setLoading(false)
           return
         }
 
-        const { klines, bis, segs, bi_zhongshus, bi_zhongshus_decomp, seg_zhongshus, stats: s, bsps } = json.data
-        setStats(s)
+        const { klines, bis, segs, bi_zhongshus, bi_zhongshus_decomp, seg_zhongshus, stats: s, bsps } = payload
+        setStats(isDisplayOnly ? { kline_count: klines.length, bi_count: 0, seg_count: 0, bi_zs_count: 0, seg_zs_count: 0 } : s)
+        setConfigMeta(isDisplayOnly ? null : (payload.config || null))
+        setDataBadge(payload.dataBadge || null)
 
         const klcData = klines.map((k) => ({
-          timestamp: toTimestamp(k.time, isDay),
+          timestamp: toTimestamp(k.time || k.date, isDay),
           open: k.open,
           high: k.high,
           low: k.low,
@@ -221,8 +255,12 @@ export default function KlineChart({ symbol, layerVisibility }) {
         chart.setSymbol({ ticker: symbol })
         chart.setPeriod({ span: 1, type: isDay ? 'day' : 'minute' })
 
-        // 渲染缠论覆盖层（移除了 500ms 固定延迟，数据到即渲染）
+        // 渲染缠论覆盖层。1分展示源不渲染 CChan 结构，避免误读为正式推演确认。
         requestAnimationFrame(() => {
+          if (isDisplayOnly) {
+            setLoading(false)
+            return
+          }
           // ★ 初始渲染也必须尊重 layerVisibility（从 localStorage 恢复的状态）
           const vis = layerVisibility || {}
           const filteredData = {
@@ -244,7 +282,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
       })
       .catch((e) => {
         console.error(e)
-        setError('数据加载失败')
+        setError(isDisplayOnly ? '1分数据不可用' : '数据加载失败')
         setLoading(false)
       })
 
@@ -256,7 +294,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
         chartRef.current = null
       }
     }
-  }, [symbol, interval])
+  }, [symbol, interval, cchanPreset])
 
   // ─── 主指标切换
   const handleMainIndicator = useCallback(
@@ -352,7 +390,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
     const parentConfig = PARENT_FREQ_MAP[interval]
     if (!parentConfig) return  // 周线无上级别，静默退出
 
-    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${parentConfig.freq}&count=${parentConfig.count}`)
+    fetch(`${API_BASE}/chan/detail/${symbol}?freq=${parentConfig.freq}&count=${parentConfig.count}&cchan_preset=${encodeURIComponent(cchanPreset)}`)
       .then((r) => r.json())
       .then((json) => {
         if (!json?.data?.bi_zhongshus) return
@@ -377,7 +415,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
         }
       })
       .catch((e) => console.warn('[ChanOverlay] 上级别数据拉取失败:', e))
-  }, [layerVisibility?.projection, symbol, interval])
+  }, [layerVisibility?.projection, symbol, interval, cchanPreset])
 
   // ─── DeepSeek 推演
   const handleInferScenarios = async () => {
@@ -421,11 +459,18 @@ export default function KlineChart({ symbol, layerVisibility }) {
           {INTERVALS.map((iv) => (
             <button
               key={iv.key}
-              className={`kline-iv-btn ${interval === iv.key ? 'active' : ''}`}
+              className={`kline-iv-btn ${interval === iv.key ? 'active' : ''} ${iv.displayOnly ? 'is-display-only' : ''}`}
               onClick={() => {
+                if (iv.key === 'm1' && !oneMinuteAvailable) return
                 setIntervalKey(iv.key)
                 saveToolbar({ ...loadToolbar(), interval: iv.key })
               }}
+              disabled={iv.key === 'm1' && !oneMinuteAvailable}
+              title={
+                iv.key === 'm1' && !oneMinuteAvailable
+                  ? '1分钟需要 QMT 实时数据或 TDX 本地1分钟文件'
+                  : (iv.displayOnly ? '1分仅用于盘中展示/历史回放，不确认雷达主推演' : iv.label)
+              }
             >
               {iv.label}
             </button>
@@ -457,6 +502,12 @@ export default function KlineChart({ symbol, layerVisibility }) {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {dataBadge && (
+            <div className={`kline-data-badge kline-data-badge--${dataBadge.tone}`}>
+              <span>{dataBadge.label}</span>
+              <em>{dataBadge.detail}</em>
+            </div>
+          )}
           <button 
             className="kline-ind-btn"
             onClick={handleInferScenarios}
@@ -479,6 +530,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
               <span className="stat-pill gold">{stats.seg_count || 0} 段</span>
               <span className="stat-pill">{stats.bi_zs_count || 0} 笔枢</span>
               <span className="stat-pill accent">{stats.seg_zs_count || 0} 段枢</span>
+              {configMeta?.label && <span className="stat-pill gold">{configMeta.label}</span>}
             </div>
           )}
         </div>
@@ -491,4 +543,47 @@ export default function KlineChart({ symbol, layerVisibility }) {
       </div>
     </div>
   )
+}
+
+async function loadDisplayOnlyKlines(symbol, count) {
+  const qmtUrl = `${API_BASE}/data/qmt/klines/${symbol}?period=1m&count=${count}&cache_closed=false`
+  try {
+    const qmtRes = await fetch(qmtUrl)
+    if (qmtRes.ok) {
+      const qmtJson = await qmtRes.json()
+      if (Array.isArray(qmtJson?.klines) && qmtJson.klines.length) {
+        return { source: 'qmt_realtime_1m', usage: 'display_preview', klines: qmtJson.klines }
+      }
+    }
+  } catch {}
+
+  const tdxRes = await fetch(`${API_BASE}/data/tdx/minute/${symbol}?count=${count}`)
+  if (!tdxRes.ok) {
+    throw new Error('1分钟数据不可用')
+  }
+  return await tdxRes.json()
+}
+
+function normalizeChartPayload(json, { isDisplayOnly }) {
+  if (isDisplayOnly) {
+    const source = json?.source || 'unknown'
+    const label = source === 'qmt_realtime_1m' ? '1分 · QMT实时' : '1分 · TDX本地历史'
+    const detail = source === 'qmt_realtime_1m' ? '预览级别' : '仅展示/回放'
+    return {
+      klines: (json?.klines || []).map((k) => ({ ...k, time: k.time || k.date })),
+      bis: [],
+      segs: [],
+      bi_zhongshus: [],
+      bi_zhongshus_decomp: [],
+      seg_zhongshus: [],
+      bsps: [],
+      stats: { kline_count: json?.count || json?.klines?.length || 0 },
+      config: null,
+      dataBadge: { label, detail, tone: source === 'qmt_realtime_1m' ? 'live' : 'history' },
+    }
+  }
+  return {
+    ...(json?.data || {}),
+    klines: json?.data?.klines || [],
+  }
 }

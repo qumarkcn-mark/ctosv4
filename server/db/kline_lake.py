@@ -26,14 +26,17 @@ _wal_init_lock = threading.Lock()  # 串行化首次 WAL 初始化，消除竞�
 _write_locks = {
     "tdx": threading.Lock(),
     "baostock": threading.Lock(),
+    "qmt": threading.Lock(),
 }
 
 # K 线数据湖拆分：
 #   TDX_LAKE_PATH      = 全市场日线事实源（freq=day, adjustflag=3），供 scanner 使用
 #   BAOSTOCK_LAKE_PATH = BaoStock 多级别缓存（day/week/60/30/15/5），供缠论/持仓/价格使用
-LakeSource = Literal["tdx", "baostock"]
+#   QMT_LAKE_PATH      = QMT 实时分钟收线缓存（实价、不复权），供盘中雷达预览使用
+LakeSource = Literal["tdx", "baostock", "qmt"]
 TDX_LAKE_PATH = str(Path(DB_PATH).parent / "tdx_lake.db")
 BAOSTOCK_LAKE_PATH = str(Path(DB_PATH).parent / "baostock_lake.db")
+QMT_LAKE_PATH = str(Path(DB_PATH).parent / "qmt_lake.db")
 
 # 兼容旧导入：历史代码里的 LAKE_PATH 代表 BaoStock 多级别缓存。
 LAKE_PATH = BAOSTOCK_LAKE_PATH
@@ -83,6 +86,8 @@ def get_lake_path(source: LakeSource = "baostock") -> str:
         return TDX_LAKE_PATH
     if source == "baostock":
         return BAOSTOCK_LAKE_PATH
+    if source == "qmt":
+        return QMT_LAKE_PATH
     raise ValueError(f"未知数据湖来源: {source}")
 
 
@@ -150,8 +155,8 @@ def get_lake_write_connection(source: LakeSource = "baostock") -> sqlite3.Connec
 
 
 def init_lake():
-    """初始化 TDX 与 BaoStock 两个 K 线数据湖 schema。"""
-    for source in ("tdx", "baostock"):
+    """初始化 TDX、BaoStock、QMT 三个 K 线数据湖 schema。"""
+    for source in ("tdx", "baostock", "qmt"):
         conn = get_lake_write_connection(source)
         try:
             conn.executescript(LAKE_SCHEMA)

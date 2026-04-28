@@ -10,12 +10,12 @@ from server.api import rotation
 
 
 def test_analyze_one_returns_fallback_on_timeout(monkeypatch):
-    async def slow_matrix(symbol):
+    async def slow_matrix(symbol, user_id=1):
         await asyncio.sleep(0.05)
         return {}
 
     monkeypatch.setattr(rotation, "ROTATION_ANALYSIS_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(rotation, "analyze_matrix_state", slow_matrix)
+    monkeypatch.setattr(rotation, "_load_rotation_matrix", slow_matrix)
 
     item = asyncio.run(
         rotation._analyze_one(
@@ -48,3 +48,48 @@ def test_rotation_compass_returns_pending_items_after_global_timeout(monkeypatch
     assert response["status"] == "success"
     assert candidates[0]["symbol"] == "sh600519"
     assert candidates[0]["structure_summary"]["error"] == "analysis timeout"
+
+
+def test_radar_contract_to_score_matrix_uses_public_level_keys():
+    radar_data = {
+        "api_version": "radar.v1",
+        "structure": {
+            "levels": {
+                "day": {
+                    "level": "day",
+                    "price": 10,
+                    "state": "UPWARD_LEAVING",
+                    "patterns": ["趋势底背驰"],
+                    "zoushi_type": {"type": "盘整"},
+                    "active_zhongshu": {"zg": 11, "zd": 9},
+                },
+                "30": {
+                    "level": "30",
+                    "price": 10.3,
+                    "state": "IN_CENTER_OSC",
+                    "patterns": ["二买确认"],
+                    "zoushi_type": {"type": "盘整"},
+                    "active_zhongshu": {"zg": 10.8, "zd": 9.9},
+                },
+                "5": {"level": "5", "price": 10.1, "state": "UNKNOWN"},
+            },
+            "systems": {
+                "short_term": {"interval_nesting": {"depth": 2, "direction": "bottom"}}
+            },
+        },
+        "deduction": {
+            "summary": "等待确认",
+            "path_thesis": {"boundaries": [{"price": 9.9}]},
+            "complete_classification": [
+                {"code": "A", "title": "向上确认", "summary": "继续观察。"}
+            ],
+        },
+        "strategy": {"strategy_type": "观察中"},
+    }
+
+    matrix = rotation._radar_contract_to_score_matrix(radar_data)
+
+    assert [level["level"] for level in matrix["matrix_a"]] == ["day", "m30", "m5"]
+    assert matrix["matrix_a"][1]["zg"] == 10.8
+    assert matrix["interval_nesting_a"]["depth"] == 2
+    assert matrix["forward_analysis_a"]["forward_classes"][0]["stop_loss"] == 9.9

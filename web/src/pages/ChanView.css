@@ -120,6 +120,7 @@
 
 /* ─── 右侧雷达侧边栏（现在在 radar-collapse-wrapper 内） */
 .chan-radar-sidebar {
+  position: relative;
   flex: 1;
   min-width: 0;
   overflow-y: auto;

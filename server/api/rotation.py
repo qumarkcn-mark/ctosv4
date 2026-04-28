@@ -12,9 +12,9 @@ from typing import Optional
 from fastapi import APIRouter
 from starlette.concurrency import run_in_threadpool
 
+from server.api import radar as radar_api
 from server.db.database import get_connection
 from server.engines.decision.strategy_definitions import build_strategy_contract
-from server.services.chan_service import analyze_matrix_state
 from server.services.rotation_planner import RISK_DISCLAIMER, build_rotation_item
 from server.services.rotation_scorer import score_symbol
 
@@ -35,7 +35,7 @@ async def _analyze_one(
     is_holding: bool,
     semaphore: Optional[asyncio.Semaphore] = None,
 ) -> dict:
-    """拉取 analyze_matrix_state → 排序评分 → 甲乙丙预案"""
+    """拉取 Radar contract → 转为评分快照 → 排序评分 → 甲乙丙预案"""
     symbol = row["symbol"]
     base = {
         "symbol": symbol,
@@ -49,13 +49,13 @@ async def _analyze_one(
     try:
         if semaphore is None:
             matrix = await asyncio.wait_for(
-                analyze_matrix_state(symbol),
+                _load_rotation_matrix(symbol),
                 timeout=ROTATION_ANALYSIS_TIMEOUT_SECONDS,
             )
         else:
             async with semaphore:
                 matrix = await asyncio.wait_for(
-                    analyze_matrix_state(symbol),
+                    _load_rotation_matrix(symbol),
                     timeout=ROTATION_ANALYSIS_TIMEOUT_SECONDS,
                 )
         score_pkg = score_symbol(matrix, is_holding=is_holding)
@@ -83,6 +83,79 @@ def _fallback_rotation_item(base: dict, is_holding: bool, error: str) -> dict:
     return build_rotation_item(fallback, is_holding)
 
 
+async def _load_rotation_matrix(symbol: str, user_id: int = 1) -> dict:
+    """加载 Radar contract，并映射成 rotation_scorer 仍使用的 matrix-like 形状。"""
+    response = await radar_api.get_radar(symbol, user_id=user_id)
+    return _radar_contract_to_score_matrix(response.get("data") or {})
+
+
+def _radar_contract_to_score_matrix(radar_data: dict) -> dict:
+    """把 Radar public levels 转成 score_symbol 的输入结构。"""
+    structure = radar_data.get("structure") or {}
+    levels = structure.get("levels") or {}
+    systems = structure.get("systems") or {}
+    deduction = radar_data.get("deduction") or {}
+    strategy = radar_data.get("strategy") or {}
+
+    return {
+        "api_version": radar_data.get("api_version", "radar.v1"),
+        "matrix_a": [
+            _score_level_from_radar(levels.get("day"), "day"),
+            _score_level_from_radar(levels.get("30"), "m30"),
+            _score_level_from_radar(levels.get("5"), "m5"),
+        ],
+        "matrix_b": [
+            _score_level_from_radar(levels.get("day"), "day"),
+            _score_level_from_radar(levels.get("60"), "m60"),
+            _score_level_from_radar(levels.get("15"), "m15"),
+        ],
+        "interval_nesting_a": (systems.get("short_term") or {}).get("interval_nesting") or {},
+        "interval_nesting_b": (systems.get("swing") or {}).get("interval_nesting") or {},
+        "forward_analysis_a": {
+            "current_position": deduction.get("summary", ""),
+            "forward_classes": _forward_classes_from_radar_deduction(deduction),
+        },
+        "strategy_classification": {
+            **strategy,
+            "strategy_type": strategy.get("strategy_type", "观察中"),
+        },
+    }
+
+
+def _score_level_from_radar(level: Optional[dict], legacy_key: str) -> dict:
+    if not level:
+        return {"level": legacy_key, "data_status": "missing", "state": "UNKNOWN", "price": 0}
+    active_zs = level.get("active_zhongshu") or {}
+    return {
+        **level,
+        "level": legacy_key,
+        "price": level.get("price", 0),
+        "zg": level.get("zg") or active_zs.get("zg", 0),
+        "zd": level.get("zd") or active_zs.get("zd", 0),
+        "zs_operative_zg": level.get("zs_operative_zg") or level.get("zg") or active_zs.get("zg", 0),
+        "zs_operative_zd": level.get("zs_operative_zd") or level.get("zd") or active_zs.get("zd", 0),
+        "patterns": level.get("patterns") or [],
+        "zoushi_type": level.get("zoushi_type") or {"type": "数据不足", "zs_count": 0},
+        "classifications": level.get("classifications") or [],
+        "detail_bis": level.get("detail_bis") or level.get("recent_bis") or level.get("bis") or [],
+        "data_status": level.get("data_status", "ok"),
+    }
+
+
+def _forward_classes_from_radar_deduction(deduction: dict) -> list:
+    classes = []
+    boundaries = (deduction.get("path_thesis") or {}).get("boundaries") or []
+    stop_loss = next((item.get("price") for item in boundaries if item.get("price")), None)
+    for item in deduction.get("complete_classification") or []:
+        classes.append({
+            "scenario": item.get("code") or item.get("label"),
+            "lifecycle_node": item.get("title") or item.get("label") or "",
+            "action": item.get("summary") or item.get("title") or "",
+            "stop_loss": stop_loss,
+        })
+    return classes
+
+
 # ═══════════════════════════════════════════════════════════════
 # 主接口
 # ═══════════════════════════════════════════════════════════════
@@ -92,7 +165,7 @@ async def rotation_compass(user_id: int = 1):
     """调仓罗盘主接口 — 返回 holdings / candidates 的横向预案。"""
     positions, watchlist = await run_in_threadpool(_fetch_rows, user_id)
 
-    # 并行打分（chan_service 内部已有数据湖缓存，批量不会很慢）
+    # 并行打分（Radar 底层已有结构缓存/降级保护，批量限制并发）
     semaphore = asyncio.Semaphore(ROTATION_ANALYSIS_CONCURRENCY)
     task_specs = [
         *[(p, True) for p in positions],

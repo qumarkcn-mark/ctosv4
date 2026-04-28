@@ -33,6 +33,13 @@ LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 PRICE_API_TIMEOUT = 5  # 秒
 PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔
 
+# QMT 只读行情桥。默认指向 Windows 侧本机端口；未启动时后端必须可降级。
+QMT_BRIDGE_URL = os.getenv("QMT_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
+QMT_BRIDGE_TIMEOUT = float(os.getenv("QMT_BRIDGE_TIMEOUT", "2"))
+
+# TDX 本地数据目录。当前只读 1 分钟展示/回放，不作为实时确认源。
+TDX_VIPDOC = os.getenv("TDX_VIPDOC", "/Volumes/tdx_vipdoc")
+
 # 推送
 DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
 

@@ -4,6 +4,7 @@ from typing import List, Optional
 import sqlite3
 from datetime import datetime
 from server.db.database import get_connection
+from server.domain.symbols import symbol_aliases, to_tencent_symbol
 
 router = APIRouter()
 
@@ -124,6 +125,8 @@ def delete_group(name: str, user_id: int = 1):
 def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
     """添加股票到分组（保证全局唯一，从其他分组中移除）"""
     import sqlite3
+    stock_symbol = to_tencent_symbol(item.symbol)
+    aliases = symbol_aliases(item.symbol)
     conn = get_connection()
     try:
         g_row = conn.execute("SELECT id FROM watchlist_groups WHERE user_id=? AND name=?", (user_id, group_name)).fetchone()
@@ -133,8 +136,8 @@ def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
         
         # 删除在其他分组的这只股票
         conn.execute(
-            "DELETE FROM watchlist_items WHERE symbol=? AND group_id IN (SELECT id FROM watchlist_groups WHERE user_id=?)",
-            (item.symbol, user_id)
+            "DELETE FROM watchlist_items WHERE symbol IN (?, ?, ?) AND group_id IN (SELECT id FROM watchlist_groups WHERE user_id=?)",
+            (*aliases, user_id)
         )
         
         # 添加到新分组
@@ -143,7 +146,7 @@ def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
         
         conn.execute(
             "INSERT INTO watchlist_items (group_id, symbol, name, sort_order) VALUES (?, ?, ?, ?)",
-            (g_id, item.symbol, item.name, next_order)
+            (g_id, stock_symbol, item.name, next_order)
         )
         conn.commit()
         return {"status": "ok"}
@@ -155,13 +158,17 @@ def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
 @router.delete("/groups/{group_name}/stocks/{symbol}")
 def remove_stock(group_name: str, symbol: str, user_id: int = 1):
     """从分组中移除股票"""
+    aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:
         g_row = conn.execute("SELECT id FROM watchlist_groups WHERE user_id=? AND name=?", (user_id, group_name)).fetchone()
         if not g_row:
             raise HTTPException(404, "分组不存在")
             
-        conn.execute("DELETE FROM watchlist_items WHERE group_id=? AND symbol=?", (g_row["id"], symbol))
+        conn.execute(
+            "DELETE FROM watchlist_items WHERE group_id=? AND symbol IN (?, ?, ?)",
+            (g_row["id"], *aliases),
+        )
         conn.commit()
         return {"status": "ok"}
     finally:

@@ -103,6 +103,9 @@ app.include_router(scanner.router, prefix="/api/scan", tags=["scanner"])
 from server.api import radar
 app.include_router(radar.router, prefix="/api/radar", tags=["radar"])
 
+from server.api import playbook
+app.include_router(playbook.router, prefix="/api/playbook", tags=["daily playbook"])
+
 # Phase 2+:
 # from server.api import alerts, analysis
 # app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])

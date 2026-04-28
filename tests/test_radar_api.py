@@ -3,10 +3,21 @@
 import asyncio
 import os
 import sys
+import sqlite3
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from server.api import radar
+from server.engines.structure.chan_config_presets import get_chan_config_meta
+
+
+@pytest.fixture(autouse=True)
+def clear_radar_structure_cache():
+    radar._clear_structure_cache()
+    yield
+    radar._clear_structure_cache()
 
 
 def make_level(level: str, price: float = 20.0, patterns=None) -> dict:
@@ -77,6 +88,7 @@ def make_adapter_result() -> dict:
                 "adapter": "server.engines.structure.chan_adapter",
             }
         },
+        "structure_config": get_chan_config_meta("live_tolerant"),
         "freshness": {
             "source": "baostock",
             "adjustflag": "2",
@@ -178,13 +190,24 @@ def test_empty_mode_returns_entry_plan_and_no_holding_plan(monkeypatch):
     assert data["entry_plan"] is not None
     assert data["holding_plan"] is None
     assert data["disclaimer"] == radar.DISCLAIMER
-    assert data["structure"]["levels"]["day"]["source"]["engine"] == "chan.py"
+    assert "structure" not in data
     assert data["data_source"]["structure"]["provider"] == "baostock"
     assert data["data_source"]["structure"]["adjustflag"] == "2"
+    assert data["structure_config"]["preset"] == "live_tolerant"
+    assert data["structure_config"]["label"] == "实盘容错"
+    assert data["structure_config"]["version"] == "cchan_config.v1"
     assert data["plans"][0]["plan_type"] == "ENTRY"
     assert data["strategy"]["strategy_id"] == "war1_third_buy"
     assert data["strategy"]["strategy_version"] == "1.0.0"
     assert data["strategy"]["freshness_required"] is True
+    assert data["deduction"]["version"] == "level_chain_deduction.v1"
+    assert data["deduction"]["mode"] == "EMPTY"
+    assert data["deduction"]["chain"] == ["day", "30", "5"]
+    assert data["algorithm_v2"]["version"] == "radar_algorithm.v2.phase1"
+    assert data["algorithm_v2"]["level_chain"] == {"L0": "day", "L1": "30", "L2": "5"}
+    assert data["position_context"]["state"] == "EMPTY"
+    assert data["coach_action"]["position_state"] == "EMPTY"
+    assert data["coach_action"]["disclaimer"] == radar.DISCLAIMER
 
 
 def test_success_uses_chan_adapter_structure_when_available(monkeypatch):
@@ -194,7 +217,7 @@ def test_success_uses_chan_adapter_structure_when_available(monkeypatch):
 
     monkeypatch.setattr(radar, "_load_adapter_structure", fake_adapter)
 
-    response = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0))
+    response = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0, include_structure=True))
     data = response["data"]
 
     assert response["status"] == "success"
@@ -212,6 +235,88 @@ def test_success_uses_chan_adapter_structure_when_available(monkeypatch):
     assert condition_status["day_buy_node"] == "PASS"
     assert condition_status["thirty_min_buy_node"] == "PASS"
     assert condition_status["five_min_entry_bar"] == "PASS"
+    assert data["deduction"]["status"] in {
+        "WAITING_TRIGGER",
+        "TRIGGER_FORMING",
+        "TRIGGER_CONFIRMED",
+    }
+    assert data["algorithm_v2"]["path"] in {
+        "UPWARD_MAJOR_WAVE",
+        "HIGH_VOLATILITY_OSCILLATION",
+        "PULLBACK_IN_UPTREND",
+        "CENTER_REBOUND",
+        "NO_EDGE",
+    }
+
+
+def test_stale_structure_pauses_algorithm_summary(monkeypatch):
+    adapter_result = make_adapter_result()
+    adapter_result["freshness"]["is_stale"] = True
+    adapter_result["freshness"]["stale_reason"] = "LEVEL_STALE"
+    adapter_result["freshness"]["levels"]["30"] = {
+        "last_bar_at": "2025-03-04 15:00:00",
+        "is_stale": True,
+        "stale_reason": "LEVEL_STALE",
+    }
+
+    async def fake_adapter(symbol):
+        return adapter_result
+
+    monkeypatch.setattr(radar, "_load_adapter_structure", fake_adapter)
+
+    response = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0))
+    data = response["data"]
+
+    assert response["status"] == "success"
+    assert data["algorithm_v2"]["confidence"] == "STALE"
+    assert data["algorithm_v2"]["summary"].startswith("数据健康异常，暂停走势推演")
+    assert data["algorithm_v2"]["data_notes"]["levels"]["30"]["is_stale"] is True
+
+
+def test_watchlist_data_health_reports_lagging_levels(monkeypatch):
+    app_conn = sqlite3.connect(":memory:")
+    app_conn.row_factory = sqlite3.Row
+    app_conn.executescript(
+        """
+        CREATE TABLE watchlist_groups (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, sort_order INTEGER);
+        CREATE TABLE watchlist_items (id INTEGER PRIMARY KEY, group_id INTEGER, symbol TEXT, name TEXT, sort_order INTEGER);
+        INSERT INTO watchlist_groups (id, user_id, name, sort_order) VALUES (1, 1, '观察', 0);
+        INSERT INTO watchlist_items (group_id, symbol, name, sort_order) VALUES (1, 'sz000988', '华工科技', 0);
+        """
+    )
+    lake_conn = sqlite3.connect(":memory:")
+    lake_conn.row_factory = sqlite3.Row
+    lake_conn.executescript(
+        """
+        CREATE TABLE klines (
+          symbol TEXT, freq TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL,
+          volume REAL, amount REAL, adjustflag TEXT
+        );
+        INSERT INTO klines VALUES ('sz.000988','day','2026-04-27',1,1,1,1,0,0,'2');
+        INSERT INTO klines VALUES ('sz.000988','30','2025-03-04 15:00:00',1,1,1,1,0,0,'2');
+        INSERT INTO klines VALUES ('sz.000988','5','2026-04-27 15:00:00',1,1,1,1,0,0,'2');
+        """
+    )
+
+    class NoCloseConnection:
+        def __init__(self, conn):
+            self.conn = conn
+        def execute(self, *args, **kwargs):
+            return self.conn.execute(*args, **kwargs)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(radar, "get_connection", lambda: NoCloseConnection(app_conn))
+    monkeypatch.setattr(radar, "get_lake_connection", lambda source="baostock": lake_conn)
+
+    response = asyncio.run(radar.get_watchlist_data_health(user_id=1))
+    item = response["data"]["items"][0]
+
+    assert response["status"] == "success"
+    assert response["data"]["stale_count"] == 1
+    assert item["symbol"] == "sz.000988"
+    assert item["levels"]["30"]["is_stale"] is True
+    assert item["levels"]["30"]["stale_reason"] == "LEVEL_STALE"
 
 
 def test_empty_mode_populates_entry_risk_targets_and_sizing(monkeypatch):
@@ -260,9 +365,117 @@ def test_holding_mode_returns_holding_plan_and_no_entry_plan(monkeypatch):
     assert data["mode"] == "HOLDING"
     assert data["entry_plan"] is None
     assert data["holding_plan"] is not None
+    assert data["deduction"] is None
     assert data["holding_plan"]["plan_type"] == "HOLDING"
     assert data["strategy"]["strategy_id"] == "holding_stage_manager"
     assert data["strategy"]["strategy_version"] == "1.0.0"
+
+
+def test_holding_lookup_accepts_compact_persisted_symbol(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE positions (
+            user_id INTEGER,
+            symbol TEXT,
+            quantity INTEGER,
+            avg_cost REAL,
+            current_price REAL,
+            stop_loss_price REAL,
+            trailing_stop_price REAL,
+            entry_date TEXT,
+            strategy_type TEXT,
+            m5_entry_zg REAL,
+            entry_thesis_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO positions (
+            user_id, symbol, quantity, avg_cost, current_price,
+            stop_loss_price, trailing_stop_price, entry_date,
+            strategy_type, m5_entry_zg, entry_thesis_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, "sh600519", 1000, 19.0, 22.0, None, None, None, "未知", None, None),
+    )
+
+    class Wrapper:
+        def execute(self, *args, **kwargs):
+            return conn.execute(*args, **kwargs)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(radar, "get_connection", lambda: Wrapper())
+    monkeypatch.setattr(radar, "_load_adapter_structure", lambda symbol: asyncio.sleep(0, result=make_adapter_result()))
+
+    response = asyncio.run(radar.get_radar("sh.600519", user_id=1))
+    data = response["data"]
+
+    assert data["mode"] == "HOLDING"
+    assert data["position_context"]["is_holding"] is True
+    assert data["position_context"]["quantity"] == 1000
+    assert data["position_context"]["avg_cost"] == 19.0
+    assert data["coach_action"]["position_state"] != "EMPTY"
+
+
+def test_position_context_uses_realtime_quote(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE positions (
+            user_id INTEGER,
+            symbol TEXT,
+            quantity INTEGER,
+            avg_cost REAL,
+            current_price REAL,
+            stop_loss_price REAL,
+            trailing_stop_price REAL,
+            entry_date TEXT,
+            strategy_type TEXT,
+            m5_entry_zg REAL,
+            entry_thesis_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO positions (
+            user_id, symbol, quantity, avg_cost, current_price,
+            stop_loss_price, trailing_stop_price, entry_date,
+            strategy_type, m5_entry_zg, entry_thesis_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, "sh600519", 1000, 19.0, None, 17.0, 21.8, None, "未知", None, None),
+    )
+
+    class Wrapper:
+        def execute(self, *args, **kwargs):
+            return conn.execute(*args, **kwargs)
+
+        def close(self):
+            pass
+
+    async def fake_quote(symbol):
+        assert symbol == "sh.600519"
+        return {"symbol": "sh600519", "name": "贵州茅台", "price": 22.8, "time": "2026-04-28 11:30:00"}
+
+    monkeypatch.setattr(radar, "get_connection", lambda: Wrapper())
+    monkeypatch.setattr(radar, "_load_adapter_structure", lambda symbol: asyncio.sleep(0, result=make_adapter_result()))
+    monkeypatch.setattr(radar, "get_current_price", fake_quote)
+
+    response = asyncio.run(radar.get_radar("sh600519", user_id=1))
+    context = response["data"]["position_context"]
+
+    assert response["data"]["quote"]["available"] is True
+    assert context["current_price"] == 22.8
+    assert context["price_source"] == "tencent_quote"
+    assert context["pnl_pct"] == 20.0
+    assert response["data"]["coach_action"]["nearest_risk_line"]["label"] == "移动止盈"
 
 
 def test_holding_plan_includes_entry_thesis_from_position():
@@ -311,4 +524,44 @@ def test_engine_error_returns_stable_error_envelope(monkeypatch):
     assert data["error"]["code"] == "ENGINE_ERROR"
     assert data["freshness"]["is_stale"] is True
     assert data["freshness"]["stale_reason"] == "ENGINE_ERROR"
+    assert data["deduction"]["status"] == "STALE"
+    assert data["algorithm_v2"]["path"] == "NO_EDGE"
+    assert data["algorithm_v2"]["confidence"] == "STALE"
     assert data["disclaimer"] == radar.DISCLAIMER
+
+
+def test_empty_mode_stale_adapter_returns_stale_deduction(monkeypatch):
+    adapter_result = make_adapter_result()
+    adapter_result["freshness"]["is_stale"] = True
+    adapter_result["freshness"]["stale_reason"] = "OUTDATED"
+
+    async def fake_adapter(symbol):
+        return adapter_result
+
+    monkeypatch.setattr(radar, "_load_adapter_structure", fake_adapter)
+
+    response = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0))
+    data = response["data"]
+
+    assert response["status"] == "success"
+    assert data["deduction"]["status"] == "STALE"
+    assert data["deduction"]["confidence"] == "STALE"
+
+
+def test_radar_reuses_cached_structure_between_requests(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_adapter(symbol):
+        calls["count"] += 1
+        return make_adapter_result()
+
+    radar._clear_structure_cache()
+    monkeypatch.setattr(radar, "_load_adapter_structure", fake_adapter)
+
+    first = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0))
+    second = asyncio.run(radar.get_radar("sh600519", cost=0.0, qty=0))
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert calls["count"] == 1
+    radar._clear_structure_cache()

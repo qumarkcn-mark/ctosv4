@@ -13,6 +13,7 @@ from server.prompts.czsc_agent import CZSC_SYSTEM_PROMPT
 from server.prompts.chan_radar_prompt import RADAR_SYSTEM_PROMPT
 from server.prompts.portfolio_strategy_prompt import PORTFOLIO_STRATEGY_PROMPT
 from chan_engine.phantom import generate_phantom_klines
+from server.api import radar as radar_api
 from server.services.chan_service import analyze_matrix_state
 from server.services.market_context_service import get_market_context, format_context_for_prompt
 
@@ -23,6 +24,7 @@ _llm_service = LLMService()
 
 class InferenceRequest(BaseModel):
     symbol: str
+    mode: Optional[str] = None
 
 class PortfolioStrategyRequest(BaseModel):
     scan_results: list
@@ -139,44 +141,22 @@ async def infer_scenarios(request: InferenceRequest):
 async def radar_deduce(request: InferenceRequest):
     """
     接收股票代码，并行获取：
-    1. 缠论矩阵状态（含甲/乙/丙前瞻推演）
+    1. Radar v1 正式结构合同（含规则推演）
     2. 外部市场语境（资金流向、板块排名、大盘背景）
     然后合并输入大模型，生成含仓位建议的深度推演。
     """
     symbol = request.symbol
     try:
-        # 先查持仓——持仓决定 matrix 走哪条推演路径，必须先拿到
-        def _get_pos():
-            conn = get_connection()
-            try:
-                row = conn.execute(
-                    "SELECT quantity, avg_cost FROM positions WHERE user_id = ? AND symbol = ?",
-                    (1, symbol)
-                ).fetchone()
-                if row:
-                    return {"quantity": row["quantity"], "avg_cost": row["avg_cost"]}
-                return None
-            finally:
-                conn.close()
-
-        pos_row = await run_in_threadpool(_get_pos)
-
-        user_position = None
-        holding = None
-        if pos_row and pos_row["quantity"] > 0:
-            user_position = {
-                "shares": pos_row["quantity"],
-                "avg_cost": pos_row["avg_cost"]
-            }
-            # 持仓路径：forward_analysis 切换为止损/减仓叙述
-            holding = {"cost": pos_row["avg_cost"], "qty": pos_row["quantity"]}
-
-        # 并行获取结构数据（携带持仓）+ 市场语境
+        # 并行获取正式 Radar contract + 市场语境。
+        # AI 只做叙述，不再直接消费 legacy matrix 作为结构事实来源。
         import asyncio
-        matrix_data, market_ctx = await asyncio.gather(
-            analyze_matrix_state(symbol, holding=holding),
+        radar_response, market_ctx = await asyncio.gather(
+            radar_api.get_radar(symbol, user_id=1),
             get_market_context(symbol),
         )
+        radar_data = radar_response.get("data") or {}
+        matrix_data = _radar_contract_to_display_snapshot(radar_data)
+        user_position = _user_position_from_radar(radar_data)
 
         # 格式化外部语境文字
         ctx_text = format_context_for_prompt(market_ctx)
@@ -184,6 +164,7 @@ async def radar_deduce(request: InferenceRequest):
         # 组装 Prompt Context：结构数据 + 外部语境 + 用户持仓
         context_json = json.dumps({
             "symbol": symbol,
+            "radar_contract": radar_data,
             "matrix_data": matrix_data,
             "market_context": ctx_text,
             "user_position": user_position,
@@ -194,11 +175,18 @@ async def radar_deduce(request: InferenceRequest):
         # ── 保底填充：LLM 有时因 context 超长或 forward_classes 为空，
         #    仅返回 diagnosis 而不填充其他字段（Pydantic 不报错，但前端空白）
         #    此处直接从结构数据模板生成，确保 AISection 始终有内容可渲染。
-        fwd         = (matrix_data.get("forward_analysis_a") or {})
+        fwd = matrix_data.get("forward_analysis_a") or {}
         fwd_classes = fwd.get("forward_classes") or []
+        deterministic_plans = _pre_plans_from_radar_deduction(radar_data.get("deduction") or {})
 
         # ① pre_plans 保底：从 forward_classes 1:1 映射
-        if not result.get("pre_plans") and fwd_classes:
+        if (_is_llm_fallback_result(result) or not result.get("pre_plans")) and deterministic_plans:
+            result["pre_plans"] = deterministic_plans
+            if _is_llm_fallback_result(result):
+                result["diagnosis"] = _diagnosis_from_radar(radar_data)
+            logger.info("radar_deduce: pre_plans 由 Radar 规则推演保底填充，共 %d 条", len(result["pre_plans"]))
+
+        elif not result.get("pre_plans") and fwd_classes:
             PLAN_LABELS  = ["A", "B", "C"]
             _BEAR_KW = {"空仓", "离场", "减仓", "出局", "止损", "砍仓", "清仓", "卖出", "🔴"}
             _BULL_KW = {"入场", "加仓", "持仓", "买入", "持有", "三买", "二买", "一买", "🟢"}
@@ -227,8 +215,7 @@ async def radar_deduce(request: InferenceRequest):
 
         # ② core_defense 保底：用 forward_analysis 的 stop_loss 字段
         if not result.get("core_defense"):
-            sl = fwd.get("stop_loss", "")
-            result["core_defense"] = sl if sl else "以最近中枢ZD为参考止损线"
+            result["core_defense"] = _core_defense_from_radar(radar_data)
 
         # ③ market_context_verdict 保底：截取市场语境第一行
         if not result.get("market_context_verdict") and ctx_text:
@@ -264,6 +251,204 @@ async def radar_deduce(request: InferenceRequest):
     except Exception as e:
         logger.error(f"Radar deduction failed for {symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"雷达推演失败: {str(e)}")
+
+
+def _radar_contract_to_display_snapshot(radar_data: dict) -> dict:
+    """把 Radar v1 contract 映射成 TRadar 历史快照仍能读取的显示形状。"""
+    structure = radar_data.get("structure") or {}
+    levels = structure.get("levels") or {}
+    deduction = radar_data.get("deduction") or {}
+    current_position = (
+        (deduction.get("path_thesis") or {}).get("title")
+        or deduction.get("summary")
+        or (radar_data.get("entry_plan") or {}).get("title")
+        or (radar_data.get("holding_plan") or {}).get("plan_id")
+        or ""
+    )
+    forward_classes = _forward_classes_from_radar_deduction(deduction)
+
+    return {
+        "api_version": radar_data.get("api_version", "radar.v1"),
+        "symbol": radar_data.get("symbol"),
+        "mode": radar_data.get("mode"),
+        "matrix_a": [
+            _display_level(levels.get("day"), "day"),
+            _display_level(levels.get("30"), "m30"),
+            _display_level(levels.get("5"), "m5"),
+        ],
+        "matrix_b": [
+            _display_level(levels.get("day"), "day"),
+            _display_level(levels.get("60"), "m60"),
+            _display_level(levels.get("15"), "m15"),
+        ],
+        "week": _display_level(levels.get("week"), "week"),
+        "interval_nesting_a": (structure.get("systems") or {}).get("short_term", {}).get("interval_nesting"),
+        "interval_nesting_b": (structure.get("systems") or {}).get("swing", {}).get("interval_nesting"),
+        "forward_analysis_a": {
+            "current_position": current_position,
+            "forward_classes": forward_classes,
+            "stop_loss": _core_defense_from_radar(radar_data),
+        },
+        "forward_analysis_b": {
+            "current_position": current_position,
+            "forward_classes": None,
+        },
+        "entry_checklist": _entry_checklist_from_plan(radar_data.get("entry_plan")),
+        "holding_status": _holding_status_from_plan(radar_data.get("holding_plan")),
+        "holding_stage_v2": _holding_status_from_plan(radar_data.get("holding_plan")),
+        "strategy_classification": {
+            **(radar_data.get("strategy") or {}),
+            "strategy_type": (radar_data.get("strategy") or {}).get("strategy_type", "观察中"),
+            "summary": (radar_data.get("strategy") or {}).get("name", "Radar Contract"),
+        },
+        "targets": (radar_data.get("entry_plan") or {}).get("targets"),
+        "reward_ratio": (radar_data.get("entry_plan") or {}).get("reward_ratio"),
+        "data_freshness": radar_data.get("freshness"),
+        "deduction": deduction,
+        "structure_config": radar_data.get("structure_config"),
+        "radar_contract": radar_data,
+    }
+
+
+def _display_level(level: Optional[dict], fallback_level: str) -> dict:
+    if not level:
+        return {"level": fallback_level, "state": "UNKNOWN", "price": 0, "zg": 0, "zd": 0}
+    active = level.get("active_zhongshu") or {}
+    return {
+        **level,
+        "level": fallback_level,
+        "price": level.get("price", 0),
+        "zg": level.get("zg") or active.get("zg", 0),
+        "zd": level.get("zd") or active.get("zd", 0),
+        "zs_operative_zg": level.get("zs_operative_zg") or level.get("zg") or active.get("zg", 0),
+        "zs_operative_zd": level.get("zs_operative_zd") or level.get("zd") or active.get("zd", 0),
+        "detail_bis": level.get("detail_bis") or level.get("recent_bis") or level.get("bis") or [],
+        "patterns": level.get("patterns") or [],
+        "zoushi_type": level.get("zoushi_type") or {"type": "数据不足", "zs_count": 0},
+        "classifications": level.get("classifications") or [],
+    }
+
+
+def _entry_checklist_from_plan(entry_plan: Optional[dict]) -> Optional[dict]:
+    if not entry_plan:
+        return None
+    checklist = {}
+    for condition in entry_plan.get("conditions") or []:
+        condition_id = condition.get("condition_id")
+        if condition_id:
+            checklist[condition_id] = condition.get("status") == "PASS"
+    if checklist:
+        checklist["all_passed"] = all(checklist.values())
+    return checklist or None
+
+
+def _holding_status_from_plan(holding_plan: Optional[dict]) -> dict:
+    if not holding_plan:
+        return {"stage": "empty", "label": "空仓"}
+    legacy = holding_plan.get("legacy_status")
+    if legacy:
+        return legacy
+    risk = holding_plan.get("risk") or {}
+    return {
+        "stage": holding_plan.get("stage", "WATCHING"),
+        "label": holding_plan.get("stage") or "持仓管理",
+        "stair_stop_price": risk.get("trailing_stop", 0),
+        "locked_profit_pct": 0,
+        "action": risk.get("invalid_if", ""),
+    }
+
+
+def _forward_classes_from_radar_deduction(deduction: dict) -> list:
+    classes = []
+    for scenario in deduction.get("complete_classification") or []:
+        trigger_if = scenario.get("trigger_if") or []
+        classes.append({
+            "id": scenario.get("code") or scenario.get("id"),
+            "name": scenario.get("title") or scenario.get("label"),
+            "condition": "；".join(trigger_if) if trigger_if else "等待结构事件",
+            "deduction": scenario.get("summary", ""),
+            "meaning": scenario.get("summary", ""),
+            "action": _scenario_action_text(scenario),
+            "stop_loss": None,
+        })
+    return classes
+
+
+def _scenario_action_text(scenario: dict) -> str:
+    code = scenario.get("code") or ""
+    state = scenario.get("state") or ""
+    title = scenario.get("title") or ""
+    if code == "C" or "失效" in title:
+        return "结构失效时离场或保持空仓，仅供参考"
+    if code == "A":
+        return "确认事件触发后进入执行前复核，仅供参考"
+    if state == "CURRENT":
+        return "当前路径延长，等待下一根结构确认，仅供参考"
+    return "继续观察，不执行交易，仅供参考"
+
+
+def _pre_plans_from_radar_deduction(deduction: dict) -> list:
+    plans = []
+    labels = {"A": "A", "B": "B", "C": "C"}
+    for scenario in deduction.get("complete_classification") or []:
+        code = scenario.get("code") or scenario.get("id", "")
+        trigger_if = scenario.get("trigger_if") or []
+        plans.append({
+            "plan_name": f"预案{labels.get(code, code)}：{scenario.get('title') or scenario.get('label') or code}",
+            "trigger": "；".join(trigger_if) if trigger_if else "等待结构事件",
+            "deduction": scenario.get("summary") or "结构推演进行中",
+            "machine_action": _scenario_action_text(scenario),
+            "color": _scenario_color(code),
+        })
+    return plans
+
+
+def _scenario_color(code: str) -> str:
+    if code == "A":
+        return "🟢"
+    if code == "C":
+        return "🔴"
+    return "🟡"
+
+
+def _core_defense_from_radar(radar_data: dict) -> str:
+    deduction = radar_data.get("deduction") or {}
+    thesis = deduction.get("path_thesis") or {}
+    for boundary in thesis.get("boundaries") or []:
+        price = boundary.get("price")
+        if price:
+            return f"{boundary.get('label', '结构边界')} {float(price):.2f}，{boundary.get('meaning', '跌破则推演失效')}"
+    invalid_if = (deduction.get("main_path") or {}).get("invalid_if") or deduction.get("invalid_if") or []
+    if invalid_if:
+        return str(invalid_if[0])
+    return "以 Radar 规则推演给出的最近结构边界为准"
+
+
+def _diagnosis_from_radar(radar_data: dict) -> str:
+    deduction = radar_data.get("deduction") or {}
+    return (
+        (deduction.get("path_thesis") or {}).get("title")
+        or deduction.get("summary")
+        or "Radar 规则推演已生成"
+    )
+
+
+def _user_position_from_radar(radar_data: dict) -> Optional[dict]:
+    holding_plan = radar_data.get("holding_plan") or {}
+    entry_thesis = holding_plan.get("entry_thesis") or {}
+    if radar_data.get("mode") != "HOLDING" and not entry_thesis:
+        return None
+    return {
+        "shares": entry_thesis.get("qty"),
+        "avg_cost": entry_thesis.get("cost") or entry_thesis.get("avg_cost"),
+    }
+
+
+def _is_llm_fallback_result(result: dict) -> bool:
+    if str(result.get("diagnosis", "")).startswith("推演引擎异常"):
+        return True
+    plans = result.get("pre_plans") or []
+    return bool(plans and plans[0].get("plan_name") == "系统故障")
 
 @router.get("/radar_history/{symbol}")
 async def get_radar_history(symbol: str, limit: int = Query(10, ge=1, le=50)):
@@ -330,19 +515,17 @@ async def portfolio_strategy(request: PortfolioStrategyRequest):
         watchlist_candidates = []
         for row in watchlist_rows:
             sym = row["symbol"]
-            # Fetch context and basic matrix status
+            # Fetch context and basic Radar status. Portfolio narrative should not
+            # consume legacy matrix as its structure source.
             try:
                 ctx = await get_market_context(sym)
-                matrix = await analyze_matrix_state(sym)
+                radar_response = await radar_api.get_radar(sym, user_id=1)
+                radar_data = radar_response.get("data") or {}
                 watchlist_candidates.append({
                     "symbol": sym,
                     "name": row["name"],
                     "market_heat": format_context_for_prompt(ctx),
-                    "structure_summary": {
-                        "day_state": matrix.get("day", {}).get("state", "UNKNOWN"),
-                        "m30_state": matrix.get("m30", {}).get("state", "UNKNOWN"),
-                        "patterns": matrix.get("day", {}).get("patterns", [])
-                    }
+                    "structure_summary": _portfolio_structure_summary_from_radar(radar_data),
                 })
             except Exception as e:
                 logger.warning(f"Failed to fetch context for watchlist {sym}: {e}")
@@ -377,3 +560,20 @@ async def portfolio_strategy(request: PortfolioStrategyRequest):
     except Exception as e:
         logger.error(f"Portfolio strategy generation failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"全局战略生成失败: {str(e)}")
+
+
+def _portfolio_structure_summary_from_radar(radar_data: dict) -> dict:
+    levels = ((radar_data.get("structure") or {}).get("levels") or {})
+    day = levels.get("day") or {}
+    m30 = levels.get("30") or {}
+    deduction = radar_data.get("deduction") or {}
+    return {
+        "source": "radar.v1",
+        "mode": radar_data.get("mode"),
+        "status": deduction.get("status"),
+        "summary": deduction.get("summary"),
+        "day_state": day.get("state", "UNKNOWN"),
+        "m30_state": m30.get("state", "UNKNOWN"),
+        "patterns": day.get("patterns", []),
+        "freshness": radar_data.get("freshness"),
+    }

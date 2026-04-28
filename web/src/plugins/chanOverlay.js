@@ -659,8 +659,13 @@ export function renderChanOverlays(chart, data, isDay = true, clearFirst = true)
 
   // 3. 买卖点 (待后端新增 bsps 字段)
   if (data.bsps?.length > 0) {
+    const enabledTypes = Array.isArray(vis.bsp_types) ? new Set(vis.bsp_types) : null
     for (const bsp of data.bsps) {
       const typeStr = (bsp.type || '1').toString().toUpperCase()
+      const rawType = (bsp.type || '1').toString()
+      if (bsp.is_buy && vis.bsp_buy === false) continue
+      if (!bsp.is_buy && vis.bsp_sell === false) continue
+      if (enabledTypes && !enabledTypes.has(rawType)) continue
       const badgeText = bsp.is_buy ? `B${typeStr}` : `S${typeStr}`
       overlays.push({
         groupId: 'chan_bsp_group',

@@ -12,8 +12,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+from server.api import radar as radar_api
 from server.db.database import get_connection
-from server.services.chan_service import analyze_matrix_state
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,11 @@ SETTLEMENT_THRESHOLDS = {
 LEVEL_KEYS = {
     'A': ['day', 'm30', 'm5'],
     'B': ['day', 'm60', 'm15'],
+}
+
+RADAR_LEVEL_KEYS = {
+    'A': ['day', '30', '5'],
+    'B': ['day', '60', '15'],
 }
 
 
@@ -58,13 +63,12 @@ async def take_daily_snapshot(symbol: str, user_id: int = 1, mode: str = 'A') ->
     finally:
         conn.close()
 
-    # 获取最新矩阵状态
-    matrix_data = await analyze_matrix_state(symbol)
-    matrix_key = f"matrix_{'a' if mode == 'A' else 'b'}"
-    levels = matrix_data.get(matrix_key, [])
+    # 获取最新 Radar contract，再映射成多元宇宙快照需要的旧结构形状。
+    radar_data = await _load_radar_data(symbol, user_id)
+    levels = _levels_from_radar(radar_data, mode)
 
     if not levels:
-        logger.warning("矩阵数据为空: %s", symbol)
+        logger.warning("Radar 结构数据为空: %s", symbol)
         return {"status": "no_data"}
 
     level_names = LEVEL_KEYS[mode]
@@ -156,9 +160,9 @@ async def take_daily_snapshot(symbol: str, user_id: int = 1, mode: str = 'A') ->
 async def settle_previous(symbol: str, user_id: int = 1) -> dict:
     """对比今天的结构与昨天的分类，判定走了哪条路。"""
 
-    # 先获取今天的最新结构
-    matrix_data = await analyze_matrix_state(symbol)
-    today_levels = matrix_data.get("matrix_a", [])
+    # 先获取今天的最新结构，结算固定使用 A 组(日/30分/5分)。
+    radar_data = await _load_radar_data(symbol, user_id)
+    today_levels = _levels_from_radar(radar_data, "A")
 
     conn = get_connection()
     try:
@@ -228,6 +232,53 @@ async def settle_previous(symbol: str, user_id: int = 1) -> dict:
         }
     finally:
         conn.close()
+
+
+async def _load_radar_data(symbol: str, user_id: int = 1) -> dict:
+    """加载 Radar contract 的 data 部分，集中隔离 API 迁移期依赖。"""
+    response = await radar_api.get_radar(symbol, user_id=user_id)
+    return response.get("data") or {}
+
+
+def _levels_from_radar(radar_data: dict, mode: str = 'A') -> list:
+    """把 Radar contract 的 public levels 映射成 Multiverse 旧快照列表。
+
+    Multiverse 的数据库和前端历史展示仍使用 day/m30/m5、day/m60/m15 命名；
+    Radar contract 对分钟级别使用 30/5/60/15。这里做唯一转换点。
+    """
+    mode = mode if mode in LEVEL_KEYS else 'A'
+    radar_levels = ((radar_data.get("structure") or {}).get("levels") or {})
+    radar_keys = RADAR_LEVEL_KEYS[mode]
+    legacy_keys = LEVEL_KEYS[mode]
+
+    levels = []
+    for radar_key, legacy_key in zip(radar_keys, legacy_keys):
+        level = radar_levels.get(radar_key)
+        if level:
+            levels.append(_multiverse_level_from_radar(level, legacy_key))
+    return levels
+
+
+def _multiverse_level_from_radar(level: dict, legacy_key: str) -> dict:
+    """保留 Multiverse 历史 JSON 字段，数据源切到 Radar contract。"""
+    active_zs = level.get("active_zhongshu") or {}
+    zoushi = level.get("zoushi_type") or {}
+    return {
+        **level,
+        "level": legacy_key,
+        "zg": level.get("zg") or active_zs.get("zg"),
+        "zd": level.get("zd") or active_zs.get("zd"),
+        "price": level.get("price"),
+        "state": level.get("state"),
+        "patterns": level.get("patterns") or [],
+        "classifications": level.get("classifications") or [],
+        "zoushi_type": {
+            "type": zoushi.get("type", "未知"),
+            "zs_count": zoushi.get("zs_count", 0),
+            "completion": zoushi.get("completion", ""),
+            **{k: v for k, v in zoushi.items() if k not in ("type", "zs_count", "completion")},
+        },
+    }
 
 
 def _determine_outcome(old_structure: dict, new_level: dict, 

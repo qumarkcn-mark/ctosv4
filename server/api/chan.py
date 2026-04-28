@@ -1,6 +1,8 @@
 import time
 import logging
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from server.domain.symbols import normalize_symbol, symbol_aliases
+from server.engines.structure.chan_config_presets import allowed_preset_names
 from server.services.chan_service import analyze_matrix_state
 from server.services.chan_detail_service import get_chan_detail
 
@@ -355,13 +357,14 @@ def _persist_trailing_stop(symbol: str, new_stop: float):
     """
     try:
         from server.db.database import get_connection
+        aliases = symbol_aliases(symbol)
         conn = get_connection()
         try:
             conn.execute(
                 """UPDATE positions
                    SET trailing_stop_price = MAX(COALESCE(trailing_stop_price, 0), ?)
-                   WHERE symbol = ? AND quantity > 0""",
-                (new_stop, symbol),
+                   WHERE symbol IN (?, ?, ?) AND quantity > 0""",
+                (new_stop, *aliases),
             )
             conn.commit()
         finally:
@@ -428,10 +431,7 @@ async def get_chan_matrix(
     - qty:  持仓数量（股）
     传入后 forward_analysis 切换为持仓路径，生成止损/减仓预案。
     """
-    # 兼容多种股票代码格式：sh600519 / sh.600519 / sh-600519
-    symbol_bs = symbol.replace("-", ".")
-    if len(symbol_bs) > 2 and symbol_bs[2] != ".":
-        symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
+    symbol_bs = normalize_symbol(symbol)
 
     holding = {"cost": cost, "qty": qty} if cost > 0 and qty > 0 else None
     matrix_data = await analyze_matrix_state(symbol_bs, holding=holding)
@@ -456,9 +456,7 @@ async def get_chan_matrix_v2(
     缓存：结果级 TTL=15s，防止前端轮询压垮计算资源。
     日志：每次调用输出 holding_stage、cache_hit、耗时(ms)。
     """
-    symbol_bs = symbol.replace("-", ".")
-    if len(symbol_bs) > 2 and symbol_bs[2] != ".":
-        symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
+    symbol_bs = normalize_symbol(symbol)
 
     holding = {"cost": cost, "qty": qty} if cost > 0 and qty > 0 else None
     cache_key = f"{symbol_bs}_{cost}_{qty}"
@@ -513,13 +511,14 @@ async def get_chan_matrix_v2(
     if holding:
         try:
             from server.db.database import get_connection
+            aliases = symbol_aliases(symbol_bs)
             _conn = get_connection()
             try:
                 _row = _conn.execute(
                     """SELECT entry_date, trailing_stop_price,
                               strategy_type, m5_entry_zg
-                       FROM positions WHERE symbol = ? AND quantity > 0""",
-                    (symbol_bs,)
+                       FROM positions WHERE symbol IN (?, ?, ?) AND quantity > 0""",
+                    aliases,
                 ).fetchone()
                 if _row:
                     holding = {
@@ -561,9 +560,10 @@ async def get_chan_matrix_v2(
                 try:
                     from server.db.database import get_connection as _gc
                     _c = _gc()
+                    aliases = symbol_aliases(symbol_bs)
                     _r = _c.execute(
-                        "SELECT m5_entry_zg FROM positions WHERE symbol=? AND quantity>0",
-                        (symbol_bs,)
+                        "SELECT m5_entry_zg FROM positions WHERE symbol IN (?, ?, ?) AND quantity>0",
+                        aliases,
                     ).fetchone()
                     if _r:
                         holding = {**holding, "m5_entry_zg": _r[0] or 0}
@@ -659,6 +659,7 @@ async def get_chan_detail_api(
     symbol: str,
     freq: str = Query(default="day", description="K线级别: day/60/30/15/5"),
     count: int = Query(default=500, ge=50, le=5000, description="K线条数"),
+    cchan_preset: str = Query(default="live_tolerant", description="CChan配置预设"),
 ):
     """
     获取指定股票的完整缠论几何解析数据，供 KlineChart 前端渲染。
@@ -671,10 +672,22 @@ async def get_chan_detail_api(
     - macd:      MACD 指标（dif/dea/hist/dates）
     - stats:     统计摘要（k线数/笔数/中枢数）
     """
-    # 兼容多种股票代码格式：sh600519 / sh.600519 / sh-600519
-    symbol_bs = symbol.replace("-", ".")
-    if len(symbol_bs) > 2 and symbol_bs[2] != ".":
-        symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
+    symbol_bs = normalize_symbol(symbol)
 
-    result = await get_chan_detail(symbol_bs, freq=freq, count=count)
+    try:
+        result = await get_chan_detail(
+            symbol_bs,
+            freq=freq,
+            count=count,
+            cchan_preset=cchan_preset,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_CCHAN_PRESET",
+                "message": str(exc),
+                "allowed_presets": allowed_preset_names(),
+            },
+        ) from exc
     return {"status": "success", "data": result}

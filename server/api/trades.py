@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from server.db.database import get_connection
+from server.domain.symbols import parse_symbol, symbol_aliases, to_tencent_symbol
+from server.engines.coach.event_log import log_user_action
 from server.services.entry_thesis import build_entry_thesis_from_trade, persist_entry_thesis
 from server.services.position_calc import recalculate_position
 
@@ -36,6 +38,9 @@ class TradeCreate(BaseModel):
     entry_zd: Optional[float] = Field(None, description="入场中枢 ZD")
     initial_target: Optional[float] = Field(None, description="入场初始目标价")
     trigger_conditions: Optional[list] = Field(None, description="入场触发条件列表")
+    playbook_item_id: Optional[int] = Field(None, description="今日作战项 ID")
+    plan_relationship: Optional[str] = Field("UNKNOWN", description="计划关系：PLANNED/UNPLANNED/EMOTIONAL/AFTER_ALERT/IGNORED_ALERT/UNKNOWN")
+    discipline_tag: Optional[str] = Field(None, description="纪律标签，用于盘后复盘")
 
 
 class TradeFromText(BaseModel):
@@ -84,7 +89,7 @@ def _calc_fee(price: float, quantity: int, direction: str, symbol: str) -> dict:
 
 def _is_astock_special(symbol: str) -> bool:
     """科创板(688xx)或北交所(8xxxxx)，最小交易单位非100股"""
-    code = symbol.lower().removeprefix("sh").removeprefix("sz")
+    code = parse_symbol(symbol).code
     return code.startswith("688") or (code.startswith("8") and not code.startswith("68"))
 
 
@@ -92,6 +97,8 @@ def _is_astock_special(symbol: str) -> bool:
 async def create_trade(trade: TradeCreate, user_id: int = 1):
     """创建一笔交易记录（含A股合规校验）"""
     from fastapi.concurrency import run_in_threadpool
+    trade_symbol = to_tencent_symbol(trade.symbol)
+    trade_aliases = symbol_aliases(trade.symbol)
 
     # ── 校验方向 ──
     if trade.direction not in ("BUY", "SELL"):
@@ -102,8 +109,12 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
     if trade.reason_category not in valid_categories:
         raise HTTPException(400, f"reason_category 必须是 {valid_categories}")
 
+    valid_relationships = ("PLANNED", "UNPLANNED", "EMOTIONAL", "AFTER_ALERT", "IGNORED_ALERT", "UNKNOWN", None)
+    if trade.plan_relationship not in valid_relationships:
+        raise HTTPException(400, f"plan_relationship 必须是 {valid_relationships}")
+
     # ── A股：数量100手校验（科创板/北交所放开）──
-    if not _is_astock_special(trade.symbol):
+    if not _is_astock_special(trade_symbol):
         if trade.quantity % 100 != 0:
             raise HTTPException(
                 400,
@@ -116,15 +127,15 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
             conn = get_connection()
             try:
                 row = conn.execute(
-                    "SELECT quantity FROM positions WHERE user_id=? AND symbol=? AND quantity>0",
-                    (user_id, trade.symbol),
+                    "SELECT quantity FROM positions WHERE user_id=? AND symbol IN (?, ?, ?) AND quantity>0",
+                    (user_id, *trade_aliases),
                 ).fetchone()
                 return dict(row) if row else None
             finally:
                 conn.close()
 
         pos = await run_in_threadpool(_check_position)
-        stock_label = trade.name or trade.symbol
+        stock_label = trade.name or trade_symbol
         if pos is None:
             raise HTTPException(400, f"您未持有 {stock_label}，无法卖出")
         if trade.quantity > pos["quantity"]:
@@ -147,9 +158,9 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
         try:
             row = conn.execute(
                 """SELECT COUNT(*) as cnt FROM trades
-                   WHERE user_id=? AND symbol=? AND direction='BUY'
+                   WHERE user_id=? AND symbol IN (?, ?, ?) AND direction='BUY'
                    AND date(traded_at)=?""",
-                (user_id, trade.symbol, today_str),
+                (user_id, *trade_aliases, today_str),
             ).fetchone()
             return row["cnt"] > 0
         finally:
@@ -160,35 +171,52 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
         t1_warning = await run_in_threadpool(_check_t1)
 
     # ── 手续费计算 ──
-    fee_info = _calc_fee(trade.price, trade.quantity, trade.direction, trade.symbol)
+    fee_info = _calc_fee(trade.price, trade.quantity, trade.direction, trade_symbol)
 
     # ── 自动计算止损价（ATR看门狗）──
     stop_loss_price = trade.stop_loss_price
     if stop_loss_price is None:
         from server.services.atr_service import calculate_stop_loss
-        stop_loss_price = await calculate_stop_loss(trade.symbol, trade.price, trade.direction)
+        stop_loss_price = await calculate_stop_loss(trade_symbol, trade.price, trade.direction)
 
     # ── DB 写入（线程池）──
     def _db_insert():
         conn = get_connection()
         try:
+            trade_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+            }
+            base_columns = [
+                "user_id", "symbol", "name", "direction", "price", "quantity",
+                "amount", "stop_loss_price", "reason_text", "reason_category",
+                "trend_direction", "source",
+            ]
+            base_values = [
+                user_id, trade_symbol, trade.name, trade.direction,
+                trade.price, trade.quantity, amount, stop_loss_price,
+                trade.reason_text, trade.reason_category,
+                trade.trend_direction, trade.source,
+            ]
+            optional_values = {
+                "playbook_item_id": trade.playbook_item_id,
+                "plan_relationship": trade.plan_relationship or "UNKNOWN",
+                "discipline_tag": trade.discipline_tag,
+            }
+            for column, value in optional_values.items():
+                if column in trade_columns:
+                    base_columns.append(column)
+                    base_values.append(value)
+            base_columns.append("traded_at")
+            base_values.append(traded_at)
+
+            placeholders = ", ".join("?" for _ in base_columns)
             cursor = conn.execute(
-                """
-                INSERT INTO trades
-                    (user_id, symbol, name, direction, price, quantity, amount,
-                     stop_loss_price, reason_text, reason_category,
-                     trend_direction, source, traded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id, trade.symbol, trade.name, trade.direction,
-                    trade.price, trade.quantity, amount,
-                    stop_loss_price, trade.reason_text, trade.reason_category,
-                    trade.trend_direction, trade.source, traded_at,
-                ),
+                f"INSERT INTO trades ({', '.join(base_columns)}) VALUES ({placeholders})",
+                base_values,
             )
             trade_id = cursor.lastrowid
-            recalculate_position(conn, user_id, trade.symbol)
+            recalculate_position(conn, user_id, trade_symbol)
 
             # ── 入场战法持久化（仅 BUY，且只在首次建仓或战法未知时写入）──
             if trade.direction == "BUY":
@@ -197,7 +225,7 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
                 _entry_date = traded_at[:10]
                 thesis = build_entry_thesis_from_trade(
                     trade_id=trade_id,
-                    symbol=trade.symbol,
+                    symbol=trade_symbol,
                     source=trade.source,
                     traded_at=traded_at,
                     strategy_type=trade.strategy_type,
@@ -215,12 +243,42 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
                 persist_entry_thesis(
                     conn,
                     user_id=user_id,
-                    symbol=trade.symbol,
+                    symbol=trade_symbol,
                     thesis=thesis,
                     strategy_type=_st,
                     entry_date=_entry_date,
                     m5_entry_zg=_zg,
                 )
+
+            coach_event_id = None
+            try:
+                coach_event_id = log_user_action(
+                    conn,
+                    user_id=user_id,
+                    symbol=trade_symbol,
+                    source="trades_api",
+                    action_type="TRADE_RECORDED",
+                    dedupe_key=f"trade_recorded:{user_id}:{trade_id}",
+                    evidence={
+                        "trade_id": trade_id,
+                        "direction": trade.direction,
+                        "playbook_item_id": trade.playbook_item_id,
+                        "plan_relationship": trade.plan_relationship or "UNKNOWN",
+                        "discipline_tag": trade.discipline_tag,
+                    },
+                    message={
+                        "title": "录入交易",
+                        "body": f"{trade.direction} {trade_symbol} {trade.quantity} 股。",
+                    },
+                )
+                if "coach_event_id" in trade_columns:
+                    conn.execute(
+                        "UPDATE trades SET coach_event_id = ? WHERE id = ?",
+                        (coach_event_id, trade_id),
+                    )
+            except Exception:
+                # 老测试库或手工精简库可能还没有 coach_events；交易记录本身不能因此失败。
+                coach_event_id = None
 
             conn.commit()
             row = conn.execute(
@@ -251,8 +309,8 @@ def list_trades(
         params: list = [user_id]
 
         if symbol:
-            query += " AND symbol = ?"
-            params.append(symbol)
+            query += " AND symbol IN (?, ?, ?)"
+            params.extend(symbol_aliases(symbol))
         if direction:
             if direction not in ("BUY", "SELL"):
                 raise HTTPException(400, "direction 必须是 BUY 或 SELL")
@@ -268,8 +326,8 @@ def list_trades(
         count_query = "SELECT COUNT(*) FROM trades WHERE user_id = ?"
         count_params: list = [user_id]
         if symbol:
-            count_query += " AND symbol = ?"
-            count_params.append(symbol)
+            count_query += " AND symbol IN (?, ?, ?)"
+            count_params.extend(symbol_aliases(symbol))
         total = conn.execute(count_query, count_params).fetchone()[0]
 
         return {

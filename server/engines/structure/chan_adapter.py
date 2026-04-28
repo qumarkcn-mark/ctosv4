@@ -9,14 +9,19 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
 
 from server.db.kline_lake import query_klines
 from server.domain.symbols import normalize_symbol
+from server.engines.structure.chan_config_presets import (
+    get_chan_config_dict,
+    get_chan_config_meta,
+)
 from server.engines.structure.derived_facts import check_interval_nesting, enrich_level
-from server.services.baostock_service import fetch_klines_quick
+from server.services.baostock_service import fetch_klines_quick, fetch_klines_sync
 from server.services.chan_detail_service import (
     PERIOD_MAP,
     _LEVEL_ORDER,
@@ -50,6 +55,7 @@ STRUCTURE_SOURCE = "baostock"
 STRUCTURE_ADJUSTFLAG = "2"
 STRUCTURE_ENGINE = "chan.py"
 _MIN_KLINES = 120
+_MAX_LEVEL_LAG_DAYS = 7
 
 _FREQ_ALIASES = {
     "week": "week",
@@ -88,6 +94,7 @@ def analyze_structure_sync(
     symbol: str,
     levels: Optional[list[str]] = None,
     count: int = 800,
+    cchan_preset: str = "live_tolerant",
 ) -> dict:
     """Analyze formal Chan structure through chan.py in sync context."""
     canonical_symbol = normalize_symbol(symbol)
@@ -108,6 +115,8 @@ def analyze_structure_sync(
         if level_input is not None:
             level_inputs.append(level_input)
 
+    level_inputs = _refresh_lagging_level_inputs(canonical_symbol, level_inputs, count)
+
     if not level_inputs:
         return _error_result(
             canonical_symbol,
@@ -117,7 +126,7 @@ def analyze_structure_sync(
         )
 
     try:
-        kl_data_by_type = _run_chan_py(canonical_symbol, level_inputs)
+        kl_data_by_type = _run_chan_py(canonical_symbol, level_inputs, cchan_preset)
     except Exception as exc:
         logger.exception("chan.py adapter failed for %s", canonical_symbol)
         return _error_result(
@@ -163,7 +172,7 @@ def analyze_structure_sync(
                 "message": str(exc),
             }
 
-    stale_reason = _stale_reason(serialized_levels, requested_levels)
+    stale_reason = _stale_reason(serialized_levels, requested_levels, level_inputs)
     interval_nesting = _interval_nesting(serialized_levels)
     return {
         "adapter_version": ADAPTER_VERSION,
@@ -171,6 +180,7 @@ def analyze_structure_sync(
         "data_source": {
             "structure": _source_meta(),
         },
+        "structure_config": get_chan_config_meta(cchan_preset),
         "freshness": {
             "source": STRUCTURE_SOURCE,
             "adjustflag": STRUCTURE_ADJUSTFLAG,
@@ -189,9 +199,16 @@ async def analyze_structure(
     symbol: str,
     levels: Optional[list[str]] = None,
     count: int = 800,
+    cchan_preset: str = "live_tolerant",
 ) -> dict:
     """Async wrapper for FastAPI and workers."""
-    return await run_in_threadpool(analyze_structure_sync, symbol, levels, count)
+    return await run_in_threadpool(
+        analyze_structure_sync,
+        symbol,
+        levels,
+        count,
+        cchan_preset,
+    )
 
 
 def normalize_level(level: str) -> str:
@@ -244,6 +261,49 @@ def _load_level_input(symbol: str, raw_freq: str, count: int) -> Optional[LevelI
     )
 
 
+def _refresh_lagging_level_inputs(symbol: str, level_inputs: list[LevelInput], count: int) -> list[LevelInput]:
+    if len(level_inputs) < 2:
+        return level_inputs
+
+    latest_day = max(
+        (_date_part(_last_row_date(item)) for item in level_inputs if _last_row_date(item)),
+        default="",
+    )
+    if not latest_day:
+        return level_inputs
+
+    refreshed = []
+    for item in level_inputs:
+        last_day = _date_part(_last_row_date(item))
+        if _level_lag_days(last_day, latest_day) <= _MAX_LEVEL_LAG_DAYS:
+            refreshed.append(item)
+            continue
+
+        try:
+            logger.warning(
+                "检测到结构级别数据滞后，尝试补齐: %s/%s last=%s latest=%s",
+                symbol,
+                item.raw_freq,
+                last_day,
+                latest_day,
+            )
+            fetch_klines_sync(symbol, item.raw_freq, start_date=last_day)
+            reloaded = _load_level_input(symbol, item.raw_freq, count)
+            refreshed.append(reloaded or item)
+        except Exception as exc:
+            logger.warning(
+                "滞后级别补齐失败 %s/%s last=%s latest=%s: %s",
+                symbol,
+                item.raw_freq,
+                last_day,
+                latest_day,
+                exc,
+            )
+            refreshed.append(item)
+
+    return refreshed
+
+
 def _rows_to_units(rows: list) -> tuple[list, dict]:
     units = []
     ctime_to_date_str = {}
@@ -279,25 +339,14 @@ def _rows_to_units(rows: list) -> tuple[list, dict]:
     return units, ctime_to_date_str
 
 
-def _run_chan_py(symbol: str, level_inputs: list[LevelInput]) -> dict:
+def _run_chan_py(symbol: str, level_inputs: list[LevelInput], cchan_preset: str) -> dict:
     kl_types = sorted(
         {item.kl_type for item in level_inputs},
         key=lambda item: _LEVEL_ORDER.get(item, 99),
     )
     units_per_level = {item.kl_type: item.units for item in level_inputs}
 
-    config = CChanConfig(
-        {
-            "trigger_step": True,
-            "kl_data_check": False,
-            "bi_strict": False,
-            "bi_fx_check": "loss",
-            "gap_as_kl": True,
-            "print_warning": False,
-            "print_err_time": False,
-            "auto_skip_illegal_sub_lv": True,
-        }
-    )
+    config = CChanConfig(get_chan_config_dict(cchan_preset))
     chan = CChan(
         code=symbol,
         data_src=DATA_SRC.CUSTOM,
@@ -341,20 +390,25 @@ def _last_bar_at(level_inputs: list[LevelInput]) -> str:
 
 def _level_freshness(level_inputs: list[LevelInput], serialized_levels: dict) -> dict:
     by_freq = {item.raw_freq: item for item in level_inputs}
+    latest_day = max(
+        (_date_part(_last_row_date(item)) for item in level_inputs if _last_row_date(item)),
+        default="",
+    )
     result = {}
     for raw_freq, level_data in serialized_levels.items():
         item = by_freq.get(raw_freq)
         last_bar_at = str(_row_get(item.rows[-1], "date", "")) if item and item.rows else ""
-        is_stale = bool(level_data.get("error"))
+        is_lagging = _level_lag_days(_date_part(last_bar_at), latest_day) > _MAX_LEVEL_LAG_DAYS
+        is_stale = bool(level_data.get("error")) or is_lagging
         result[raw_freq] = {
             "last_bar_at": last_bar_at,
             "is_stale": is_stale,
-            "stale_reason": level_data.get("error", ""),
+            "stale_reason": level_data.get("error", "") or ("LEVEL_STALE" if is_lagging else ""),
         }
     return result
 
 
-def _stale_reason(serialized_levels: dict, requested_levels: list[str]) -> str:
+def _stale_reason(serialized_levels: dict, requested_levels: list[str], level_inputs: list[LevelInput]) -> str:
     if not serialized_levels:
         return "NO_DATA"
 
@@ -372,7 +426,35 @@ def _stale_reason(serialized_levels: dict, requested_levels: list[str]) -> str:
     for level_data in serialized_levels.values():
         if level_data.get("error"):
             return level_data["error"]
+    latest_day = max(
+        (_date_part(_last_row_date(item)) for item in level_inputs if _last_row_date(item)),
+        default="",
+    )
+    for item in level_inputs:
+        if _level_lag_days(_date_part(_last_row_date(item)), latest_day) > _MAX_LEVEL_LAG_DAYS:
+            return "LEVEL_STALE"
     return ""
+
+
+def _last_row_date(item: LevelInput) -> str:
+    if not item or not item.rows:
+        return ""
+    return str(_row_get(item.rows[-1], "date", ""))
+
+
+def _date_part(value: str) -> str:
+    return str(value or "").split(" ", 1)[0]
+
+
+def _level_lag_days(value: str, latest_value: str) -> int:
+    if not value or not latest_value:
+        return 0
+    try:
+        current = datetime.strptime(value[:10], "%Y-%m-%d")
+        latest = datetime.strptime(latest_value[:10], "%Y-%m-%d")
+    except ValueError:
+        return 0
+    return max(0, (latest - current).days)
 
 
 def _error_result(symbol: str, requested_levels: list[str], code: str, message: str) -> dict:

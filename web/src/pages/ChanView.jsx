@@ -3,7 +3,7 @@ import StockSearch from '../components/StockSearch.jsx'
 import WatchlistPanel from '../components/WatchlistPanel.jsx'
 import KlineChart from '../components/KlineChart.jsx'
 import LayerPanel from '../components/LayerPanel.jsx'
-import TRadarV2 from '../components/TRadarV2.jsx'
+import RadarPanel from '../features/radar/RadarPanel.jsx'
 import { loadVisibility, saveVisibility } from '../store/layerState.js'
 import './ChanView.css'
 
@@ -45,7 +45,6 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
       return !v
     })
   }, [])
-
 
   const handleSelect = useCallback((stock) => {
     const sym = stock.symbol
@@ -155,7 +154,7 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
               <span className="panel-toggle-icon">{radarCollapsed ? '‹' : '›'}</span>
             </button>
             <div className="chan-radar-sidebar">
-              <TRadarV2 symbol={symbol} />
+              <RadarPanel symbol={symbol} />
             </div>
           </div>
         </div>

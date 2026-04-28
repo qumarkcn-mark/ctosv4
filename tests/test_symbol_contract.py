@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server.domain.symbols import (
     normalize_symbol,
     parse_symbol,
+    symbol_aliases,
     to_tdx_filename,
     to_tencent_symbol,
 )
@@ -42,6 +43,10 @@ def test_parse_symbol_exposes_external_formats():
 def test_format_helpers_convert_from_any_supported_input():
     assert to_tencent_symbol("sz-000001") == "sz000001"
     assert to_tdx_filename("600519") == "sh600519.day"
+
+
+def test_symbol_aliases_cover_user_and_structure_storage_forms():
+    assert symbol_aliases("sh.600519") == ("sh.600519", "sh600519", "600519")
 
 
 @pytest.mark.parametrize("raw", ["", "hk00700", "sh.60051", "foo", None])
