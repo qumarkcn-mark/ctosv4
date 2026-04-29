@@ -4,6 +4,7 @@
 
 ### Radar
 
+- Added the AI Native Radar shadow loop behind `AI_NATIVE_RADAR_ENABLED=false`, with structure transcripts, hypothesis generation, verifier gates, isolated run storage, and fallback behavior that leaves the old Radar path untouched.
 - Rebuilt the active Radar surface around trend deduction, A/B/C complete classification, structural templates, key boundaries, and position-aware coaching.
 - Added position linkage to Radar, including holding state, PnL context, nearest risk line, stop/trailing structure boundaries, and empty/holding mode separation.
 - Added realtime data source planning and contracts for QMT read-only bridge, TDX local 1-minute display, and future `data_mode=realtime_preview`.
@@ -20,6 +21,7 @@
 
 ### Tests
 
+- Added AI Native Radar transcript, verifier, memory, API, isolation, migration, and old Radar regression coverage.
 - Added QMT bridge contract tests.
 - Added TDX local 1-minute parser and API tests.
 - Added/updated symbol, position, trade, Radar, K-line lake, and historical Radar regression coverage.
