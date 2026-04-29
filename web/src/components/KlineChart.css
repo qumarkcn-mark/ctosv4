@@ -43,10 +43,21 @@
   color: #ccc;
 }
 
+.kline-iv-btn:disabled {
+  cursor: not-allowed;
+  border-color: rgba(255,255,255,0.05);
+  color: #3b3d45;
+  opacity: 0.55;
+}
+
 .kline-iv-btn.active {
   background: rgba(234,179,8,0.15);
   border-color: rgba(234,179,8,0.6);
   color: #eab308;
+}
+
+.kline-iv-btn.is-display-only {
+  border-style: dashed;
 }
 
 /* ─── 指标切换按钮 */
@@ -108,6 +119,47 @@
 
 .stat-pill.gold {
   border-color: rgba(234,179,8,0.4);
+  color: #eab308;
+}
+
+.kline-data-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.03);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+}
+
+.kline-data-badge span {
+  color: #d8dde8;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.kline-data-badge em {
+  color: #737887;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.kline-data-badge--live {
+  border-color: rgba(34,197,94,0.35);
+}
+
+.kline-data-badge--live span {
+  color: #22c55e;
+}
+
+.kline-data-badge--history {
+  border-color: rgba(234,179,8,0.35);
+}
+
+.kline-data-badge--history span {
   color: #eab308;
 }
 

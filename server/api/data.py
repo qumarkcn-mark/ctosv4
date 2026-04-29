@@ -1,10 +1,14 @@
 """CSV 导入 + 行情查询 API"""
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 
 from server.db.database import get_connection
 from server.services.csv_importer import import_csv
 from server.services.price_service import get_current_price, get_batch_prices, get_daily_klines, get_minute_klines
+from server.services.qmt_bridge_client import fetch_qmt_klines, qmt_health, qmt_stream_probe
+from server.services.tdx_minute_service import read_tdx_1m_klines, tdx_minute_status
 
 router = APIRouter()
 
@@ -91,3 +95,66 @@ async def sync_status():
     """查询 K 线自动同步状态"""
     from server.workers.kline_sync_worker import kline_sync
     return kline_sync.status
+
+
+# ── QMT 只读行情桥 ──
+
+@router.get("/qmt/health")
+async def query_qmt_health():
+    """查询 Windows QMT 只读行情桥状态。"""
+    return await qmt_health()
+
+
+@router.get("/qmt/klines/{symbol}")
+async def query_qmt_klines(
+    symbol: str,
+    period: str = Query("5m", description="1m / 5m / 15m / 30m / 1h / 1d"),
+    count: int = Query(240, ge=1, le=1000),
+    cache_closed: bool = Query(True, description="是否缓存 CLOSED K 线到 qmt_lake"),
+):
+    """从 QMT 桥读取实时分钟 K 线；FORMING K 线只返回不入正式缓存。"""
+    try:
+        return await fetch_qmt_klines(symbol, period=period, limit=count, cache_closed=cache_closed)
+    except Exception as exc:
+        raise HTTPException(502, f"QMT 行情桥查询失败: {exc}") from exc
+
+
+@router.get("/qmt/stream-probe/{symbol}")
+async def query_qmt_stream_probe(
+    symbol: str,
+    period: str = Query("tick", description="tick / 1m / 5m"),
+):
+    """探测 Windows QMT SSE 网关订阅链路；不作为正式结构源。"""
+    try:
+        return await qmt_stream_probe(symbol, period=period)
+    except Exception as exc:
+        raise HTTPException(502, f"QMT SSE 网关探测失败: {exc}") from exc
+
+
+# ── TDX 本地 1 分钟展示源 ──
+
+@router.get("/tdx/minute/health")
+async def query_tdx_minute_health(symbol: Optional[str] = None):
+    """查询本地 TDX 1分钟数据是否可用。"""
+    return tdx_minute_status(symbol)
+
+
+@router.get("/tdx/minute/{symbol}")
+async def query_tdx_1m_klines(
+    symbol: str,
+    count: int = Query(240, ge=1, le=5000),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"),
+):
+    """读取本地 TDX 1分钟 K 线，仅用于 Kline 展示/历史回放。"""
+    rows = read_tdx_1m_klines(symbol, limit=count, end_date=end_date)
+    if not rows:
+        raise HTTPException(404, f"无法读取 {symbol} 的 TDX 本地1分钟数据")
+    return {
+        "status": "ok",
+        "symbol": rows[-1]["symbol"],
+        "interval": "1m",
+        "source": "tdx_local_1m",
+        "usage": "display_replay_only",
+        "count": len(rows),
+        "klines": rows,
+    }

@@ -11,6 +11,7 @@ from typing import Optional
 
 from server.config import PRICE_API_TIMEOUT
 from server.db.kline_lake import query_klines, count_klines
+from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.services.baostock_service import fetch_klines_sync, fetch_klines_quick, FREQ_MAP, _executor as bs_executor
 
 logger = logging.getLogger(__name__)
@@ -46,14 +47,12 @@ def _is_data_stale(rows: list, stale_days: int = _STALE_DAYS) -> bool:
 
 def _tencent_to_baostock_symbol(symbol: str) -> str:
     """将腾讯格式 (sh600519) 转换为 BaoStock 格式 (sh.600519)"""
-    if symbol.startswith(("sh", "sz")) and "." not in symbol:
-        return f"{symbol[:2]}.{symbol[2:]}"
-    return symbol  # 已经是 baostock 格式
+    return normalize_symbol(symbol)
 
 
 def _baostock_to_tencent_symbol(symbol: str) -> str:
     """将 BaoStock 格式 (sh.600519) 转换为腾讯格式 (sh600519)"""
-    return symbol.replace(".", "")
+    return to_tencent_symbol(symbol)
 
 
 async def get_current_price(symbol: str) -> Optional[dict]:
@@ -77,11 +76,12 @@ async def get_current_price(symbol: str) -> Optional[dict]:
             "prev_close": 1739.50,
         }
     """
+    qt_symbol = to_tencent_symbol(symbol)
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
-            resp = await client.get(f"{_QT_BASE}{symbol}")
+            resp = await client.get(f"{_QT_BASE}{qt_symbol}")
             resp.raise_for_status()
-            return _parse_qt_response(symbol, resp.text)
+            return _parse_qt_response(qt_symbol, resp.text)
     except Exception as e:
         logger.warning("行情查询失败 %s: %s", symbol, e)
         return None
@@ -124,7 +124,7 @@ async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
 
     # 3️⃣ 最后降级：腾讯行情 API
     logger.warning("降级到腾讯 API: %s/day", symbol)
-    qt_symbol = _baostock_to_tencent_symbol(symbol)
+    qt_symbol = _baostock_to_tencent_symbol(bs_symbol)
     url = f"{_QT_KLINE_BASE}{qt_symbol},day,,,{count},qfq"
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
@@ -188,7 +188,7 @@ async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 100
 
     # 3️⃣ 腾讯 API fallback
     logger.warning("降级到腾讯 API: %s/%s", symbol, interval)
-    qt_symbol = _baostock_to_tencent_symbol(symbol)
+    qt_symbol = _baostock_to_tencent_symbol(bs_symbol)
     url = f"{_QT_MKLINE_BASE}{qt_symbol},{interval},,{count}"
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
@@ -231,9 +231,10 @@ async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:
     """
     if not symbols:
         return {}
+    qt_symbols = [to_tencent_symbol(symbol) for symbol in symbols]
 
     try:
-        query = ",".join(symbols)
+        query = ",".join(qt_symbols)
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
             resp = await client.get(f"{_QT_BASE}{query}")
             resp.raise_for_status()

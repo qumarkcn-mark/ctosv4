@@ -33,5 +33,6 @@ scratch/
 miniprogram/miniprogram_npm/
 miniprogram/node_modules/
 .gstack/
+logs/
 uvicorn.log
 *.log

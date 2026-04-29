@@ -125,27 +125,16 @@ async def get_sector_context(symbol_code: str) -> dict:
 
 
 async def get_index_background() -> dict:
-    """从本地kline_lake.db获取大盘近期背景（沪深两市）"""
+    """从本地 BaoStock 数据湖获取大盘近期背景（沪深两市）"""
     try:
-        import sqlite3
-        import os
-        db_path = os.path.join(os.path.dirname(__file__), "../../data/kline_lake.db")
-        db_path = os.path.abspath(db_path)
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        from server.db.kline_lake import query_klines
 
         def _fetch(symbol):
-            rows = conn.execute(
-                """SELECT date, close FROM klines
-                   WHERE symbol=? AND freq='day'
-                   ORDER BY date DESC LIMIT 5""",
-                (symbol,)
-            ).fetchall()
-            return [r["close"] for r in rows]
+            rows = query_klines(symbol, "day", limit=5, source="baostock")
+            return [r["close"] for r in reversed(rows)]
 
         sh_closes = _fetch("sh.000001")
         sz_closes = _fetch("sz.399001")
-        conn.close()
 
         result = {}
         for name, closes, key in [("沪指", sh_closes, "sh"), ("深指", sz_closes, "sz")]:

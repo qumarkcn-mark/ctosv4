@@ -33,6 +33,8 @@ export default function TradeForm({ onSubmitted }) {
     quantity: '',
     reason_text: '',
     reason_category: '',
+    plan_relationship: 'UNKNOWN',
+    discipline_tag: '',
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -67,7 +69,7 @@ export default function TradeForm({ onSubmitted }) {
     setT1Warning(false)
     if (form.direction === 'SELL' && form.symbol) {
       // 查当日是否有买入记录（前端预检）
-      fetch(`${API_BASE}/api/trades?symbol=${encodeURIComponent(form.symbol)}&direction=BUY&limit=5`)
+      fetch(`/api/trades?symbol=${encodeURIComponent(form.symbol)}&direction=BUY&limit=5`)
         .then(r => r.json())
         .then(data => {
           const today = new Date().toISOString().split('T')[0]
@@ -221,6 +223,8 @@ export default function TradeForm({ onSubmitted }) {
           quantity: parseInt(form.quantity),
           reason_text: form.reason_text.trim() || null,
           reason_category: form.reason_category || null,
+          plan_relationship: form.plan_relationship || 'UNKNOWN',
+          discipline_tag: form.discipline_tag.trim() || null,
         }),
       })
 
@@ -233,6 +237,7 @@ export default function TradeForm({ onSubmitted }) {
       setForm({
         symbol: '', name: '', direction: 'BUY',
         price: '', quantity: '', reason_text: '', reason_category: '',
+        plan_relationship: 'UNKNOWN', discipline_tag: '',
       })
       setSearchQuery('')
       setT1Warning(false)
@@ -420,6 +425,36 @@ export default function TradeForm({ onSubmitted }) {
             <option value="FEELING">感觉/直觉</option>
             <option value="OTHER">其他</option>
           </select>
+        </div>
+      </div>
+
+      {/* 计划关系 */}
+      <div className="form-row">
+        <div className="form-field">
+          <label>计划关系</label>
+          <select
+            className="input"
+            name="plan_relationship"
+            value={form.plan_relationship}
+            onChange={handleChange}
+          >
+            <option value="UNKNOWN">未确认</option>
+            <option value="PLANNED">计划内</option>
+            <option value="UNPLANNED">计划外</option>
+            <option value="EMOTIONAL">情绪交易</option>
+            <option value="AFTER_ALERT">被提醒后执行</option>
+            <option value="IGNORED_ALERT">忽略提醒后交易</option>
+          </select>
+        </div>
+        <div className="form-field" style={{ flex: 2 }}>
+          <label>纪律标签</label>
+          <input
+            className="input"
+            name="discipline_tag"
+            value={form.discipline_tag}
+            onChange={handleChange}
+            placeholder="例如：追高、怕回撤、按计划减仓"
+          />
         </div>
       </div>
 

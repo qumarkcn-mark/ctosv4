@@ -75,6 +75,65 @@ def _fetch_previous(user_id: int):
         conn.close()
 
 
+def _fetch_plan_metrics(user_id: int) -> dict:
+    """获取计划内/计划外纪律指标。老库缺列时返回中性空值。"""
+    conn = get_connection()
+    try:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+        }
+        if "plan_relationship" not in columns:
+            return {
+                "plan_adherence_rate": None,
+                "planned_trades": 0,
+                "unplanned_trades": 0,
+                "emotional_trades": 0,
+                "known_plan_trades": 0,
+                "alert_follow_rate": None,
+            }
+
+        rows = conn.execute(
+            """
+            SELECT plan_relationship, COUNT(*) AS count
+              FROM trades
+             WHERE user_id = ?
+             GROUP BY plan_relationship
+            """,
+            (user_id,),
+        ).fetchall()
+        counts = {row["plan_relationship"] or "UNKNOWN": row["count"] for row in rows}
+        planned = counts.get("PLANNED", 0) + counts.get("AFTER_ALERT", 0)
+        unplanned = counts.get("UNPLANNED", 0) + counts.get("EMOTIONAL", 0)
+        known = planned + unplanned + counts.get("IGNORED_ALERT", 0)
+
+        event_rows = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN evidence_json LIKE '%PLAYBOOK_EXECUTED%' OR evidence_json LIKE '%ACKNOWLEDGED%' THEN 1 ELSE 0 END) AS followed,
+                COUNT(*) AS total
+              FROM coach_events
+             WHERE user_id = ? AND event_type = 'USER_MARKED_ACTION'
+               AND evidence_json LIKE '%PLAYBOOK_%'
+            """,
+            (user_id,),
+        ).fetchone()
+        followed = event_rows["followed"] or 0 if event_rows else 0
+        total = event_rows["total"] or 0 if event_rows else 0
+
+        return {
+            "plan_adherence_rate": round(planned / known * 100, 1) if known else None,
+            "planned_trades": planned,
+            "unplanned_trades": unplanned,
+            "emotional_trades": counts.get("EMOTIONAL", 0),
+            "ignored_alert_trades": counts.get("IGNORED_ALERT", 0),
+            "known_plan_trades": known,
+            "alert_follow_rate": round(followed / total * 100, 1) if total else None,
+        }
+    finally:
+        conn.close()
+
+
 @router.get("/report")
 async def get_behavior_report(user_id: int = 1, period: str = Query("ALL_TIME")):
     """生成投资行为体检报告"""
@@ -89,6 +148,7 @@ async def get_behavior_report(user_id: int = 1, period: str = Query("ALL_TIME"))
     previous = await run_in_threadpool(_fetch_previous, user_id)
 
     diagnosis = generate_diagnosis(report, previous)
+    plan_metrics = await run_in_threadpool(_fetch_plan_metrics, user_id)
 
     return {
         "status": "success",
@@ -104,6 +164,7 @@ async def get_behavior_report(user_id: int = 1, period: str = Query("ALL_TIME"))
                 "counter_trend_rate": report.counter_trend_rate,
                 "impulse_trade_rate": report.impulse_trade_rate,
                 "early_exit_count": report.early_exit_count,
+                **plan_metrics,
             },
             "diagnosis": diagnosis,
         }

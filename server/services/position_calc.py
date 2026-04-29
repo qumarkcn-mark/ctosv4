@@ -3,6 +3,9 @@
 import sqlite3
 from datetime import datetime
 
+from server.domain.symbols import symbol_aliases, to_tencent_symbol
+from server.services.entry_thesis import ensure_unknown_entry_thesis
+
 
 def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
     """
@@ -12,15 +15,18 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
       - 卖出: 数量减少, avg_cost 不变
       - 全部卖出: 删除持仓记录
     """
-    # 查询该股票所有交易, 按时间排序
+    aliases = symbol_aliases(symbol)
+    position_symbol = to_tencent_symbol(symbol)
+
+    # 查询该股票所有交易, 按时间排序。兼容历史 sh600519 与 canonical sh.600519。
     rows = conn.execute(
         """
         SELECT direction, price, quantity, traded_at
         FROM trades
-        WHERE user_id = ? AND symbol = ?
+        WHERE user_id = ? AND symbol IN (?, ?, ?)
         ORDER BY traded_at ASC
         """,
-        (user_id, symbol),
+        (user_id, *aliases),
     ).fetchall()
 
     # 逐笔计算
@@ -46,8 +52,8 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
     if total_qty <= 0:
         # 清仓: 删除持仓记录
         conn.execute(
-            "DELETE FROM positions WHERE user_id = ? AND symbol = ?",
-            (user_id, symbol),
+            "DELETE FROM positions WHERE user_id = ? AND symbol IN (?, ?, ?)",
+            (user_id, *aliases),
         )
         return None
 
@@ -55,15 +61,15 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
 
     # 查股票名称 (从最近的交易记录取)
     name_row = conn.execute(
-        "SELECT name FROM trades WHERE user_id = ? AND symbol = ? AND name IS NOT NULL ORDER BY traded_at DESC LIMIT 1",
-        (user_id, symbol),
+        "SELECT name FROM trades WHERE user_id = ? AND symbol IN (?, ?, ?) AND name IS NOT NULL ORDER BY traded_at DESC LIMIT 1",
+        (user_id, *aliases),
     ).fetchone()
     name = name_row["name"] if name_row else None
 
     # 计算持仓天数 (从第一笔买入算起)
     first_buy = conn.execute(
-        "SELECT traded_at FROM trades WHERE user_id = ? AND symbol = ? AND direction = 'BUY' ORDER BY traded_at ASC LIMIT 1",
-        (user_id, symbol),
+        "SELECT traded_at FROM trades WHERE user_id = ? AND symbol IN (?, ?, ?) AND direction = 'BUY' ORDER BY traded_at ASC LIMIT 1",
+        (user_id, *aliases),
     ).fetchone()
     days_held = 0
     if first_buy:
@@ -85,12 +91,13 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
             days_held = excluded.days_held,
             updated_at = excluded.updated_at
         """,
-        (user_id, symbol, name, total_qty, round(avg_cost, 4), days_held,
+        (user_id, position_symbol, name, total_qty, round(avg_cost, 4), days_held,
          datetime.now().isoformat()),
     )
+    ensure_unknown_entry_thesis(conn, user_id=user_id, symbol=position_symbol)
 
     return {
-        "symbol": symbol,
+        "symbol": position_symbol,
         "quantity": total_qty,
         "avg_cost": round(avg_cost, 4),
         "days_held": days_held,

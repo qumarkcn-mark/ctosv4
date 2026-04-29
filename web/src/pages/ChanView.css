@@ -7,6 +7,98 @@
   overflow: hidden;
 }
 
+/* ─── 自选股折叠容器（左侧） */
+.watchlist-collapse-wrapper {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  width: 220px;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.watchlist-collapse-wrapper.collapsed {
+  width: 20px;
+}
+
+/* 折叠时隐藏内部面板内容（保留 wrapper 占位） */
+.watchlist-collapse-wrapper.collapsed > :not(.panel-toggle-strip) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.watchlist-collapse-wrapper > :not(.panel-toggle-strip) {
+  opacity: 1;
+  transition: opacity 0.15s 0.05s;
+}
+
+/* ─── 雷达折叠容器（右侧） */
+.radar-collapse-wrapper {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  width: 320px;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.radar-collapse-wrapper.collapsed {
+  width: 20px;
+}
+
+.radar-collapse-wrapper.collapsed > :not(.panel-toggle-strip) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.radar-collapse-wrapper > :not(.panel-toggle-strip) {
+  opacity: 1;
+  transition: opacity 0.15s 0.05s;
+}
+
+/* ─── 通用折叠触发条 */
+.panel-toggle-strip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  z-index: 10;
+  padding: 0;
+  color: var(--text-tertiary, #5a5c66);
+  transition: color 0.15s, background 0.15s;
+}
+
+/* 左侧面板：触发条在右边缘 */
+.panel-toggle-strip--left {
+  right: 0;
+}
+
+/* 右侧面板：触发条在左边缘 */
+.panel-toggle-strip--right {
+  left: 0;
+}
+
+.panel-toggle-strip:hover {
+  color: var(--action-gold, #f0b90b);
+  background: rgba(240, 185, 11, 0.06);
+}
+
+.panel-toggle-icon {
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  font-family: monospace;
+}
+
+
 /* ─── 右侧主体 */
 .chan-main {
   flex: 1;
@@ -26,10 +118,11 @@
   gap: 8px;
 }
 
-/* ─── 右侧雷达侧边栏 */
+/* ─── 右侧雷达侧边栏（现在在 radar-collapse-wrapper 内） */
 .chan-radar-sidebar {
-  width: 320px;
-  flex-shrink: 0;
+  position: relative;
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
   /* 细滚动条 */

@@ -5,6 +5,8 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
   const [collapsed, setCollapsed] = useState({})
+  const [health, setHealth] = useState(null)
+  const [healthLoading, setHealthLoading] = useState(false)
 
   // 新增分组
   const [addingGroup, setAddingGroup] = useState(false)
@@ -34,6 +36,21 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
   useEffect(() => {
     fetchWatchlist()
   }, [])
+
+  const fetchDataHealth = async () => {
+    setHealthLoading(true)
+    try {
+      const resp = await fetch('/api/radar/health/watchlist?user_id=1')
+      if (resp.ok) {
+        const json = await resp.json()
+        setHealth(json.data)
+      }
+    } catch (err) {
+      console.error('自选股数据健康检查失败:', err)
+    } finally {
+      setHealthLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (addingGroup) newGroupInputRef.current?.focus()
@@ -163,14 +180,31 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     <div className="watchlist-panel">
       <div className="watchlist-header">
         <span className="watchlist-title">⭐ 自选股</span>
-        <button
-          className="watchlist-add-group-btn"
-          onClick={() => { setAddingGroup(true); setRenamingGroup(null) }}
-          title="新建分组"
-        >
-          +
-        </button>
+        <div className="watchlist-header-actions">
+          <button
+            className={`watchlist-health-btn ${health?.stale_count ? 'is-stale' : ''}`}
+            onClick={fetchDataHealth}
+            title="检查自选股数据健康"
+            disabled={healthLoading}
+          >
+            {healthLoading ? '…' : health ? `${health.stale_count}/${health.count}` : '检'}
+          </button>
+          <button
+            className="watchlist-add-group-btn"
+            onClick={() => { setAddingGroup(true); setRenamingGroup(null) }}
+            title="新建分组"
+          >
+            +
+          </button>
+        </div>
       </div>
+
+      {health && (
+        <div className={`watchlist-health-strip ${health.stale_count ? 'is-stale' : ''}`}>
+          <span>{health.stale_count ? `数据异常 ${health.stale_count} 只` : `数据健康 ${health.count} 只`}</span>
+          <strong>{health.checked_at?.slice(5, 16) || ''}</strong>
+        </div>
+      )}
 
       {/* 新增分组输入框 */}
       {addingGroup && (

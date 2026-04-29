@@ -40,6 +40,10 @@ except ImportError as e:
     logging.error(f"无法导入 chan_py: {e}")
 
 from server.db.kline_lake import query_klines
+from server.engines.structure.chan_config_presets import (
+    get_chan_config_dict,
+    get_chan_config_meta,
+)
 from server.services.baostock_service import fetch_klines_quick
 
 logger = logging.getLogger(__name__)
@@ -265,6 +269,7 @@ def _parse_chan_detail_sync(
     freq: str,
     count: int,
     end_date: Optional[str] = None,
+    cchan_preset: str = "live_tolerant",
 ) -> dict:
     """
     同步版本的缠论结构解析。调用方应通过 run_in_threadpool 包装。
@@ -361,15 +366,8 @@ def _parse_chan_detail_sync(
     #   模式扩展到邻近K线后条件无法满足，合法的顶/底分型被错误拒绝。
     #   "loss" 模式只检验分型K线本身的高低关系，完全对应缠论原文定义，
     #   消除涨停板导致的超大笔（如 8.70→11.90 应为三笔却被识别为一笔）。
-    config = CChanConfig({
-        "trigger_step": True,
-        "kl_data_check": False,
-        "bi_strict": True,
-        "bi_fx_check": "loss",   # 修复涨停板笔识别：只验证分型K线本身
-        "print_warning": False,
-        "print_err_time": False,
-        "auto_skip_illegal_sub_lv": True,
-    })
+    config_meta = get_chan_config_meta(cchan_preset)
+    config = CChanConfig(get_chan_config_dict(cchan_preset))
 
     chan = CChan(
         code=symbol,
@@ -460,6 +458,7 @@ def _parse_chan_detail_sync(
         "zhongshus":  serialized_bi_zs,  # 后向兼容
         "bsps":       serialized_bsps,
         "macd":       macd_sliced,
+        "config":     config_meta,
         "stats": {
             "kline_count":        len(klines_out_sliced),
             "bi_count":           len(serialized_bis),
@@ -482,6 +481,7 @@ async def get_chan_detail(
     freq: str = "day",
     count: int = 500,
     end_date: Optional[str] = None,
+    cchan_preset: str = "live_tolerant",
 ) -> dict:
     """
     异步版本，供 FastAPI 路由调用。
@@ -493,7 +493,14 @@ async def get_chan_detail(
     if len(symbol_bs) > 2 and symbol_bs[2] != ".":
         symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
 
-    return await run_in_threadpool(_parse_chan_detail_sync, symbol_bs, freq, count, end_date)
+    return await run_in_threadpool(
+        _parse_chan_detail_sync,
+        symbol_bs,
+        freq,
+        count,
+        end_date,
+        cchan_preset,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -739,16 +746,8 @@ def _parse_chan_multi_level_sync(
     # 按级别从高到低排序（CChan 要求）
     kl_type_list.sort(key=lambda x: _LEVEL_ORDER.get(x, 99))
 
-     # ── 2. 单次 CChan 调用（多级别联动）──
-    config = CChanConfig({
-        "trigger_step":             True,
-        "kl_data_check":            False,
-        "bi_strict":                True,
-        "bi_fx_check":              "loss",   # 修复涨停板笔识别：与单级别detail接口保持一致
-        "print_warning":            False,
-        "print_err_time":           False,
-        "auto_skip_illegal_sub_lv": True,
-    })
+    # ── 2. 单次 CChan 调用（多级别联动）──
+    config = CChanConfig(get_chan_config_dict("live_tolerant"))
 
     chan = CChan(
         code=symbol,

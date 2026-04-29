@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from server.db.database import get_connection
+from server.domain.symbols import symbol_aliases
 
 router = APIRouter()
 
@@ -82,14 +83,31 @@ async def position_overview(user_id: int = 1):
 @router.get("/{symbol}")
 def get_position(symbol: str, user_id: int = 1):
     """查询单只持仓"""
+    aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM positions WHERE user_id = ? AND symbol = ? AND quantity > 0",
-            (user_id, symbol),
+            """
+            SELECT * FROM positions
+             WHERE user_id = ? AND symbol IN (?, ?, ?) AND quantity > 0
+             ORDER BY CASE symbol
+                      WHEN ? THEN 0
+                      WHEN ? THEN 1
+                      ELSE 2
+                      END
+             LIMIT 1
+            """,
+            (user_id, *aliases, aliases[0], aliases[1]),
         ).fetchone()
         if not row:
-            raise HTTPException(404, f"未持有 {symbol}")
-        return dict(row)
+            return {
+                "symbol": symbol,
+                "user_id": user_id,
+                "quantity": 0,
+                "is_holding": False,
+            }
+        item = dict(row)
+        item["is_holding"] = True
+        return item
     finally:
         conn.close()
