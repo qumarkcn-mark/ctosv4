@@ -29,6 +29,15 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 
+# AI Native Radar 影子系统。默认关闭，避免影响老 Radar 主路径。
+AI_NATIVE_RADAR_ENABLED = os.getenv("AI_NATIVE_RADAR_ENABLED", "false").lower() == "true"
+AI_NATIVE_RADAR_DATA_DIR = os.getenv("AI_NATIVE_RADAR_DATA_DIR", str(BASE_DIR / "data" / "ai_native_radar"))
+AI_NATIVE_RADAR_WRITE_SNAPSHOTS = os.getenv("AI_NATIVE_RADAR_WRITE_SNAPSHOTS", "false").lower() == "true"
+AI_NATIVE_RADAR_MAX_REWRITE = int(os.getenv("AI_NATIVE_RADAR_MAX_REWRITE", "1"))
+AI_NATIVE_RADAR_MODEL = os.getenv("AI_NATIVE_RADAR_MODEL", LLM_MODEL)
+AI_NATIVE_RADAR_PROMPT_VERSION = os.getenv("AI_NATIVE_RADAR_PROMPT_VERSION", "ai_native_radar.v1")
+AI_NATIVE_RADAR_FINGERPRINT_VERSION = os.getenv("AI_NATIVE_RADAR_FINGERPRINT_VERSION", "fingerprint.v1")
+
 # 行情 API
 PRICE_API_TIMEOUT = 5  # 秒
 PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔

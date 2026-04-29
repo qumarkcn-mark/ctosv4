@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from openai import AsyncOpenAI
 import logging
+from server import config
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,39 @@ class LLMService:
         except Exception as e:
             logger.error(f"Portfolio LLM Inference failed: {e}")
             return f"❌ 生成全局战略失败，请检查网络或大模型 API Key。错误详情: {e}"
+
+    async def infer_ai_native_radar(self, system_prompt: str, context_json: str) -> dict:
+        """AI Native Radar 影子系统推理。调用方负责 verifier 和 fallback。"""
+        from server.db.database import get_connection
+
+        api_key = None
+        try:
+            db_conn = get_connection()
+            try:
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
+                if row and row["settings_json"]:
+                    settings = json.loads(row["settings_json"])
+                    api_key = settings.get("deepseek_api_key")
+            finally:
+                db_conn.close()
+        except Exception:
+            logger.debug("读取用户 DeepSeek API Key 失败", exc_info=True)
+
+        if not api_key:
+            api_key = os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod")
+
+        client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+        response = await client.chat.completions.create(
+            model=config.AI_NATIVE_RADAR_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"AI Native Radar Context:\n{context_json}"},
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        raw_content = response.choices[0].message.content
+        return json.loads(raw_content)
 
     async def parse_trade_from_text(self, text: str) -> dict:
         """

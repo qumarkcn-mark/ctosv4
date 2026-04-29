@@ -16,6 +16,7 @@ from chan_engine.phantom import generate_phantom_klines
 from server.api import radar as radar_api
 from server.services.chan_service import analyze_matrix_state
 from server.services.market_context_service import get_market_context, format_context_for_prompt
+from server import config
 
 logger = logging.getLogger("AgentAPI")
 router = APIRouter()
@@ -25,6 +26,11 @@ _llm_service = LLMService()
 class InferenceRequest(BaseModel):
     symbol: str
     mode: Optional[str] = None
+
+class AINativeRadarRequest(BaseModel):
+    symbol: str
+    mode: Optional[str] = None
+    user_id: int = 1
 
 class PortfolioStrategyRequest(BaseModel):
     scan_results: list
@@ -251,6 +257,26 @@ async def radar_deduce(request: InferenceRequest):
     except Exception as e:
         logger.error(f"Radar deduction failed for {symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"雷达推演失败: {str(e)}")
+
+
+@router.post("/ai-native-radar")
+async def ai_native_radar(request: AINativeRadarRequest):
+    """AI Native Radar 影子接口。默认关闭，不影响老 Radar。"""
+    if not config.AI_NATIVE_RADAR_ENABLED:
+        return {"status": "disabled", "message": "AI Native Radar is disabled"}
+    try:
+        from server.engines.ai_native.reasoning_orchestrator import build_ai_native_reasoning
+
+        result = await build_ai_native_reasoning(
+            symbol=request.symbol,
+            user_id=request.user_id,
+            mode=request.mode,
+            llm_service=_llm_service,
+        )
+        return {"status": "success", "data": result.model_dump()}
+    except Exception as e:
+        logger.error(f"AI Native Radar failed for {request.symbol}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 失败: {str(e)}")
 
 
 def _radar_contract_to_display_snapshot(radar_data: dict) -> dict:

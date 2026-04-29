@@ -139,6 +139,27 @@ CREATE TABLE IF NOT EXISTS radar_deductions (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AI Native Radar 影子系统运行记录。只供新推理闭环使用，不影响老 Radar。
+CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    prompt_version TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    structure_fingerprint TEXT NOT NULL,
+    transcript_json TEXT NOT NULL,
+    memory_context_json TEXT,
+    ai_output_json TEXT,
+    gate_result_json TEXT NOT NULL,
+    gate_status TEXT NOT NULL,
+    replay_status TEXT NOT NULL DEFAULT 'PENDING',
+    replay_score REAL,
+    outcome_json TEXT,
+    disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
+);
+
 -- 多元宇宙日志（每日分类快照 + 结算）
 CREATE TABLE IF NOT EXISTS multiverse_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +212,8 @@ CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, traded_at);
 CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, is_triggered);
 CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_mv_symbol_date ON multiverse_snapshots(user_id, symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_portfolio_strategies_user ON portfolio_strategies(user_id, created_at);
 
@@ -476,6 +499,30 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_user_date ON daily_playbooks(user_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_playbook ON daily_playbook_items(playbook_id)",
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_symbol ON daily_playbook_items(user_id, symbol)",
+        # 迁移 M013：AI Native Radar 影子系统运行记录
+        """
+        CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            prompt_version TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            structure_fingerprint TEXT NOT NULL,
+            transcript_json TEXT NOT NULL,
+            memory_context_json TEXT,
+            ai_output_json TEXT,
+            gate_result_json TEXT NOT NULL,
+            gate_status TEXT NOT NULL,
+            replay_status TEXT NOT NULL DEFAULT 'PENDING',
+            replay_score REAL,
+            outcome_json TEXT,
+            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint)",
     ]
     for sql in migrations:
         try:

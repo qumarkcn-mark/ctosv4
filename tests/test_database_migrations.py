@@ -162,3 +162,37 @@ def test_run_migrations_adds_position_entry_thesis_json():
         for row in conn.execute("PRAGMA table_info(positions)").fetchall()
     }
     assert "entry_thesis_json" in columns
+
+
+def test_run_migrations_create_ai_reasoning_runs_table():
+    conn = make_old_alerts_conn()
+    from server.db.database import run_migrations
+
+    run_migrations(conn)
+
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "ai_reasoning_runs" in tables
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(ai_reasoning_runs)").fetchall()
+    }
+    assert {
+        "structure_fingerprint",
+        "transcript_json",
+        "memory_context_json",
+        "ai_output_json",
+        "gate_result_json",
+        "gate_status",
+        "replay_status",
+    }.issubset(columns)
+
+    indexes = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    }
+    assert "idx_ai_reasoning_runs_symbol_created" in indexes
+    assert "idx_ai_reasoning_runs_fingerprint" in indexes
