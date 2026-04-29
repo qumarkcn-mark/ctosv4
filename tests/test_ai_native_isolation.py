@@ -47,6 +47,41 @@ class BrokenLLM:
         raise RuntimeError("offline")
 
 
+class UserAwareLLM:
+    def __init__(self):
+        self.user_ids = []
+
+    async def infer_ai_native_radar(self, *_args, **kwargs):
+        self.user_ids.append(kwargs.get("user_id"))
+        return {
+            "diagnosis": "结构处在确认后的观察段",
+            "current_hypothesis": "B",
+            "reasoning_boundary": "只在 12.80、11.90、10.80 这些结构价内有效",
+            "hypotheses": [
+                {
+                    "id": hypothesis_id,
+                    "name": name,
+                    "current_applicability": "CURRENT" if hypothesis_id == "B" else "WAITING",
+                    "evidence": ["day state=UPWARD_LEAVING"],
+                    "trigger": "观察 12.80 的确认",
+                    "invalidation": "跌回 11.90 则原观察失效",
+                    "next_focus": "只盯结构边界，不追逐波动",
+                    "empty_position_view": "空仓只等待结构给出确认",
+                    "holding_position_view": "持仓只按边界管理风险",
+                }
+                for hypothesis_id, name in (
+                    ("A", "向上确认"),
+                    ("B", "区间观察"),
+                    ("C", "失效路径"),
+                    ("D", "停止推演"),
+                )
+            ],
+            "operator_mistake": "最容易把等待误判成确定方向",
+            "coach_talk": "当前先承认分类没有结束。仅供参考，不构成投资建议",
+            "disclaimer": "仅供参考，不构成投资建议",
+        }
+
+
 def test_ai_native_failure_writes_only_new_table(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
     database.init_db()
@@ -73,6 +108,29 @@ def test_ai_native_failure_writes_only_new_table(monkeypatch, tmp_path):
     conn.close()
     assert ai_count == 1
     assert old_count == 0
+
+
+def test_ai_native_passes_request_user_id_to_llm(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+
+    async def fake_get_radar(symbol, user_id=1):
+        return {"status": "success", "data": make_radar_contract()}
+
+    llm = UserAwareLLM()
+    monkeypatch.setattr(reasoning_orchestrator.radar_api, "get_radar", fake_get_radar)
+    monkeypatch.setattr(reasoning_orchestrator.config, "AI_NATIVE_RADAR_WRITE_SNAPSHOTS", False)
+
+    response = asyncio.run(
+        reasoning_orchestrator.build_ai_native_reasoning(
+            symbol="sh600519",
+            user_id=42,
+            llm_service=llm,
+        )
+    )
+
+    assert response.gate_status == "PASS"
+    assert llm.user_ids == [42]
 
 
 def test_new_route_success_does_not_call_old_radar_deduce(monkeypatch, tmp_path):

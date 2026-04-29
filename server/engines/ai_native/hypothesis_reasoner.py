@@ -11,6 +11,7 @@ from server.services.llm_service import LLMService
 
 async def infer_ai_hypotheses(
     *,
+    user_id: int,
     transcript: StructureTranscript,
     similar_cases: SimilarCaseSummary,
     rewrite_feedback: list[str] | None = None,
@@ -26,5 +27,5 @@ async def infer_ai_hypotheses(
     return await service.infer_ai_native_radar(
         AI_NATIVE_RADAR_SYSTEM_PROMPT,
         json.dumps(context, ensure_ascii=False),
+        user_id=user_id,
     )
-

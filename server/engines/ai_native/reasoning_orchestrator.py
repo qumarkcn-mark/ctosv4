@@ -50,6 +50,7 @@ async def build_ai_native_reasoning(
 
     try:
         raw_output = await infer_ai_hypotheses(
+            user_id=user_id,
             transcript=transcript,
             similar_cases=memory,
             llm_service=llm_service,
@@ -58,6 +59,7 @@ async def build_ai_native_reasoning(
         if gate.status == "REWRITE" and config.AI_NATIVE_RADAR_MAX_REWRITE > 0:
             feedback = [violation.message for violation in gate.violations]
             raw_output = await infer_ai_hypotheses(
+                user_id=user_id,
                 transcript=transcript,
                 similar_cases=memory,
                 rewrite_feedback=feedback,
@@ -169,4 +171,3 @@ def _write_snapshot_if_enabled(
         (target_dir / filename).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("AI native snapshot write failed: %s", exc)
-

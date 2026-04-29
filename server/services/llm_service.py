@@ -249,7 +249,7 @@ class LLMService:
             logger.error(f"Portfolio LLM Inference failed: {e}")
             return f"❌ 生成全局战略失败，请检查网络或大模型 API Key。错误详情: {e}"
 
-    async def infer_ai_native_radar(self, system_prompt: str, context_json: str) -> dict:
+    async def infer_ai_native_radar(self, system_prompt: str, context_json: str, *, user_id: int = 1) -> dict:
         """AI Native Radar 影子系统推理。调用方负责 verifier 和 fallback。"""
         from server.db.database import get_connection
 
@@ -257,7 +257,7 @@ class LLMService:
         try:
             db_conn = get_connection()
             try:
-                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
                 if row and row["settings_json"]:
                     settings = json.loads(row["settings_json"])
                     api_key = settings.get("deepseek_api_key")
