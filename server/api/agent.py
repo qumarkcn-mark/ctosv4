@@ -32,6 +32,14 @@ class AINativeRadarRequest(BaseModel):
     mode: Optional[str] = None
     user_id: int = 1
 
+class AINativeRadarReviewRequest(BaseModel):
+    user_id: int = 1
+    actual_hypothesis: str
+    quality_score: int
+    notes: str = ""
+    outcome_path: Optional[str] = None
+    reviewer: str = "human"
+
 class PortfolioStrategyRequest(BaseModel):
     scan_results: list
 
@@ -277,6 +285,69 @@ async def ai_native_radar(request: AINativeRadarRequest):
     except Exception as e:
         logger.error(f"AI Native Radar failed for {request.symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"AI Native Radar 失败: {str(e)}")
+
+
+@router.get("/ai-native-radar/runs")
+async def list_ai_native_radar_runs(
+    user_id: int = Query(1),
+    limit: int = Query(50, ge=1, le=200),
+    symbol: Optional[str] = Query(None),
+    replay_status: Optional[str] = Query(None),
+):
+    """列出 AI Native Radar 影子样本，供人工复盘。"""
+    try:
+        from server.engines.ai_native.observation import list_reasoning_runs
+
+        runs = await run_in_threadpool(
+            list_reasoning_runs,
+            user_id=user_id,
+            limit=limit,
+            symbol=symbol,
+            replay_status=replay_status,
+        )
+        return {"status": "success", "data": [item.model_dump() for item in runs]}
+    except Exception as e:
+        logger.error(f"AI Native Radar runs query failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 样本查询失败: {str(e)}")
+
+
+@router.post("/ai-native-radar/runs/{run_id}/review")
+async def review_ai_native_radar_run(run_id: int, request: AINativeRadarReviewRequest):
+    """人工复盘一条 AI Native Radar 样本，形成评分闭环。"""
+    try:
+        from server.engines.ai_native.observation import review_reasoning_run
+
+        reviewed = await run_in_threadpool(
+            review_reasoning_run,
+            run_id=run_id,
+            user_id=request.user_id,
+            actual_hypothesis=request.actual_hypothesis,
+            quality_score=request.quality_score,
+            notes=request.notes,
+            outcome_path=request.outcome_path,
+            reviewer=request.reviewer,
+        )
+        return {"status": "success", "data": reviewed.model_dump()}
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"AI Native Radar review failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 复盘失败: {str(e)}")
+
+
+@router.get("/ai-native-radar/observation-summary")
+async def ai_native_radar_observation_summary(user_id: int = Query(1)):
+    """汇总 AI Native Radar 影子观测质量，判断是否可进入 UI Beta。"""
+    try:
+        from server.engines.ai_native.observation import summarize_observation
+
+        summary = await run_in_threadpool(summarize_observation, user_id=user_id)
+        return {"status": "success", "data": summary.model_dump()}
+    except Exception as e:
+        logger.error(f"AI Native Radar observation summary failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 观测汇总失败: {str(e)}")
 
 
 def _radar_contract_to_display_snapshot(radar_data: dict) -> dict:

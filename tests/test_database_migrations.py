@@ -196,3 +196,4 @@ def test_run_migrations_create_ai_reasoning_runs_table():
     }
     assert "idx_ai_reasoning_runs_symbol_created" in indexes
     assert "idx_ai_reasoning_runs_fingerprint" in indexes
+    assert "idx_ai_reasoning_runs_replay" in indexes
