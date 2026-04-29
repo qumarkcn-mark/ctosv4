@@ -114,3 +114,36 @@ class AIReasoningResponse(BaseModel):
     fallback_data: Optional[dict] = None
     run_id: Optional[int] = None
 
+
+class AINativeRunSummary(BaseModel):
+    id: int
+    user_id: int
+    symbol: str
+    mode: str
+    created_at: str
+    prompt_version: str
+    model_name: str
+    structure_fingerprint: str
+    gate_status: str
+    gate_score: int
+    replay_status: str
+    replay_score: Optional[float] = None
+    outcome: Optional[dict] = None
+    current_hypothesis: str = "UNKNOWN"
+    diagnosis: str = ""
+    violation_codes: list[str] = Field(default_factory=list)
+
+
+class ObservationSummary(BaseModel):
+    total_runs: int = 0
+    reviewed_runs: int = 0
+    pending_runs: int = 0
+    pass_runs: int = 0
+    fallback_runs: int = 0
+    average_gate_score: float = 0.0
+    average_replay_score: float = 0.0
+    pass_rate: float = 0.0
+    fallback_rate: float = 0.0
+    ready_for_ui_beta: bool = False
+    readiness_reason: str = "样本不足"
+    target_review_count: int = 20

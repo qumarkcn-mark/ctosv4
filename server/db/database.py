@@ -214,6 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, is_triggered);
 CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mv_symbol_date ON multiverse_snapshots(user_id, symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_portfolio_strategies_user ON portfolio_strategies(user_id, created_at);
 
@@ -523,6 +524,7 @@ def run_migrations(conn: sqlite3.Connection):
         """,
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC)",
     ]
     for sql in migrations:
         try:
