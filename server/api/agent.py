@@ -23,6 +23,162 @@ router = APIRouter()
 
 _llm_service = LLMService()
 
+
+def _symbol_variants(symbol: str) -> list[str]:
+    raw = (symbol or "").strip()
+    variants = {raw}
+    if len(raw) == 8 and raw[:2].lower() in {"sh", "sz"}:
+        variants.add(f"{raw[:2].lower()}.{raw[2:]}")
+    if "." in raw:
+        variants.add(raw.replace(".", ""))
+    return [item for item in variants if item]
+
+
+def _safe_json_loads(value: object) -> dict:
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(str(value))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_latest_ai_native_radar_run(*, user_id: int, symbol: str, mode: Optional[str] = None) -> Optional[dict]:
+    variants = _symbol_variants(symbol)
+    if not variants:
+        return None
+
+    placeholders = ",".join("?" for _ in variants)
+    params: list[object] = [user_id, *variants]
+    mode_clause = ""
+    if mode:
+        mode_clause = " AND mode = ?"
+        params.append(mode)
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            f"""
+            SELECT id, symbol, mode, created_at, model_name,
+                   transcript_json, ai_output_json, gate_result_json, model_route_json
+              FROM ai_reasoning_runs
+             WHERE user_id = ?
+               AND symbol IN ({placeholders})
+               {mode_clause}
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    output = _safe_json_loads(row["ai_output_json"])
+    transcript_payload = _safe_json_loads(row["transcript_json"])
+    gate = _safe_json_loads(row["gate_result_json"])
+    model_route = _safe_json_loads(row["model_route_json"])
+    reconstructed = _reconstruct_ai_native_report(
+        output=output,
+        transcript_payload=transcript_payload,
+        gate_payload=gate,
+        model_route_payload=model_route,
+    )
+    if reconstructed:
+        reconstructed.update(
+            {
+                "run_id": row["id"],
+                "symbol": row["symbol"],
+                "mode": row["mode"],
+                "generated_at": reconstructed.get("generated_at") or row["created_at"],
+            }
+        )
+        return reconstructed
+
+    latest = {
+        **output,
+        "run_id": row["id"],
+        "symbol": row["symbol"],
+        "mode": row["mode"],
+        "generated_at": output.get("generated_at") or row["created_at"],
+        "gate_status": gate.get("status") or "UNKNOWN",
+        "gate_score": gate.get("score") or 0,
+        "model_route": model_route or output.get("model_route"),
+        "fallback_reason": output.get("fallback_reason"),
+    }
+    violations = gate.get("violations") or []
+    if not latest.get("fallback_reason") and violations:
+        latest["fallback_reason"] = "门禁提示：" + "；".join(
+            str(item.get("message") or item.get("code") or item) for item in violations
+        )
+    return latest
+
+
+def _reconstruct_ai_native_report(
+    *,
+    output: dict,
+    transcript_payload: dict,
+    gate_payload: dict,
+    model_route_payload: dict,
+) -> Optional[dict]:
+    if not output or not transcript_payload or not gate_payload:
+        return None
+    try:
+        from server.engines.ai_native.schemas import (
+            AIReasoningOutput,
+            AIReasoningResponse,
+            GateViolation,
+            ModelRoute,
+            StructureTranscript,
+        )
+        from server.engines.ai_native.schemas import GateResult
+        from server.engines.ai_native.reasoning_orchestrator import _fallback_response
+
+        transcript = StructureTranscript.model_validate(transcript_payload)
+        route = ModelRoute.model_validate(model_route_payload or {})
+        reasoning = AIReasoningOutput.model_validate(output)
+
+        if config.AI_NATIVE_RADAR_GATE_ENABLED:
+            from server.engines.ai_native.verifier import verify_ai_reasoning
+
+            _, gate = verify_ai_reasoning(output, transcript)
+        else:
+            gate = GateResult(status="PASS", score=100, violations=[])
+        if gate.status == "FALLBACK":
+            return _fallback_response({}, transcript, gate, route).model_dump()
+        violations = gate_payload.get("violations") or []
+        fallback_reason = None
+        if gate.status != "PASS" and violations:
+            fallback_reason = "门禁提示：" + "；".join(
+                str(item.get("message") or item.get("code") or item) for item in violations
+            )
+        response = AIReasoningResponse(
+            gate_status=gate.status,
+            gate_score=gate.score,
+            generated_at=transcript.generated_at,
+            raw_reasoning_md=reasoning.raw_reasoning_md,
+            coach_filtered_md=reasoning.coach_filtered_md,
+            semantic_filter_status=reasoning.semantic_filter_status,
+            semantic_filter_violations=[
+                item if hasattr(item, "model_dump") else GateViolation(**item)
+                for item in reasoning.semantic_filter_violations
+            ],
+            agent_observations=transcript.agent_observations,
+            key_boundaries=transcript.reasoning_boundaries,
+            position_context=transcript.position_context,
+            model_route=route,
+            coach_talk=reasoning.coach_filtered_md,
+            disclaimer=reasoning.disclaimer,
+            fallback_reason=fallback_reason,
+        )
+        return response.model_dump()
+    except Exception as exc:
+        logger.warning("AI Native latest reconstruction failed: %s", exc)
+        return None
+
 class InferenceRequest(BaseModel):
     symbol: str
     mode: Optional[str] = None
@@ -39,6 +195,11 @@ class AINativeRadarReviewRequest(BaseModel):
     notes: str = ""
     outcome_path: Optional[str] = None
     reviewer: str = "human"
+
+class AINativeRadarAutoSettleRequest(BaseModel):
+    user_id: int = 1
+    limit: int = 20
+    force: bool = False
 
 class PortfolioStrategyRequest(BaseModel):
     scan_results: list
@@ -236,6 +397,8 @@ async def radar_deduce(request: InferenceRequest):
             first_line = ctx_text.split("\n")[0].strip()
             result["market_context_verdict"] = first_line[:100] if first_line else "外部语境获取中"
 
+        result.update(_coach_narrative_defaults(radar_data, result))
+
         # 把原始市场语境也附在返回里（供前端展示）
         result["market_context_raw"] = market_ctx
 
@@ -285,6 +448,26 @@ async def ai_native_radar(request: AINativeRadarRequest):
     except Exception as e:
         logger.error(f"AI Native Radar failed for {request.symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"AI Native Radar 失败: {str(e)}")
+
+
+@router.get("/ai-native-radar/latest")
+async def latest_ai_native_radar_run(
+    user_id: int = Query(1),
+    symbol: str = Query(...),
+    mode: Optional[str] = Query(None),
+):
+    """读取某只股票最近一次完整 AI Native 推演，供前端切票/刷新后回填。"""
+    try:
+        latest = await run_in_threadpool(
+            _load_latest_ai_native_radar_run,
+            user_id=user_id,
+            symbol=symbol,
+            mode=mode,
+        )
+        return {"status": "success", "data": latest}
+    except Exception as e:
+        logger.error(f"AI Native Radar latest query failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 最近推演查询失败: {str(e)}")
 
 
 @router.get("/ai-native-radar/runs")
@@ -348,6 +531,54 @@ async def ai_native_radar_observation_summary(user_id: int = Query(1)):
     except Exception as e:
         logger.error(f"AI Native Radar observation summary failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"AI Native Radar 观测汇总失败: {str(e)}")
+
+
+@router.post("/ai-native-radar/auto-settle")
+async def auto_settle_ai_native_radar_runs(request: AINativeRadarAutoSettleRequest):
+    """自动结算已过观察期的 AI Native Radar 样本。"""
+    try:
+        from datetime import date
+
+        from server.engines.ai_native.observation import (
+            pending_runs_for_auto_settlement,
+            settle_reasoning_run_with_radar,
+        )
+
+        today = date.today().isoformat()
+        pending = await run_in_threadpool(
+            pending_runs_for_auto_settlement,
+            user_id=request.user_id,
+            limit=request.limit,
+            today=today,
+            force=request.force,
+        )
+        settled = []
+        failed = []
+        for run in pending:
+            try:
+                radar_result = await radar_api.get_radar(run["symbol"], user_id=request.user_id, include_structure=True)
+                radar_data = radar_result.get("data") or {}
+                reviewed = await run_in_threadpool(
+                    settle_reasoning_run_with_radar,
+                    run_row=run,
+                    current_radar_data=radar_data,
+                    reviewer="auto",
+                )
+                settled.append(reviewed.model_dump())
+            except Exception as exc:
+                failed.append({"id": run.get("id"), "symbol": run.get("symbol"), "error": str(exc)[:160]})
+        return {
+            "status": "success",
+            "data": {
+                "checked": len(pending),
+                "settled": len(settled),
+                "failed": failed,
+                "runs": settled,
+            },
+        }
+    except Exception as e:
+        logger.error(f"AI Native Radar auto-settle failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 自动结算失败: {str(e)}")
 
 
 def _radar_contract_to_display_snapshot(radar_data: dict) -> dict:
@@ -528,6 +759,208 @@ def _diagnosis_from_radar(radar_data: dict) -> str:
         or deduction.get("summary")
         or "Radar 规则推演已生成"
     )
+
+
+def _coach_narrative_defaults(radar_data: dict, result: dict) -> dict:
+    """Ensure AI radar behaves as coach layer even when LLM omits new fields."""
+    algorithm = radar_data.get("algorithm_v2") or {}
+    deduction = radar_data.get("deduction") or {}
+    position_context = radar_data.get("position_context") or {}
+    coach_action = radar_data.get("coach_action") or {}
+    current_id = (
+        _current_scenario_from_confirmation(algorithm)
+        or algorithm.get("current_scenario_id")
+        or _current_scenario_from_deduction(deduction)
+    )
+    summary = algorithm.get("summary") or _diagnosis_from_radar(radar_data)
+    focus = _first_trigger_text(algorithm) or _core_defense_from_radar(radar_data)
+    position_label = position_context.get("label") or ("持仓" if position_context.get("is_holding") else "空仓")
+    fallback = {
+        "chan_talk": _chan_talk_from_radar(radar_data, current_id, summary, focus),
+        "plain_reading": _plain_reading_from_radar(current_id, summary),
+        "operator_mistake": _mistake_text(current_id, algorithm, deduction),
+        "empty_position_view": _empty_position_text(current_id),
+        "holding_position_view": coach_action.get("summary") or f"持仓视角先按{position_label}管理，重点看 C 路径失效线是否触发。",
+        "next_focus": f"接下来只盯：{focus}",
+    }
+    merged = {key: result.get(key) or value for key, value in fallback.items()}
+    if summary:
+        merged["diagnosis"] = summary
+    for key in ("chan_talk", "plain_reading", "operator_mistake", "empty_position_view", "holding_position_view"):
+        if _narrative_contradicts_algorithm(merged.get(key), current_id, algorithm):
+            merged[key] = fallback[key]
+    return merged
+
+
+def _chan_talk_from_radar(radar_data: dict, current_id: str, summary: str, focus: str) -> str:
+    algorithm = radar_data.get("algorithm_v2") or {}
+    up_price = _first_boundary_price(algorithm, ["confirm", "pressure"])
+    reclaim_price = _first_boundary_price(algorithm, ["maintain", "support"])
+    weak_price = _first_boundary_price(algorithm, ["invalidate"])
+    mid_price = _first_boundary_price(algorithm, ["support", "maintain", "invalidate"])
+    low_price = weak_price or reclaim_price
+    high_price = up_price
+    current_desc = _plain_trend_desc(algorithm.get("path"), summary)
+    path = algorithm.get("path")
+    phase = algorithm.get("phase")
+
+    if path == "UPWARD_MAJOR_WAVE" and phase == "BREAKOUT_EXTENSION" and weak_price:
+        mid_line = mid_price or reclaim_price
+        current_line = "已经突破旧结构前高" if current_id == "A" else "正在旧结构前高附近确认"
+        return (
+            f"本轮走势先看大级别：价格{current_line} {weak_price}，属于上升离开后的延伸确认。"
+            f"接下来如果回踩不跌回 {weak_price} 下方，说明突破没有被拉回，走势继续按上升段管理；"
+            f"如果跌破 {weak_price} 后反抽也站不回去，就说明旧高突破失败，短线转弱。"
+            f"中期防线看 {mid_line or weak_price}，没跌破前只能说高位震荡或短线走弱，不能说大级别完全破坏。"
+        )
+
+    if up_price and reclaim_price and weak_price:
+        return (
+            f"本轮走势先按{current_desc}看，已经离开 {reclaim_price} 一带，目前要看它是在上方继续震荡，"
+            f"还是重新被拉回去。后面如果突破 {up_price}，回踩又不跌回 {reclaim_price} 下方，"
+            f"说明向上离开没有被拉回，走势继续按上升段推演。反过来，如果跌破 {weak_price} 后拉不回 {weak_price} 上方，"
+            f"说明这次离开失败，短线转弱。中期防线看 {mid_price or weak_price}，没有跌破前，只能说短线走弱或震荡，"
+            f"不能说大级别完全破坏；如果跌破并拉不回来，本轮上升推演就要作废。在 {low_price} - {high_price} 之间，"
+            f"先按震荡观察，不提前下结论。"
+        )
+    if up_price and weak_price:
+        return (
+            f"本轮走势先按{current_desc}看，现在方向还要等价格自己选择。向上只有突破 {up_price} 后，"
+            f"并且回踩不被拉回原区间，才算上升段继续；向下如果跌破 {weak_price} 后拉不回，走势就转弱。"
+            f"在这两个价位之间，先按震荡观察，不提前下结论。"
+        )
+    return (
+        f"本轮走势先按{current_desc}看。接下来重点看 {focus}。按缠论处理，先看大级别有没有离开关键中枢，"
+        f"再看小级别回踩是否被拉回；没有离开前按震荡观察，离开后不被拉回才按延续推演，"
+        f"跌破关键边界且拉不回则推演转弱。"
+    )
+
+
+def _plain_reading_from_radar(current_id: str, summary: str) -> str:
+    if current_id == "A":
+        return f"规则雷达已把走势归入 A 路径：{summary} 重点不是追涨，而是复核回踩和防线。"
+    if current_id == "C":
+        return f"规则雷达已把走势归入 C 路径：{summary} 原推演先停止，等新结构重建。"
+    return f"规则雷达当前把走势归入 B 路径：{summary} 现在不是结论，继续等事件归类。"
+
+
+def _empty_position_text(current_id: str) -> str:
+    if current_id == "A":
+        return "空仓视角不要追在情绪最热处，等回踩不破或执行级别确认后再复核。"
+    if current_id == "C":
+        return "空仓视角先不急着接，等失效后的新中枢或新买点重新出现。"
+    return "空仓视角先等 A 路径确认，不用在 B 路径里提前替市场下结论。"
+
+
+def _first_boundary_price(algorithm: dict, groups: list[str]) -> str:
+    boundaries = algorithm.get("boundaries") or {}
+    for group in groups:
+        for item in boundaries.get(group) or []:
+            value = item.get("value")
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                continue
+            if num > 0:
+                return f"{num:.2f}"
+    return ""
+
+
+def _plain_trend_desc(path: str, summary: str) -> str:
+    if path == "HIGH_VOLATILITY_OSCILLATION":
+        return "高位震荡选择"
+    if path == "UPWARD_MAJOR_WAVE":
+        return "上涨延续中的强弱确认"
+    if path == "PULLBACK_IN_UPTREND":
+        return "上涨后的回落验证"
+    if path == "BOTTOM_REPAIR":
+        return "底部修复后的方向选择"
+    if path == "DOWNWARD_DEFENSE":
+        return "下跌后的防守观察"
+    return summary or "震荡选择"
+
+
+def _current_scenario_from_confirmation(algorithm: dict) -> str:
+    state = (algorithm.get("a_state") or (algorithm.get("confirmation") or {}).get("state") or "")
+    if state.startswith("A_"):
+        return "A"
+    if state.startswith("C_"):
+        return "C"
+    if state.startswith("B_"):
+        return "B"
+    return ""
+
+
+def _current_scenario_from_deduction(deduction: dict) -> str:
+    for scenario in deduction.get("complete_classification") or []:
+        if scenario.get("state") == "CURRENT":
+            return scenario.get("code") or scenario.get("id") or ""
+    status = deduction.get("status") or ""
+    if status == "FAILED":
+        return "C"
+    return "B"
+
+
+def _first_trigger_text(algorithm: dict) -> str:
+    for item in algorithm.get("trigger_playbook") or []:
+        condition = item.get("condition")
+        then = item.get("then") or item.get("title")
+        if condition and then:
+            return f"{condition}，{then}"
+        if condition:
+            return condition
+    for item in algorithm.get("next_watch") or []:
+        if item:
+            return str(item)
+    return ""
+
+
+def _mistake_text(current_id: str, algorithm: dict, deduction: dict) -> str:
+    if current_id == "A":
+        return "最容易犯的错是把 A 触发当成无条件追涨，忽略执行前复核和防线。"
+    if current_id == "C" or (deduction.get("path_thesis") or {}).get("phase") == "推演失效":
+        return "最容易犯的错是用反弹愿望对抗失效边界，继续沿用已经作废的推演。"
+    if current_id == "B":
+        return "最容易犯的错是在 B 路径里提前动手，把等待确认误读成已经确认。"
+    action = algorithm.get("action_bias") or ""
+    if "WAIT" in action:
+        return "最容易犯的错是在 B 路径里提前动手，把等待确认误读成已经确认。"
+    return "最容易犯的错是只看一句结论，不看 A/B/C 的触发边界。"
+
+
+def _narrative_contradicts_algorithm(text: object, current_id: str, algorithm: dict) -> bool:
+    """AI 只负责翻译规则雷达；如果话术和规则状态冲突，服务端兜底纠正。"""
+    body = str(text or "")
+    if not body:
+        return False
+    state = algorithm.get("a_state") or (algorithm.get("confirmation") or {}).get("state") or ""
+    if current_id == "A" or state.startswith("A_"):
+        forbidden = (
+            "B路径",
+            "B 路径里",
+            "B 路径中",
+            "B 路径延长",
+            "B路径延长",
+            "当前处于B",
+            "当前处于 B",
+            "没有确认也没有破坏",
+            "等待A确认",
+            "等待 A 确认",
+            "等待5分钟买点确认",
+            "等待5分买点确认",
+            "等待5分钟是否形成新的买点",
+            "等待5分是否形成新的买点",
+        )
+        return any(token in body for token in forbidden)
+    if current_id == "C" or state.startswith("C_"):
+        forbidden = (
+            "A 路径已确认",
+            "A路径已确认",
+            "继续按上升段推演",
+            "无条件追涨",
+        )
+        return any(token in body for token in forbidden)
+    return False
 
 
 def _user_position_from_radar(radar_data: dict) -> Optional[dict]:

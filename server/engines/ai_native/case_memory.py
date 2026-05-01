@@ -11,6 +11,7 @@ from server.db.database import get_connection
 from server.engines.ai_native.schemas import (
     AIReasoningOutput,
     GateResult,
+    ModelRoute,
     SimilarCaseSummary,
     StructureTranscript,
 )
@@ -72,6 +73,7 @@ def save_reasoning_run(
     memory_context: SimilarCaseSummary,
     ai_output: Optional[AIReasoningOutput],
     gate_result: GateResult,
+    model_route: ModelRoute | None = None,
 ) -> Optional[int]:
     """Persist shadow run. Failure is non-blocking by design."""
     try:
@@ -82,9 +84,9 @@ def save_reasoning_run(
                 INSERT INTO ai_reasoning_runs (
                     user_id, symbol, mode, prompt_version, model_name,
                     structure_fingerprint, transcript_json, memory_context_json,
-                    ai_output_json, gate_result_json, gate_status, disclaimer
+                    ai_output_json, gate_result_json, gate_status, model_route_json, disclaimer
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -98,6 +100,7 @@ def save_reasoning_run(
                     ai_output.model_dump_json() if ai_output else None,
                     gate_result.model_dump_json(),
                     gate_result.status,
+                    model_route.model_dump_json() if model_route else None,
                     transcript.disclaimer,
                 ),
             )
@@ -117,4 +120,3 @@ def _loads(value: object) -> dict:
         return json.loads(str(value))
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
-

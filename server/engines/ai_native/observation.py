@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from server.db.database import get_connection
+from server.engines.ai_native.replay_evaluator import evaluate_reasoning_outcome, should_settle_created_at
 from server.engines.ai_native.schemas import AINativeRunSummary, ObservationSummary
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def list_reasoning_runs(
 
     sql = f"""
         SELECT id, user_id, symbol, mode, created_at, prompt_version, model_name,
-               structure_fingerprint, ai_output_json, gate_result_json, gate_status,
+               structure_fingerprint, ai_output_json, gate_result_json, gate_status, model_route_json,
                replay_status, replay_score, outcome_json
           FROM ai_reasoning_runs
          WHERE {' AND '.join(clauses)}
@@ -71,7 +72,7 @@ def review_reasoning_run(
         row = conn.execute(
             """
             SELECT id, user_id, symbol, mode, created_at, prompt_version, model_name,
-                   structure_fingerprint, ai_output_json, gate_result_json, gate_status,
+                   structure_fingerprint, ai_output_json, gate_result_json, gate_status, model_route_json,
                    replay_status, replay_score, outcome_json
               FROM ai_reasoning_runs
              WHERE id = ? AND user_id = ?
@@ -111,7 +112,7 @@ def review_reasoning_run(
         reviewed = conn.execute(
             """
             SELECT id, user_id, symbol, mode, created_at, prompt_version, model_name,
-                   structure_fingerprint, ai_output_json, gate_result_json, gate_status,
+                   structure_fingerprint, ai_output_json, gate_result_json, gate_status, model_route_json,
                    replay_status, replay_score, outcome_json
               FROM ai_reasoning_runs
              WHERE id = ? AND user_id = ?
@@ -169,6 +170,79 @@ def summarize_observation(*, user_id: int, target_review_count: int = TARGET_REV
     )
 
 
+def pending_runs_for_auto_settlement(
+    *,
+    user_id: int,
+    limit: int = 20,
+    today: str,
+    force: bool = False,
+) -> list[dict]:
+    """Load PENDING runs old enough for automatic next-session settlement."""
+    limit = max(1, min(limit, 100))
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, symbol, mode, created_at, prompt_version, model_name,
+                   structure_fingerprint, transcript_json, ai_output_json, gate_result_json,
+                   gate_status, model_route_json, replay_status, replay_score, outcome_json
+              FROM ai_reasoning_runs
+             WHERE user_id = ? AND replay_status = 'PENDING'
+             ORDER BY created_at ASC, id ASC
+             LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return [
+            dict(row)
+            for row in rows
+            if should_settle_created_at(str(row["created_at"] or ""), today=today, force=force)
+        ]
+    finally:
+        conn.close()
+
+
+def settle_reasoning_run_with_radar(
+    *,
+    run_row: dict,
+    current_radar_data: dict,
+    reviewer: str = "auto",
+) -> AINativeRunSummary:
+    """Settle one pending run from current Radar facts."""
+    outcome = evaluate_reasoning_outcome(run_row, current_radar_data, reviewer=reviewer)
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE ai_reasoning_runs
+               SET replay_status = 'REVIEWED',
+                   replay_score = ?,
+                   outcome_json = ?
+             WHERE id = ? AND user_id = ?
+            """,
+            (
+                outcome["replay_score"],
+                json.dumps(outcome, ensure_ascii=False),
+                run_row["id"],
+                run_row["user_id"],
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT id, user_id, symbol, mode, created_at, prompt_version, model_name,
+                   structure_fingerprint, ai_output_json, gate_result_json, gate_status, model_route_json,
+                   replay_status, replay_score, outcome_json
+              FROM ai_reasoning_runs
+             WHERE id = ? AND user_id = ?
+            """,
+            (run_row["id"], run_row["user_id"]),
+        ).fetchone()
+        return _row_to_summary(row)
+    finally:
+        conn.close()
+
+
 def _row_to_summary(row) -> AINativeRunSummary:
     output = _loads(row["ai_output_json"])
     gate = _loads(row["gate_result_json"])
@@ -190,6 +264,7 @@ def _row_to_summary(row) -> AINativeRunSummary:
         current_hypothesis=str(output.get("current_hypothesis") or "UNKNOWN"),
         diagnosis=str(output.get("diagnosis") or ""),
         violation_codes=[str(item.get("code")) for item in violations if item.get("code")],
+        model_route=_loads(row["model_route_json"]) or None,
     )
 
 

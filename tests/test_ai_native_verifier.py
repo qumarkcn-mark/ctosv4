@@ -3,7 +3,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server.engines.ai_native.schemas import AllowedPrice, StructureTranscript
+from server.engines.ai_native.schemas import (
+    AllowedPrice,
+    ChartOverlayAlignment,
+    StructureSnapshot,
+    StructureTranscript,
+)
 from server.engines.ai_native.verifier import verify_ai_reasoning
 
 
@@ -14,6 +19,17 @@ def transcript():
         generated_at="2026-04-29T10:00:00+08:00",
         fingerprint_version="fingerprint.v1",
         structure_fingerprint="EMPTY|UPWARD_MAJOR_WAVE",
+        structure_snapshot=StructureSnapshot(
+            chart_alignment=ChartOverlayAlignment(status="ALIGNED"),
+        ),
+        reasoning_evidence_pack={
+            "current_price": 12.3,
+            "commander_context": {
+                "must_use_levels": {
+                    "support": {"price": 15.85},
+                }
+            },
+        },
         allowed_prices=[
             AllowedPrice(label="confirm", value=12.8, source="test"),
             AllowedPrice(label="support", value=11.9, source="test"),
@@ -22,64 +38,30 @@ def transcript():
     )
 
 
-def good_output():
+def good_markdown():
+    return """**1. 【全局语境定性】**
+日线离开后，30 分钟回踩验证中。
+
+**2. 【防守看门狗】**
+11.90 到 12.80 内先按观察处理。
+
+**3. 【推演与应对沙盘】**
+如果重新站回 12.80，延续路径权重提高；如果跌回 11.90，失效路径升权。
+仅供参考，不构成投资建议。"""
+
+
+def good_output(markdown=None):
+    text = markdown or good_markdown()
     return {
-        "diagnosis": "日线离开后，30分回踩验证中",
-        "current_hypothesis": "B",
-        "reasoning_boundary": "11.90 到 12.80 内先按观察处理",
-        "hypotheses": [
-            {
-                "id": "A",
-                "name": "向上确认",
-                "current_applicability": "WAITING",
-                "evidence": ["日线离开"],
-                "trigger": "站稳 12.80 后观察回踩",
-                "invalidation": "跌回 11.90 后拉不回",
-                "next_focus": "只盯 12.80 是否站稳",
-                "empty_position_view": "空仓等确认，不提前下结论",
-                "holding_position_view": "持仓看回踩是否守住",
-            },
-            {
-                "id": "B",
-                "name": "区间观察",
-                "current_applicability": "CURRENT",
-                "evidence": ["区间未离开"],
-                "trigger": "继续在 11.90 到 12.80 内震荡",
-                "invalidation": "离开区间后重新分类",
-                "next_focus": "只盯区间边界",
-                "empty_position_view": "空仓等待分类",
-                "holding_position_view": "持仓看防线",
-            },
-            {
-                "id": "C",
-                "name": "向下失效",
-                "current_applicability": "WAITING",
-                "evidence": ["失效边界明确"],
-                "trigger": "跌破 11.90 后拉不回",
-                "invalidation": "重新站回 11.90 后再观察",
-                "next_focus": "只盯 11.90",
-                "empty_position_view": "空仓等待新结构",
-                "holding_position_view": "持仓收紧风险参考",
-            },
-            {
-                "id": "D",
-                "name": "数据不足",
-                "current_applicability": "WAITING",
-                "evidence": ["数据可能过期"],
-                "trigger": "结构数据过期",
-                "invalidation": "数据恢复后重新推理",
-                "next_focus": "只盯数据新鲜度",
-                "empty_position_view": "空仓等待数据恢复",
-                "holding_position_view": "持仓先看规则雷达防线",
-            },
-        ],
-        "operator_mistake": "最容易犯的错是在区间内提前替市场下结论",
-        "coach_talk": "当前不是预测涨跌，而是等待分类完成。仅供参考，不构成投资建议",
+        "raw_reasoning_md": text,
+        "coach_filtered_md": text,
+        "semantic_filter_status": "PASS",
+        "semantic_filter_violations": [],
         "disclaimer": "仅供参考，不构成投资建议",
     }
 
 
-def test_verifier_passes_complete_output():
+def test_verifier_passes_filtered_markdown():
     output, gate = verify_ai_reasoning(good_output(), transcript())
 
     assert output is not None
@@ -87,24 +69,75 @@ def test_verifier_passes_complete_output():
     assert gate.score == 100
 
 
-def test_verifier_rewrites_missing_c_path():
-    raw = good_output()
-    raw["hypotheses"] = [item for item in raw["hypotheses"] if item["id"] != "C"]
+def test_verifier_rewrites_missing_sections():
+    _, gate = verify_ai_reasoning(good_output("只看 12.80。仅供参考，不构成投资建议"), transcript())
+
+    assert gate.status == "REWRITE"
+    assert any(item.code == "MISSING_MARKDOWN_SECTIONS" for item in gate.violations)
+
+
+def test_verifier_accepts_plain_section_headings():
+    text = good_markdown().replace("**1. 【全局语境定性】**", "# 全局语境定性")
+    text = text.replace("**2. 【防守看门狗】**", "# 防守看门狗")
+    text = text.replace("**3. 【推演与应对沙盘】**", "# 推演与应对沙盘")
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "PASS"
+
+
+def test_verifier_allows_coach_execution_terms():
+    text = good_markdown() + "\n突破 12.80 后买入，跌破 11.90 后清仓。"
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "PASS"
+
+
+def test_verifier_rewrites_a_share_short_terms():
+    text = good_markdown() + "\n跌破 11.90 后做空，空头目标看 10.80。"
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "REWRITE"
+    violation = next(item for item in gate.violations if item.code == "A_SHARE_SHORT_SELLING")
+    assert "做空" in violation.evidence
+    assert "空头目标" in violation.evidence
+
+
+def test_verifier_fallbacks_extreme_certainty_terms():
+    text = good_markdown() + "\n这里必涨，稳赚。"
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "FALLBACK"
+    assert any(item.code == "HARD_FORBIDDEN_TERMS" for item in gate.violations)
+
+
+def test_verifier_rewrites_unknown_prices():
+    text = good_markdown() + "\n额外观察 13.27。"
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "REWRITE"
+    violation = next(item for item in gate.violations if item.code == "UNKNOWN_PRICE_REFERENCE")
+    assert "13.27" in violation.evidence
+
+
+def test_verifier_allows_current_price_and_allowed_prices():
+    text = good_markdown() + "\n当前价 12.30，确认位 12.80，防守线 11.90，日内低点 15.85，距离 0.27%。"
+
+    _, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert gate.status == "PASS"
+
+
+def test_verifier_rewrites_missing_disclaimer():
+    text = good_markdown().replace("仅供参考，不构成投资建议。", "")
+    raw = good_output(text)
+    raw["disclaimer"] = ""
 
     _, gate = verify_ai_reasoning(raw, transcript())
 
     assert gate.status == "REWRITE"
-    assert any(item.code == "MISSING_HYPOTHESES" for item in gate.violations)
-
-
-def test_verifier_fallbacks_unknown_price_and_trading_command():
-    raw = good_output()
-    raw["coach_talk"] = "突破 13.27 就买入。仅供参考，不构成投资建议"
-
-    _, gate = verify_ai_reasoning(raw, transcript())
-
-    assert gate.status == "FALLBACK"
-    codes = {item.code for item in gate.violations}
-    assert "UNKNOWN_PRICE" in codes
-    assert "FORBIDDEN_TRADING_COMMAND" in codes
-
+    assert any(item.code == "MISSING_DISCLAIMER" for item in gate.violations)

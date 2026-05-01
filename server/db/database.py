@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
     ai_output_json TEXT,
     gate_result_json TEXT NOT NULL,
     gate_status TEXT NOT NULL,
+    model_route_json TEXT,
     replay_status TEXT NOT NULL DEFAULT 'PENDING',
     replay_score REAL,
     outcome_json TEXT,
@@ -516,12 +517,14 @@ def run_migrations(conn: sqlite3.Connection):
             ai_output_json TEXT,
             gate_result_json TEXT NOT NULL,
             gate_status TEXT NOT NULL,
+            model_route_json TEXT,
             replay_status TEXT NOT NULL DEFAULT 'PENDING',
             replay_score REAL,
             outcome_json TEXT,
             disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
         )
         """,
+        "ALTER TABLE ai_reasoning_runs ADD COLUMN model_route_json TEXT",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC)",
