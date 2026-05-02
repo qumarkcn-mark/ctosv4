@@ -147,8 +147,13 @@ def test_init_migrations_create_daily_playbook_tables():
         row["name"]
         for row in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
+    item_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(daily_playbook_items)").fetchall()
+    }
     assert {"daily_playbooks", "daily_playbook_items"}.issubset(tables)
     assert {"playbook_item_id", "plan_relationship", "discipline_tag", "coach_event_id"}.issubset(trade_columns)
+    assert {"source", "source_json"}.issubset(item_columns)
 
 
 def test_run_migrations_adds_position_entry_thesis_json():

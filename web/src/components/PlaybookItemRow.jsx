@@ -13,12 +13,40 @@ const STATUS_LABEL = {
   ENGINE_ERROR: '结构失败',
 }
 
+const SOURCE_LABEL = {
+  positions: '持仓',
+  scanner: '机会池',
+  watchlist: '自选股',
+  unknown: '来源待定',
+}
+
+function eventType(item) {
+  if (item.status === 'STALE' || item.status === 'ENGINE_ERROR') return '数据复核'
+  if (item.status === 'TRIGGERED') return '条件触发'
+  if (item.source === 'positions' || item.mode === 'HOLDING') return '持仓防线'
+  return '观察机会'
+}
+
+function itemSource(item) {
+  if (item.source) return item.source
+  if (item.mode === 'HOLDING') return 'positions'
+  return 'unknown'
+}
+
 function planTitle(item) {
   return item.trigger?.plan_title || item.plan_id || '结构计划'
 }
 
 function invalidText(item) {
+  const aiNative = item.trigger?.ai_native
+  if (aiNative?.next_focus) return aiNative.next_focus
   return item.invalidation?.invalid_if || '等待 Radar 给出失效条件'
+}
+
+function aiBadge(item) {
+  const aiNative = item.trigger?.ai_native
+  if (!aiNative?.primary_path) return null
+  return `${aiNative.primary_name || aiNative.primary_path} ${Number(aiNative.primary_score || 0)}`
 }
 
 export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }) {
@@ -33,6 +61,12 @@ export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }
         if (event.key === 'Enter') onSelect(item)
       }}
     >
+      <div className="playbook-event-cell">
+        <span className={`playbook-event playbook-event--${String(item.status).toLowerCase()}`}>
+          {SOURCE_LABEL[itemSource(item)] || eventType(item)}
+        </span>
+        <em>{eventType(item)}</em>
+      </div>
       <div className="playbook-symbol-cell">
         <span className="playbook-symbol mono">{item.symbol}</span>
         {item.name && <span className="playbook-name">{item.name}</span>}
@@ -48,7 +82,7 @@ export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }
       </div>
       <div className="playbook-status-cell">
         <span className={`playbook-status playbook-status--${String(item.status).toLowerCase()}`}>
-          {STATUS_LABEL[item.status] || item.status}
+          {aiBadge(item) || STATUS_LABEL[item.status] || item.status}
         </span>
       </div>
       <div className="playbook-row-actions">
@@ -59,7 +93,7 @@ export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }
             onViewInChan?.(item.symbol, item.name)
           }}
         >
-          去看盘
+          雷达
         </button>
       </div>
     </div>

@@ -124,6 +124,8 @@ def make_conn():
             user_id INTEGER NOT NULL,
             symbol TEXT NOT NULL,
             name TEXT,
+            source TEXT,
+            source_json TEXT,
             mode TEXT NOT NULL,
             plan_id TEXT,
             strategy_id TEXT,
@@ -134,6 +136,27 @@ def make_conn():
             response_json TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE ai_reasoning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            prompt_version TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            structure_fingerprint TEXT NOT NULL,
+            transcript_json TEXT NOT NULL,
+            memory_context_json TEXT,
+            ai_output_json TEXT,
+            gate_result_json TEXT NOT NULL,
+            gate_status TEXT NOT NULL,
+            model_route_json TEXT,
+            replay_status TEXT NOT NULL DEFAULT 'PENDING',
+            replay_score REAL,
+            outcome_json TEXT,
+            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
         );
         """
     )
@@ -187,10 +210,80 @@ def test_generate_today_playbook_is_idempotent_and_positions_first(monkeypatch):
 
     assert first["id"] == second["id"]
     assert [item["symbol"] for item in first["items"]] == ["sh600519", "sz000001"]
+    assert [item["source"] for item in first["items"]] == ["positions", "scanner"]
+    assert first["items"][0]["source_json"]["position"]["quantity"] == 100
+    assert first["items"][1]["source_json"]["scanner"]["strategy"] == "war1"
     assert first["items"][0]["mode"] == "HOLDING"
     assert first["items"][1]["mode"] == "EMPTY"
     assert conn.execute("SELECT COUNT(*) FROM daily_playbook_items").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM coach_events").fetchone()[0] == 2
+
+
+def test_generate_today_playbook_embeds_ai_native_battle_focus(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+
+    async def risky_holding_radar(symbol, user_id):
+        return {
+            "status": "success",
+            "data": {
+                "symbol": symbol,
+                "mode": "HOLDING",
+                "freshness": {"is_stale": False},
+                "structure": {
+                    "levels": {
+                        "day": {"level": "day", "price": 9.85, "state": "UPWARD_LEAVING", "zg": 10.8, "zd": 9.2},
+                        "30": {"level": "30", "price": 9.85, "state": "IN_CENTER_OSC", "zg": 10.4, "zd": 9.7, "dd": 9.6},
+                        "5": {"level": "5", "price": 9.85, "state": "DOWN", "zg": 10.1, "zd": 9.8},
+                    }
+                },
+                "algorithm_v2": {
+                    "path": "PULLBACK",
+                    "phase": "DEFENSE",
+                    "current_scenario_id": "B",
+                    "boundaries": {
+                        "confirm": [{"label": "确认", "value": 10.4}],
+                        "maintain": [{"label": "观察", "value": 9.8}],
+                        "invalidate": [{"label": "失效", "value": 9.7}],
+                    },
+                },
+                "strategy": {"strategy_id": "holding_stage_manager"},
+                "position_context": {
+                    "is_holding": True,
+                    "label": "持仓观察",
+                    "avg_cost": 10.0,
+                    "current_price": 9.85,
+                    "pnl_pct": -6.0,
+                    "risk_flags": ["STRUCTURE_AGAINST_POSITION"],
+                },
+                "coach_action": {
+                    "priority": "HIGH",
+                    "focus": "只看防守线是否被收回",
+                    "risk_lines": [{"label": "风控边界", "price": 9.7, "distance_pct": -1.52}],
+                    "nearest_risk_line": {"label": "风控边界", "price": 9.7, "distance_pct": -1.52},
+                },
+                "holding_plan": {
+                    "plan_id": "holding_stage_manager",
+                    "status": "WATCHING",
+                    "risk": {"invalid_if": "跌破台阶止损"},
+                },
+            },
+        }
+
+    monkeypatch.setattr(playbook, "_load_radar_contract", risky_holding_radar)
+    conn.execute(
+        "INSERT INTO positions (user_id, symbol, name, quantity, avg_cost) VALUES (1, 'sz300394', '天孚通信', 100, 10.0)"
+    )
+    conn.commit()
+
+    request = playbook.GeneratePlaybookRequest(user_id=1, sources=["positions"], max_items=8)
+    payload = asyncio.run(playbook.generate_today_playbook(request))["data"]
+    item = payload["items"][0]
+
+    assert item["status"] == "TRIGGERED"
+    assert item["trigger"]["ai_native"]["priority"] == "HIGH"
+    assert item["trigger"]["ai_native"]["nearest_risk_line"]["price"] == 9.7
+    assert "持仓先看" in item["trigger"]["ai_native"]["next_focus"]
 
 
 def test_record_item_response_updates_item_and_logs_event(monkeypatch):
@@ -215,6 +308,105 @@ def test_record_item_response_updates_item_and_logs_event(monkeypatch):
     event = conn.execute("SELECT * FROM coach_events").fetchone()
     assert event["event_type"] == "USER_MARKED_ACTION"
     assert "PLAYBOOK_EXECUTED" in event["evidence_json"]
+
+
+def test_generate_today_report_persists_summary(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+    today = playbook._today()
+    ai_native = {
+        "primary_path": "C",
+        "primary_name": "转弱失效",
+        "primary_score": 52,
+        "priority": "HIGH",
+        "nearest_risk_line": {"label": "风控边界", "price": 9.7},
+    }
+    conn.execute("INSERT INTO daily_playbooks (id, user_id, trade_date) VALUES (1, 1, ?)", (today,))
+    conn.execute(
+        """
+        INSERT INTO daily_playbook_items (
+            id, playbook_id, user_id, symbol, mode, status, trigger_json, response_json
+        )
+        VALUES (9, 1, 1, 'sz300394', 'HOLDING', 'IGNORED', ?, ?)
+        """,
+        (
+            playbook._json({"ai_native": ai_native}),
+            playbook._json({"response": "IGNORED"}),
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO trades (user_id, symbol, direction, price, quantity, amount, plan_relationship, traded_at)
+        VALUES (1, 'sz300394', 'BUY', 10.0, 100, 1000.0, 'UNPLANNED', ?)
+        """,
+        (f"{today}T10:00:00",),
+    )
+    conn.execute(
+        """
+        INSERT INTO ai_reasoning_runs (
+            user_id, symbol, mode, created_at, prompt_version, model_name,
+            structure_fingerprint, transcript_json, ai_output_json, gate_result_json,
+            gate_status, replay_status, replay_score, outcome_json
+        )
+        VALUES (1, 'sz300394', 'HOLDING', ?, 'ai_native_radar.v1', 'deepseek-v4-pro',
+                'fp', '{}', '{}', '{"score": 90}', 'PASS', 'REVIEWED', 43.0, ?)
+        """,
+        (
+            f"{today}T15:05:00",
+            playbook._json({
+                "predicted_hypothesis": "A",
+                "actual_hypothesis": "C",
+                "matched": False,
+                "tags": ["OVER_OPTIMISTIC", "REPEATED_DIVERGENCE_RISK"],
+                "sample_quality": "HIGH",
+                "learning_weight": 1.2,
+                "notes": "跌破失效边界",
+            }),
+        ),
+    )
+    conn.commit()
+
+    response = playbook.generate_today_report(playbook.PlaybookReportRequest(user_id=1))
+
+    report = response["data"]
+    assert report["persisted"] is True
+    assert report["summary"]["high_priority_items"] == 1
+    assert report["summary"]["unplanned_trades"] == 1
+    assert report["summary"]["ai_reviewed_runs"] == 1
+    assert report["summary"]["ai_wrong_runs"] == 1
+    assert report["ai_path_distribution"]["C"] == 1
+    assert report["ai_settlement"]["wrong_runs"] == 1
+    assert report["ai_settlement"]["tag_counts"]["REPEATED_DIVERGENCE_RISK"] == 1
+    assert report["ai_settlement"]["quality_counts"]["HIGH"] == 1
+    assert "高优先级风险项被忽略" in report["discipline_flags"]
+    assert "存在 AI 推演未兑现" in report["discipline_flags"]
+    stored = conn.execute("SELECT status, summary_json FROM daily_playbooks WHERE id = 1").fetchone()
+    assert stored["status"] == "REVIEWED"
+    assert "daily_playbook_report.v1" in stored["summary_json"]
+
+
+def test_playbook_payload_backfills_legacy_item_source():
+    conn = make_conn()
+    today = playbook._today()
+    conn.execute(
+        "INSERT INTO positions (user_id, symbol, name, quantity, avg_cost) VALUES (1, 'sh600519', '贵州茅台', 100, 100.0)"
+    )
+    conn.execute("INSERT INTO daily_playbooks (id, user_id, trade_date) VALUES (1, 1, ?)", (today,))
+    conn.execute(
+        """
+        INSERT INTO daily_playbook_items (id, playbook_id, user_id, symbol, mode, status)
+        VALUES (8, 1, 1, 'sh600519', 'HOLDING', 'WATCHING')
+        """
+    )
+    conn.commit()
+
+    payload = playbook._playbook_payload(conn, 1, today)
+
+    assert payload["items"][0]["source"] == "positions"
+    assert payload["items"][0]["source_json"]["position"]["avg_cost"] == 100.0
+    stored = conn.execute("SELECT source, source_json FROM daily_playbook_items WHERE id = 8").fetchone()
+    assert stored["source"] == "positions"
+    assert "avg_cost" in stored["source_json"]
 
 
 def test_classify_trade_plan_updates_trade_and_logs_event(monkeypatch):

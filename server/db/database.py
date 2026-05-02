@@ -319,6 +319,8 @@ CREATE TABLE IF NOT EXISTS daily_playbook_items (
     user_id INTEGER NOT NULL REFERENCES users(id),
     symbol TEXT NOT NULL,
     name TEXT,
+    source TEXT,
+    source_json TEXT,
     mode TEXT NOT NULL,
     plan_id TEXT,
     strategy_id TEXT,
@@ -399,6 +401,9 @@ def run_migrations(conn: sqlite3.Connection):
         "ALTER TABLE trades ADD COLUMN plan_relationship TEXT DEFAULT 'UNKNOWN'",
         "ALTER TABLE trades ADD COLUMN discipline_tag TEXT",
         "ALTER TABLE trades ADD COLUMN coach_event_id TEXT",
+        # 迁移 M011：daily_playbook_items 记录候选来源，用于作战台和复盘链路
+        "ALTER TABLE daily_playbook_items ADD COLUMN source TEXT",
+        "ALTER TABLE daily_playbook_items ADD COLUMN source_json TEXT",
         # 迁移 M004：alerts 表补充新类型（不修改 CHECK 约束，软兼容）
         # 迁移 M005：scan_results 表新增 fundamental（LLM 调研原始上下文）
         "ALTER TABLE scan_results ADD COLUMN fundamental TEXT",
@@ -486,6 +491,8 @@ def run_migrations(conn: sqlite3.Connection):
             user_id INTEGER NOT NULL REFERENCES users(id),
             symbol TEXT NOT NULL,
             name TEXT,
+            source TEXT,
+            source_json TEXT,
             mode TEXT NOT NULL,
             plan_id TEXT,
             strategy_id TEXT,
