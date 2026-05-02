@@ -369,6 +369,124 @@ CREATE TABLE IF NOT EXISTS scan_results (
 CREATE INDEX IF NOT EXISTS idx_scan_date_status ON scan_results(scan_date, status);
 CREATE INDEX IF NOT EXISTS idx_scan_symbol      ON scan_results(symbol);
 
+-- ── Paper Trading：日内 T 模拟盘实验台 ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_accounts (
+    paper_account_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    cash REAL NOT NULL,
+    realized_pnl REAL DEFAULT 0,
+    trade_count INTEGER DEFAULT 0,
+    metadata_json TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    total_qty INTEGER NOT NULL,
+    available_qty INTEGER NOT NULL,
+    protected_base_qty INTEGER NOT NULL,
+    avg_cost REAL NOT NULL,
+    last_price REAL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (paper_account_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS paper_replay_runs (
+    run_id TEXT PRIMARY KEY,
+    paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT,
+    strategy_id TEXT NOT NULL,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ended_at DATETIME,
+    config_json TEXT DEFAULT '{}',
+    metrics_json TEXT DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'RUNNING'
+);
+
+CREATE TABLE IF NOT EXISTS paper_intents (
+    intent_id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES paper_replay_runs(run_id),
+    paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
+    quantity INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    strategy_id TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    linked_intent_id TEXT,
+    created_at DATETIME NOT NULL,
+    price_policy_json TEXT DEFAULT '{}',
+    reason_json TEXT DEFAULT '{}',
+    risk_checks_json TEXT DEFAULT '[]',
+    simulator INTEGER NOT NULL DEFAULT 1,
+    dry_run INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS paper_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES paper_replay_runs(run_id),
+    paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    decision_status TEXT NOT NULL,
+    reason TEXT,
+    intent_id TEXT REFERENCES paper_intents(intent_id),
+    evidence_json TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS paper_fills (
+    fill_id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL REFERENCES paper_intents(intent_id),
+    run_id TEXT REFERENCES paper_replay_runs(run_id),
+    paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
+    quantity INTEGER NOT NULL,
+    fill_price REAL NOT NULL,
+    amount REAL NOT NULL,
+    commission REAL DEFAULT 0,
+    stamp_tax REAL DEFAULT 0,
+    transfer_fee REAL DEFAULT 0,
+    slippage REAL DEFAULT 0,
+    price_source TEXT,
+    fill_status TEXT NOT NULL,
+    reason TEXT,
+    filled_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_feature_cache (
+    cache_key TEXT PRIMARY KEY,
+    cache_version TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    level_chain_json TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    cchan_preset TEXT NOT NULL,
+    features_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_accounts_user ON paper_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_account ON paper_positions(paper_account_id);
+CREATE INDEX IF NOT EXISTS idx_paper_replay_user ON paper_replay_runs(user_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_paper_decisions_run ON paper_decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_decisions_reason ON paper_decisions(user_id, symbol, reason);
+CREATE INDEX IF NOT EXISTS idx_paper_intents_run ON paper_intents(run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_intents_symbol ON paper_intents(user_id, symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_paper_fills_run ON paper_fills(run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_fills_symbol ON paper_fills(user_id, symbol, filled_at);
+CREATE INDEX IF NOT EXISTS idx_paper_feature_cache_symbol_time ON paper_feature_cache(symbol, as_of);
+
 """
 
 
@@ -508,6 +626,130 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_user_date ON daily_playbooks(user_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_playbook ON daily_playbook_items(playbook_id)",
         "CREATE INDEX IF NOT EXISTS idx_daily_playbook_items_symbol ON daily_playbook_items(user_id, symbol)",
+        # 迁移 M012：Paper Trading 模拟盘实验台
+        """
+        CREATE TABLE IF NOT EXISTS paper_accounts (
+            paper_account_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            cash REAL NOT NULL,
+            realized_pnl REAL DEFAULT 0,
+            trade_count INTEGER DEFAULT 0,
+            metadata_json TEXT DEFAULT '{}',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_positions (
+            paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id) ON DELETE CASCADE,
+            symbol TEXT NOT NULL,
+            total_qty INTEGER NOT NULL,
+            available_qty INTEGER NOT NULL,
+            protected_base_qty INTEGER NOT NULL,
+            avg_cost REAL NOT NULL,
+            last_price REAL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (paper_account_id, symbol)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_replay_runs (
+            run_id TEXT PRIMARY KEY,
+            paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT,
+            strategy_id TEXT NOT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            ended_at DATETIME,
+            config_json TEXT DEFAULT '{}',
+            metrics_json TEXT DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'RUNNING'
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_intents (
+            intent_id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES paper_replay_runs(run_id),
+            paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
+            quantity INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            strategy_id TEXT NOT NULL,
+            strategy_version TEXT NOT NULL,
+            linked_intent_id TEXT,
+            created_at DATETIME NOT NULL,
+            price_policy_json TEXT DEFAULT '{}',
+            reason_json TEXT DEFAULT '{}',
+            risk_checks_json TEXT DEFAULT '[]',
+            simulator INTEGER NOT NULL DEFAULT 1,
+            dry_run INTEGER NOT NULL DEFAULT 1
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_decisions (
+            decision_id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES paper_replay_runs(run_id),
+            paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            decision_status TEXT NOT NULL,
+            reason TEXT,
+            intent_id TEXT REFERENCES paper_intents(intent_id),
+            evidence_json TEXT DEFAULT '{}',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_fills (
+            fill_id TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL REFERENCES paper_intents(intent_id),
+            run_id TEXT REFERENCES paper_replay_runs(run_id),
+            paper_account_id TEXT NOT NULL REFERENCES paper_accounts(paper_account_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
+            quantity INTEGER NOT NULL,
+            fill_price REAL NOT NULL,
+            amount REAL NOT NULL,
+            commission REAL DEFAULT 0,
+            stamp_tax REAL DEFAULT 0,
+            transfer_fee REAL DEFAULT 0,
+            slippage REAL DEFAULT 0,
+            price_source TEXT,
+            fill_status TEXT NOT NULL,
+            reason TEXT,
+            filled_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS paper_feature_cache (
+            cache_key TEXT PRIMARY KEY,
+            cache_version TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            level_chain_json TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            cchan_preset TEXT NOT NULL,
+            features_json TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_paper_accounts_user ON paper_accounts(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_positions_account ON paper_positions(paper_account_id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_replay_user ON paper_replay_runs(user_id, started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_decisions_run ON paper_decisions(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_decisions_reason ON paper_decisions(user_id, symbol, reason)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_intents_run ON paper_intents(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_intents_symbol ON paper_intents(user_id, symbol, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_fills_run ON paper_fills(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_fills_symbol ON paper_fills(user_id, symbol, filled_at)",
+        "CREATE INDEX IF NOT EXISTS idx_paper_feature_cache_symbol_time ON paper_feature_cache(symbol, as_of)",
         # 迁移 M013：AI Native Radar 影子系统运行记录
         """
         CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
