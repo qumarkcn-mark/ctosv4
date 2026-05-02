@@ -46,12 +46,40 @@ def tdx_minute_status(symbol: Optional[str] = None, vipdoc: str = TDX_VIPDOC) ->
         }
     if symbol:
         path = tdx_minute_file_path(symbol, vipdoc)
+        if not Path(path).exists():
+            return {
+                "available": False,
+                "provider": "tdx_local_minute",
+                "vipdoc": str(root),
+                "path": path,
+                "reason": "MINUTE_FILE_NOT_FOUND",
+            }
+        try:
+            if os.path.getsize(path) <= 0:
+                return {
+                    "available": False,
+                    "provider": "tdx_local_minute",
+                    "vipdoc": str(root),
+                    "path": path,
+                    "reason": "MINUTE_FILE_EMPTY",
+                }
+            with open(path, "rb") as file:
+                file.read(1)
+        except OSError as exc:
+            return {
+                "available": False,
+                "provider": "tdx_local_minute",
+                "vipdoc": str(root),
+                "path": path,
+                "reason": "MINUTE_FILE_READ_ERROR",
+                "error": str(exc),
+            }
         return {
-            "available": Path(path).exists(),
+            "available": True,
             "provider": "tdx_local_minute",
             "vipdoc": str(root),
             "path": path,
-            "reason": "" if Path(path).exists() else "MINUTE_FILE_NOT_FOUND",
+            "reason": "",
         }
     return {
         "available": True,
@@ -65,6 +93,7 @@ def read_tdx_1m_klines(
     symbol: str,
     limit: int = 240,
     vipdoc: str = TDX_VIPDOC,
+    start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> list[dict]:
     """Read local TDX .lc1 rows and return CT-OS kline dicts.
@@ -77,14 +106,21 @@ def read_tdx_1m_klines(
     if not os.path.isfile(path):
         return []
 
-    row_count = os.path.getsize(path) // RECORD_SIZE
+    try:
+        row_count = os.path.getsize(path) // RECORD_SIZE
+    except OSError:
+        return []
     if row_count <= 0:
         return []
 
-    read_count = max(1, min(int(limit), 5000))
-    # Read extra tail rows so date filtering still has enough room.
-    tail_count = min(row_count, max(read_count * 3, read_count))
-    rows = _read_lc1_tail(path, tail_count, parsed.canonical)
+    read_count = max(1, min(int(limit), 20000))
+    tail_count = row_count if start_date else min(row_count, max(read_count * 3, read_count))
+    try:
+        rows = _read_lc1_tail(path, tail_count, parsed.canonical)
+    except OSError:
+        return []
+    if start_date:
+        rows = [row for row in rows if row["date"] >= start_date]
     if end_date:
         rows = [row for row in rows if row["date"] <= end_date]
     return rows[-read_count:]
@@ -146,4 +182,3 @@ def _decode_lc1_timestamp(date_code: int, minute_code: int) -> Optional[str]:
 def encode_lc1_date(year: int, month: int, day: int) -> int:
     """Encode a TDX lc1 date code. Intended for tests and fixture generation."""
     return (year - 2004) * 2048 + month * 100 + day
-

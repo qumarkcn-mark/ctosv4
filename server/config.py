@@ -54,6 +54,9 @@ PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔
 QMT_BRIDGE_URL = os.getenv("QMT_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
 QMT_BRIDGE_TIMEOUT = float(os.getenv("QMT_BRIDGE_TIMEOUT", "2"))
 
+# QMT 日志行情旁路，只用于盘中 preview 价，不作为正式结构或执行依据。
+QMT_LOG_BRIDGE_URL = os.getenv("QMT_LOG_BRIDGE_URL", "http://127.0.0.1:8766").rstrip("/")
+
 # TDX 本地数据目录。当前只读 1 分钟展示/回放，不作为实时确认源。
 TDX_VIPDOC = os.getenv("TDX_VIPDOC", "/Volumes/tdx_vipdoc")
 
