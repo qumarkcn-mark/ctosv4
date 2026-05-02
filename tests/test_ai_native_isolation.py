@@ -217,6 +217,43 @@ def test_ai_native_passes_request_user_id_to_llm(monkeypatch, tmp_path):
     assert response.model_route.model_name
 
 
+def test_simple_route_ignores_user_thinking_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = sqlite3.connect(database.DB_PATH)
+    conn.execute(
+        "UPDATE users SET settings_json = ? WHERE id = 1",
+        (
+            json.dumps(
+                {
+                    "ai_native_radar_provider": "deepseek",
+                    "ai_native_radar_thinking_enabled": True,
+                    "ai_native_radar_reasoning_effort": "high",
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    route = ModelRoute(
+        tier="simple",
+        difficulty_score=12,
+        model_name="deepseek-v4-pro",
+        thinking_enabled=False,
+        reasoning_effort="high",
+        max_tokens=4096,
+        timeout_seconds=45,
+        reasons=["结构清晰"],
+    )
+
+    reasoning_orchestrator._apply_user_model_settings(route, user_id=1)
+
+    assert route.tier == "simple"
+    assert route.thinking_enabled is False
+    assert route.timeout_seconds == 45
+
+
 def test_rewrite_gate_keeps_ai_reasoning_visible():
     transcript = compile_structure_transcript(make_radar_contract())
     output = {

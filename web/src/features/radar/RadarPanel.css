@@ -180,19 +180,1012 @@
   font-weight: 700;
 }
 
-.radar-data-health {
+.radar-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 3px;
+}
+
+.radar-tabs button {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 6px 8px;
+}
+
+.radar-tabs button:hover {
+  color: var(--text-secondary);
+}
+
+.radar-tabs button.is-active {
+  border-color: rgba(6, 182, 212, 0.28);
+  background: rgba(6, 182, 212, 0.10);
+  color: var(--text-primary);
+}
+
+.radar-commander-panel {
+  margin-top: 10px;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-cyan, #06b6d4);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(6, 182, 212, 0.07), rgba(255, 255, 255, 0.018) 140px),
+    rgba(255, 255, 255, 0.025);
+  padding: 10px;
+}
+
+.radar-commander-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.radar-commander-head span {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-commander-head strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.radar-commander-actions {
+  flex-shrink: 0;
+}
+
+.radar-commander-actions button {
+  border: 1px solid rgba(6, 182, 212, 0.32);
+  border-radius: var(--radius-sm);
+  background: rgba(6, 182, 212, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.radar-commander-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.radar-commander-sandtable {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.radar-commander-brief,
+.radar-commander-watchdog,
+.radar-commander-scenarios,
+.radar-commander-scenario-note,
+.radar-commander-scenario {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(8, 8, 10, 0.34);
+}
+
+.radar-commander-brief {
+  border-color: rgba(6, 182, 212, 0.24);
+  background:
+    linear-gradient(90deg, rgba(6, 182, 212, 0.10), rgba(255, 255, 255, 0.018)),
+    rgba(8, 8, 10, 0.34);
+}
+
+.radar-commander-watchdog {
+  border-color: rgba(245, 158, 11, 0.24);
+}
+
+.radar-commander-section-head {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 7px 8px;
+}
+
+.radar-commander-section-head span {
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-commander-section-head strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.radar-commander-brief .radar-commander-markdown,
+.radar-commander-watchdog .radar-commander-markdown {
+  padding: 8px;
+}
+
+.radar-commander-brief .radar-commander-markdown p:first-child {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.65;
+}
+
+.radar-commander-watchdog .radar-commander-markdown > ul {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding-left: 0;
+}
+
+.radar-commander-watchdog .radar-commander-markdown > ul > li {
+  border: 1px solid rgba(245, 158, 11, 0.16);
+  border-left: 3px solid var(--signal-amber);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.045);
+  list-style: none;
+  margin-top: 0;
+  padding: 7px;
+}
+
+.radar-commander-scenario-note {
+  border-color: rgba(6, 182, 212, 0.18);
+  color: var(--text-secondary);
+  padding: 7px 8px;
+}
+
+.radar-commander-scenario-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  padding: 8px;
+}
+
+.radar-commander-scenario {
+  overflow: hidden;
+  border-left: 3px solid var(--border-strong);
+}
+
+.radar-commander-scenario--1 {
+  border-left-color: var(--signal-amber);
+}
+
+.radar-commander-scenario--2 {
+  border-left-color: var(--accent-cyan);
+}
+
+.radar-commander-scenario--3 {
+  border-left-color: var(--warning-red);
+}
+
+.radar-commander-scenario-title {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 7px 8px;
+}
+
+.radar-commander-scenario-title span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.radar-commander-scenario-title strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.radar-commander-scenario .radar-commander-markdown {
+  padding: 8px;
+}
+
+.radar-commander-empty {
+  display: grid;
+  gap: 3px;
+  margin-top: 10px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  padding: 12px;
+}
+
+.radar-commander-empty strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.radar-commander-empty span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.radar-commander-markdown,
+.radar-commander-raw {
+  margin-top: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.radar-commander-markdown h1,
+.radar-commander-markdown h2,
+.radar-commander-markdown h3,
+.radar-commander-markdown strong,
+.radar-commander-raw h1,
+.radar-commander-raw h2,
+.radar-commander-raw h3,
+.radar-commander-raw strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.radar-commander-markdown p,
+.radar-commander-markdown ul,
+.radar-commander-markdown ol,
+.radar-commander-raw p,
+.radar-commander-raw ul,
+.radar-commander-raw ol {
+  margin: 7px 0 0;
+}
+
+.radar-commander-markdown ul,
+.radar-commander-markdown ol,
+.radar-commander-raw ul,
+.radar-commander-raw ol {
+  padding-left: 18px;
+}
+
+.radar-commander-markdown li,
+.radar-commander-raw li {
+  margin-top: 5px;
+}
+
+.radar-commander-markdown h1,
+.radar-commander-markdown h2,
+.radar-commander-markdown h3,
+.radar-commander-markdown h4 {
+  margin: 0;
+}
+
+.radar-commander-markdown hr {
+  display: none;
+}
+
+.radar-commander-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-commander-meta span,
+.radar-commander-meta em {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full, 999px);
+  background: rgba(255, 255, 255, 0.025);
+  font-style: normal;
+  padding: 2px 7px;
+}
+
+.radar-commander-raw {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.radar-commander-raw summary {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-ai-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  border: 1px solid rgba(59, 130, 246, 0.26);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.055);
+  padding: 8px;
+}
+
+.radar-ai-entry span,
+.radar-ai-head span {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.radar-ai-entry strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.radar-ai-entry button,
+.radar-ai-actions button {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.radar-ai-entry button {
+  border-color: rgba(59, 130, 246, 0.35);
+  color: var(--info-blue);
+}
+
+.radar-ai-entry button:hover,
+.radar-ai-actions button:hover {
+  border-color: var(--border-strong);
+}
+
+.radar-ai-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.radar-ai-panel {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.radar-ai-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.radar-ai-head strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.radar-ai-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.radar-ai-disclaimer,
+.radar-ai-loading,
+.radar-ai-error,
+.radar-ai-market {
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 7px;
+}
+
+.radar-ai-error {
+  border-color: rgba(239, 68, 68, 0.28);
+  color: var(--warning-red);
+}
+
+.radar-ai-account {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 7px;
+}
+
+.radar-ai-account strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.radar-ai-chan-talk {
+  margin-top: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.72;
+}
+
+.radar-ai-brief,
+.radar-ai-boundaries,
+.radar-ai-next-focus {
+  margin-top: 8px;
+}
+
+.radar-ai-brief {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.016);
+  padding: 8px;
+}
+
+.radar-ai-brief-head {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.radar-ai-brief-head span,
+.radar-ai-agent div span,
+.radar-ai-boundary span,
+.radar-ai-next-focus span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-ai-brief-head strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-agent-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.radar-ai-agent {
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 7px;
+}
+
+.radar-ai-agent--confirm {
+  border-left-color: var(--up);
+}
+
+.radar-ai-agent--warning {
+  border-left-color: var(--signal-amber);
+}
+
+.radar-ai-agent--danger {
+  border-left-color: var(--warning-red);
+}
+
+.radar-ai-agent div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.radar-ai-agent div em {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.radar-ai-agent strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.radar-ai-agent p {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-boundaries {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.radar-ai-boundary {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-top: 2px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 7px;
+}
+
+.radar-ai-boundary--confirm {
+  border-top-color: var(--up);
+}
+
+.radar-ai-boundary--observe {
+  border-top-color: var(--action-gold);
+}
+
+.radar-ai-boundary--invalidate {
+  border-top-color: var(--warning-red);
+}
+
+.radar-ai-boundary strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.radar-ai-boundary em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radar-ai-next-focus {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  border: 1px solid rgba(6, 182, 212, 0.22);
+  border-radius: var(--radius-sm);
+  background: rgba(6, 182, 212, 0.055);
+  padding: 7px;
+}
+
+.radar-ai-next-focus strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-native-score {
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--info-blue);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 8px;
+}
+
+.radar-ai-native-score--A {
+  border-left-color: var(--up);
+}
+
+.radar-ai-native-score--B {
+  border-left-color: var(--info-blue);
+}
+
+.radar-ai-native-score--C {
+  border-left-color: var(--warning-red);
+}
+
+.radar-ai-native-score--D {
+  border-left-color: var(--action-gold);
+}
+
+.radar-ai-native-primary {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 7px;
+}
+
+.radar-ai-native-primary span,
+.radar-ai-gate-row span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.radar-ai-native-primary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radar-ai-native-primary em {
+  color: var(--action-gold);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.radar-ai-native-score p {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-path-bars {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 5px;
   margin-top: 8px;
 }
 
-.radar-data-health-item {
+.radar-ai-path-bar {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+}
+
+.radar-ai-path-bar span {
   min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radar-ai-path-bar strong {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+}
+
+.radar-ai-path-bar.is-primary span,
+.radar-ai-path-bar.is-primary strong {
+  color: var(--text-primary);
+}
+
+.radar-ai-path-track {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--radius-full, 999px);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.radar-ai-path-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--info-blue);
+}
+
+.radar-ai-native-score--A .radar-ai-path-bar.is-primary .radar-ai-path-track i {
+  background: var(--up);
+}
+
+.radar-ai-native-score--C .radar-ai-path-bar.is-primary .radar-ai-path-track i {
+  background: var(--warning-red);
+}
+
+.radar-ai-native-score--D .radar-ai-path-bar.is-primary .radar-ai-path-track i {
+  background: var(--action-gold);
+}
+
+.radar-ai-gate-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.radar-ai-gate-note {
+  margin-top: 8px;
+  border: 1px solid rgba(240, 185, 11, 0.26);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 185, 11, 0.08);
+  color: var(--action-gold);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
+  padding: 6px 7px;
+}
+
+.radar-ai-model-route {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  padding: 7px;
+}
+
+.radar-ai-model-route div {
+  display: grid;
+  gap: 2px;
+}
+
+.radar-ai-model-route span {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.radar-ai-model-route strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.radar-ai-model-route p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radar-ai-model-route--hard {
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.radar-ai-model-route--calibration {
+  border-color: rgba(240, 185, 11, 0.32);
+  background: rgba(240, 185, 11, 0.07);
+}
+
+.radar-ai-holding-view {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  border: 1px solid rgba(240, 185, 11, 0.28);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 185, 11, 0.065);
+  padding: 7px;
+}
+
+.radar-ai-holding-head,
+.radar-ai-holding-risk {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 56px;
+  align-items: center;
+  gap: 7px;
+}
+
+.radar-ai-holding-head span,
+.radar-ai-holding-risk span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.radar-ai-holding-head strong,
+.radar-ai-holding-risk strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radar-ai-holding-head em,
+.radar-ai-holding-risk em {
+  color: var(--up);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.radar-ai-holding-head em.is-loss {
+  color: var(--warning-red);
+}
+
+.radar-ai-holding-view p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-holding-risk {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 7px;
+}
+
+.radar-ai-plan-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.radar-ai-plan {
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.018);
-  padding: 5px 6px;
+  padding: 8px;
+}
+
+.radar-ai-plan.is-triggered {
+  border-color: rgba(240, 185, 11, 0.28);
+  border-left-color: var(--action-gold);
+  background: rgba(240, 185, 11, 0.055);
+}
+
+.radar-ai-plan-title {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  align-items: center;
+  gap: 7px;
+}
+
+.radar-ai-plan-title span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--action-gold);
+  font-size: 11px;
+}
+
+.radar-ai-plan-title strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.radar-ai-plan dl {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 7px 0 0;
+}
+
+.radar-ai-plan dl div {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 7px;
+}
+
+.radar-ai-plan dt {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.radar-ai-plan dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-ai-defense {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.055);
+  padding: 7px;
+}
+
+.radar-ai-defense span {
+  color: var(--warning-red);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.radar-ai-defense strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.radar-data-health {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  min-height: 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.radar-data-health::-webkit-scrollbar {
+  display: none;
+}
+
+.radar-data-health-label {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.radar-data-health-item {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full, 999px);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 2px 6px;
 }
 
 .radar-data-health-item.is-stale {
@@ -201,7 +1194,6 @@
 }
 
 .radar-data-health-item span {
-  display: block;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -209,13 +1201,9 @@
 }
 
 .radar-data-health-item strong {
-  display: block;
-  margin-top: 3px;
-  overflow: hidden;
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 10px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -317,6 +1305,30 @@
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.35;
+}
+
+.radar-position-desync-note {
+  margin-top: 6px;
+  border: 1px solid rgba(240, 185, 11, 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 185, 11, 0.08);
+  color: var(--action-gold);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
+  padding: 5px 6px;
+}
+
+.radar-intraday-overlay-note {
+  margin-top: 8px;
+  border: 1px solid rgba(34, 197, 94, 0.26);
+  border-radius: var(--radius-sm);
+  background: rgba(34, 197, 94, 0.07);
+  color: #22c55e;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.45;
+  padding: 6px 7px;
 }
 
 .radar-nearest-risk-line {

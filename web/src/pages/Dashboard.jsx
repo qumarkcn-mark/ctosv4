@@ -5,7 +5,7 @@ import './Dashboard.css'
 
 const API = ''  // Vite proxy 会转发到后端
 
-export default function Dashboard({ onViewInChan }) {
+export default function Dashboard({ onViewInChan, onOpenRotation }) {
   const [positions, setPositions] = useState([])
   const [overview, setOverview] = useState(null)
   const [trades, setTrades] = useState([])
@@ -108,13 +108,23 @@ export default function Dashboard({ onViewInChan }) {
       {/* 顶部概览 */}
       <section className="overview-section animate-fade-in">
         <div className="overview-header">
-          <h1>交易看板</h1>
-          <button
-            className="btn btn-primary"
-            onClick={() => setShowTradeForm(!showTradeForm)}
-          >
-            {showTradeForm ? '✕ 关闭' : '＋ 录入交易'}
-          </button>
+          <h1>交易账本</h1>
+          <div className="overview-actions">
+            {onOpenRotation && (
+              <button
+                className="btn"
+                onClick={onOpenRotation}
+              >
+                持仓比较
+              </button>
+            )}
+            <button
+              className="btn btn-primary"
+              onClick={() => setShowTradeForm(!showTradeForm)}
+            >
+              {showTradeForm ? '关闭' : '录入交易'}
+            </button>
+          </div>
         </div>
 
         {overview && (

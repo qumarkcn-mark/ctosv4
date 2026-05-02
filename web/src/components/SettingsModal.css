@@ -115,6 +115,17 @@
   gap: var(--space-2);
 }
 
+.form-group + .form-group {
+  margin-top: var(--space-4);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
 .form-group label {
   font-size: var(--text-sm);
   color: var(--text-secondary);
@@ -126,6 +137,57 @@
   font-size: var(--text-xs);
   line-height: 1.4;
   margin-top: var(--space-1);
+}
+
+.settings-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 260px;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.settings-segmented button {
+  min-height: 32px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-segmented button.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.settings-provider-panel {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.03);
+}
+
+.settings-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.settings-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--action-gold);
 }
 
 .settings-footer {

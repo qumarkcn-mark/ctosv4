@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import AINativeRadarCard from './AINativeRadarCard.jsx'
 import { formatPrice } from './radarAdapter.js'
 import { useRadarData } from './useRadarData.js'
 import './RadarPanel.css'
@@ -8,8 +10,9 @@ const SCENARIO_TONE = {
   C: 'invalidate',
 }
 
-export default function RadarPanel({ symbol }) {
-  const { radar, loading, error, refresh } = useRadarData(symbol)
+export default function RadarPanel({ symbol, refreshToken = 0 }) {
+  const { radar, loading, error, refresh } = useRadarData(symbol, refreshToken)
+  const [activeTab, setActiveTab] = useState('ai')
 
   if (loading && !radar) return <RadarShell><RadarSkeleton /></RadarShell>
   if (error && !radar) {
@@ -36,16 +39,42 @@ export default function RadarPanel({ symbol }) {
       <RadarHeader radar={radar} onRefresh={refresh} />
       <DataHealthStrip items={radar.dataHealth} />
       {error && <div className="radar-inline-warning">{error}</div>}
-      <PositionCoachCard coach={radar.coachAction} context={radar.positionContext} />
-      <RadarSummary radar={radar} />
-      <ConfirmationPanel confirmation={radar.confirmation} />
-      <PatternPanel patterns={radar.patterns} transition={radar.transition} />
-      <TriggerPlaybook items={radar.triggerPlaybook} fallback={radar.nextWatch} />
-      <KeyObservationPanel observations={radar.keyObservations} />
-      <ScenarioGrid scenarios={radar.scenarios} currentId={radar.raw.currentScenarioId} />
-      <StructureFacts centerNesting={radar.centerNesting} atoms={radar.atoms} />
-      <LevelAtomStrip atoms={radar.atoms} />
-      <DataNotes radar={radar} />
+      <div className="radar-tabs" role="tablist" aria-label="雷达视图">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'ai'}
+          className={activeTab === 'ai' ? 'is-active' : ''}
+          onClick={() => setActiveTab('ai')}
+        >
+          AI 推演
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'structure'}
+          className={activeTab === 'structure' ? 'is-active' : ''}
+          onClick={() => setActiveTab('structure')}
+        >
+          结构雷达
+        </button>
+      </div>
+      {activeTab === 'ai' ? (
+        <AINativeRadarCard symbol={symbol} mode={radar.mode} />
+      ) : (
+        <>
+          <PositionCoachCard coach={radar.coachAction} context={radar.positionContext} />
+          <RadarSummary radar={radar} />
+          <ScenarioGrid scenarios={radar.scenarios} currentId={radar.raw.currentScenarioId} />
+          <ConfirmationPanel confirmation={radar.confirmation} />
+          <PatternPanel patterns={radar.patterns} transition={radar.transition} />
+          <TriggerPlaybook items={radar.triggerPlaybook} fallback={radar.nextWatch} />
+          <KeyObservationPanel observations={radar.keyObservations} />
+          <StructureFacts centerNesting={radar.centerNesting} atoms={radar.atoms} />
+          <LevelAtomStrip atoms={radar.atoms} />
+          <DataNotes radar={radar} />
+        </>
+      )}
     </RadarShell>
   )
 }
@@ -123,10 +152,18 @@ function NearestRiskLine({ line }) {
 function PositionPriceNote({ context }) {
   if (!context?.priceSource || context.priceSource === 'structure') return null
   return (
-    <div className="radar-position-price-note">
-      实时价 {formatPrice(context.currentPrice)}
-      {context.quoteTime ? ` · ${context.quoteTime}` : ''}
-    </div>
+    <>
+      <div className="radar-position-price-note">
+        实时价 {formatPrice(context.currentPrice)}
+        {context.quoteTime ? ` · ${context.quoteTime}` : ''}
+        {context.structurePrice ? ` · 结构价 ${formatPrice(context.structurePrice)}` : ''}
+      </div>
+      {context.isRealtimeDesynced && (
+        <div className="radar-position-desync-note">
+          {context.realtimeNote || '实时价与正式结构价偏离，主推演仍按已闭合K线切片判定。'}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -163,6 +200,11 @@ function RadarSummary({ radar }) {
         <span>{radar.labels.phase}</span>
         <span>{radar.labels.confidence}</span>
       </div>
+      {radar.raw.intradayOverlay?.is_provisional && (
+        <div className="radar-intraday-overlay-note">
+          盘中价 {formatPrice(radar.raw.intradayOverlay.price)} 已临时重判为 {radar.raw.intradayOverlay.scenario_id} 路径，等待分钟K线闭合确认。
+        </div>
+      )}
     </div>
   )
 }
@@ -172,6 +214,7 @@ function DataHealthStrip({ items }) {
   if (!list.length) return null
   return (
     <div className="radar-data-health" aria-label="雷达数据健康">
+      <span className="radar-data-health-label">数据</span>
       {list.map((item) => (
         <div key={item.level} className={`radar-data-health-item ${item.isStale ? 'is-stale' : ''}`}>
           <span>{item.level}</span>
@@ -186,8 +229,7 @@ function ConfirmationPanel({ confirmation }) {
   if (!confirmation) return null
   const progress = Math.max(0, Math.min(100, Math.round((confirmation.progress || 0) * 100)))
   return (
-    <section className="radar-section">
-      <SectionTitle title="执行确认" meta={confirmation.label} />
+    <CollapsibleSection title="执行确认" meta={confirmation.label}>
       <div className={`radar-confirmation radar-confirmation--${confirmation.tone}`}>
         <div className="radar-confirmation-head">
           <strong>{confirmation.label}</strong>
@@ -202,7 +244,7 @@ function ConfirmationPanel({ confirmation }) {
           <MiniBoundaryList label="待确认" items={confirmation.unmatched} />
         </div>
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -223,8 +265,7 @@ function PatternPanel({ patterns, transition }) {
   const hasTransition = transition && transition.status && transition.status !== 'UNCHANGED'
   if (!primary && !hasTransition) return null
   return (
-    <section className="radar-section">
-      <SectionTitle title="结构模板" meta={primary?.confidence || transition?.status || ''} />
+    <CollapsibleSection title="结构模板" meta={primary?.confidence || transition?.status || ''}>
       <div className="radar-pattern-card">
         {primary && (
           <>
@@ -251,7 +292,7 @@ function PatternPanel({ patterns, transition }) {
           </div>
         )}
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -269,8 +310,7 @@ function TriggerPlaybook({ items, fallback }) {
       }))
 
   return (
-    <section className="radar-section">
-      <SectionTitle title="接下来如果发生" meta={`${list?.length || 0} 条`} />
+    <CollapsibleSection title="接下来如果发生" meta={`${list?.length || 0} 条`}>
       <div className="radar-trigger-list">
         {(list || []).slice(0, 5).map((item, index) => (
           <article key={item.id || `${item.condition}-${index}`} className={`radar-trigger-card radar-trigger-card--${item.tone}`}>
@@ -287,7 +327,7 @@ function TriggerPlaybook({ items, fallback }) {
         ))}
         {(!list || list.length === 0) && <div className="radar-muted-row">暂无明确触发条件</div>}
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -295,8 +335,7 @@ function KeyObservationPanel({ observations }) {
   const list = observations || []
   if (!list.length) return null
   return (
-    <section className="radar-section">
-      <SectionTitle title="关键观察位" meta={`${list.length} 条`} />
+    <CollapsibleSection title="关键观察位" meta={`${list.length} 条`}>
       <div className="radar-observation-list">
         {list.slice(0, 4).map((item) => (
           <article key={item.id} className={`radar-observation radar-observation--${item.tone}`}>
@@ -311,7 +350,7 @@ function KeyObservationPanel({ observations }) {
           </article>
         ))}
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }
 

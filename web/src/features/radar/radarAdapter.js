@@ -15,16 +15,17 @@ const PHASE_LABELS = {
 }
 
 const ACTION_LABELS = {
-  HOLD_OR_TRAIL: '持有跟踪',
-  WAIT_BREAKOUT: '等待突破',
-  WAIT_RECLAIM: '等待收复',
-  WAIT_UPPER_BREAK: '等待上沿突破',
-  REDUCE_CHASING: '降低追涨',
-  DEFENSIVE: '防守',
-  WATCH_REBOUND: '观察修复',
-  WAIT_STRUCTURE: '等待结构',
-  WAIT_CONFIRMATION: '等待确认',
-  WATCH: '观察',
+  HOLD_OR_TRAIL: '守线跟随',
+  WATCH_BREAKOUT_HOLD: '看能否站稳',
+  WAIT_BREAKOUT: '等向上确认',
+  WAIT_RECLAIM: '等拉回确认',
+  WAIT_UPPER_BREAK: '等站上上沿',
+  REDUCE_CHASING: '别追中间价',
+  DEFENSIVE: '先防风险',
+  WATCH_REBOUND: '看修复能否成立',
+  WAIT_STRUCTURE: '等结构清楚',
+  WAIT_CONFIRMATION: '等买点确认',
+  WATCH: '先观察',
 }
 
 const RISK_LABELS = {
@@ -39,6 +40,10 @@ const CONFIRMATION_LABELS = {
   A_FULL_TRIGGERED: 'A 全确认',
   B_MAINTAINED: 'B 维持',
   C_TRIGGERED: 'C 已触发',
+  A_INTRADAY_PARTIAL_TRIGGERED: 'A 盘中半确认',
+  A_INTRADAY_FULL_TRIGGERED: 'A 盘中确认',
+  B_INTRADAY_MAINTAINED: 'B 盘中维持',
+  C_INTRADAY_TRIGGERED: 'C 盘中触发',
 }
 
 const CONFIRMATION_TONES = {
@@ -47,6 +52,10 @@ const CONFIRMATION_TONES = {
   A_FULL_TRIGGERED: 'confirm',
   B_MAINTAINED: 'gold',
   C_TRIGGERED: 'danger',
+  A_INTRADAY_PARTIAL_TRIGGERED: 'warning',
+  A_INTRADAY_FULL_TRIGGERED: 'confirm',
+  B_INTRADAY_MAINTAINED: 'gold',
+  C_INTRADAY_TRIGGERED: 'danger',
 }
 
 const POSITION_COACH_TONES = {
@@ -162,6 +171,7 @@ export function adaptRadarContract(contract) {
       riskLevel: algorithm.risk_level,
       currentScenarioId: scenarioIdFromConfirmation(confirmation.state) || algorithm.current_scenario_id || 'B',
       aState: algorithm.a_state || '',
+      intradayOverlay: algorithm.intraday_overlay || null,
     },
     dataNotes: algorithm.data_notes || {},
     dataHealth: adaptDataHealth((algorithm.data_notes || {}).levels || contract?.freshness?.levels || {}),
@@ -183,6 +193,9 @@ function adaptPositionContext(context) {
     quotePrice: Number(context.quote_price || 0),
     priceSource: context.price_source || '',
     quoteTime: context.quote_time || '',
+    isRealtimeDesynced: Boolean(context.is_realtime_desynced),
+    realtimeGapPct: context.realtime_gap_pct === null || context.realtime_gap_pct === undefined ? null : Number(context.realtime_gap_pct),
+    realtimeNote: context.realtime_note || '',
     pnlPct: context.pnl_pct === null || context.pnl_pct === undefined ? null : Number(context.pnl_pct),
     positionValue: Number(context.position_value || 0),
     weightPct: context.weight_pct === null || context.weight_pct === undefined ? null : Number(context.weight_pct),
@@ -392,8 +405,11 @@ function adaptConfirmation(confirmation) {
 
 function scenarioIdFromConfirmation(state) {
   if (state === 'C_TRIGGERED') return 'C'
+  if (state === 'C_INTRADAY_TRIGGERED') return 'C'
   if (state === 'B_MAINTAINED') return 'B'
+  if (state === 'B_INTRADAY_MAINTAINED') return 'B'
   if (state === 'A_PARTIAL_TRIGGERED' || state === 'A_FULL_TRIGGERED') return 'A'
+  if (state === 'A_INTRADAY_PARTIAL_TRIGGERED' || state === 'A_INTRADAY_FULL_TRIGGERED') return 'A'
   return ''
 }
 
