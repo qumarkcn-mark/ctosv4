@@ -71,7 +71,7 @@ async def build_ai_native_reasoning(
         gate = _fallback_gate("LLM_ERROR", f"AI 推理异常: {str(exc)[:120]}")
         output = None
 
-    if gate.status in {"PASS", "REWRITE"} and output:
+    if gate.status == "PASS" and output:
         response = _response_from_output(output, transcript, gate, model_route)
     else:
         response = _fallback_response(radar_contract, transcript, gate, model_route)

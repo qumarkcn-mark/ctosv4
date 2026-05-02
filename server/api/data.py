@@ -223,7 +223,13 @@ async def query_tdx_1m_klines(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"),
 ):
     """读取本地 TDX 1分钟 K 线，仅用于 Kline 展示/历史回放。"""
-    rows = read_tdx_1m_klines(symbol, limit=count, start_date=start_date, end_date=end_date)
+    rows = await run_in_threadpool(
+        read_tdx_1m_klines,
+        symbol,
+        limit=count,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not rows:
         raise HTTPException(404, f"无法读取 {symbol} 的 TDX 本地1分钟数据")
     return {

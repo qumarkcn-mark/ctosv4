@@ -254,7 +254,7 @@ def test_simple_route_ignores_user_thinking_override(monkeypatch, tmp_path):
     assert route.timeout_seconds == 45
 
 
-def test_rewrite_gate_keeps_ai_reasoning_visible():
+def test_rewrite_gate_uses_fallback_for_user_visible_response():
     transcript = compile_structure_transcript(make_radar_contract())
     output = {
         "raw_reasoning_md": "内部文本",
@@ -270,20 +270,21 @@ def test_rewrite_gate_keeps_ai_reasoning_visible():
     gate_output, gate = verify_ai_reasoning(output, transcript)
 
     assert gate.status == "REWRITE"
-    response = reasoning_orchestrator._response_from_output(
-        gate_output,
+    response = reasoning_orchestrator._fallback_response(
+        make_radar_contract(),
         transcript,
         gate,
         ModelRoute(model_name="deepseek-test"),
     )
 
-    assert response.gate_status == "REWRITE"
-    assert "做空" in response.coach_filtered_md
-    assert response.fallback_data is None
-    assert response.fallback_reason.startswith("门禁提示")
+    assert gate_output is not None
+    assert response.gate_status == "FALLBACK"
+    assert "做空" not in response.coach_filtered_md
+    assert response.raw_reasoning_md == ""
+    assert response.fallback_reason.startswith("A 股普通股票场景不允许做空执行建议")
 
 
-def test_rewrite_gate_does_not_call_llm_twice(monkeypatch, tmp_path):
+def test_rewrite_gate_falls_back_without_calling_llm_twice(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
     database.init_db()
 
@@ -303,9 +304,10 @@ def test_rewrite_gate_does_not_call_llm_twice(monkeypatch, tmp_path):
         )
     )
 
-    assert response.gate_status == "REWRITE"
+    assert response.gate_status == "FALLBACK"
     assert llm.calls == 1
-    assert "做空" in response.coach_filtered_md
+    assert "做空" not in response.coach_filtered_md
+    assert response.raw_reasoning_md == ""
 
 
 def test_new_route_success_does_not_call_old_radar_deduce(monkeypatch, tmp_path):
