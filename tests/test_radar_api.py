@@ -177,6 +177,40 @@ def make_adapter_result() -> dict:
     }
 
 
+def test_intraday_quote_overlay_reclassifies_stale_c_to_a():
+    algorithm = {
+        "summary": "旧结构切片判 C",
+        "current_scenario_id": "C",
+        "a_state": "C_TRIGGERED",
+        "atoms": {
+            "L2": {"price": 67.5},
+            "L1": {"price": 67.5},
+            "L0": {"price": 67.5},
+        },
+        "boundaries": {
+            "confirm": [
+                {"level": "5", "field": "ZG", "value": 66.96, "trigger": "break_above", "meaning": "转强"},
+                {"level": "30", "field": "ZG", "value": 69.27, "trigger": "break_above", "meaning": "升级"},
+            ],
+            "maintain": [{"level": "30", "field": "ZD", "value": 66.1, "trigger": "hold_above"}],
+            "invalidate": [{"level": "30", "field": "ZD", "value": 66.1, "trigger": "break_below"}],
+        },
+        "scenarios": [
+            {"id": "A", "state": "BLOCKED"},
+            {"id": "B", "state": "FAILED"},
+            {"id": "C", "state": "CURRENT"},
+        ],
+    }
+
+    result = radar._apply_intraday_quote_overlay(algorithm, {"provider": "tencent", "price": 81.0})
+
+    assert result["current_scenario_id"] == "A"
+    assert result["confirmation"]["state"] == "A_INTRADAY_FULL_TRIGGERED"
+    assert result["confirmation"]["is_provisional"] is True
+    assert result["intraday_overlay"]["price"] == 81.0
+    assert [item["state"] for item in result["scenarios"]] == ["CURRENT", "CONFIRMED", "PENDING"]
+
+
 def test_empty_mode_returns_entry_plan_and_no_holding_plan(monkeypatch):
     monkeypatch.setattr(radar, "_load_adapter_structure", lambda symbol: asyncio.sleep(0, result=make_adapter_result()))
 
@@ -420,6 +454,63 @@ def test_holding_lookup_accepts_compact_persisted_symbol(monkeypatch):
     assert data["position_context"]["quantity"] == 1000
     assert data["position_context"]["avg_cost"] == 19.0
     assert data["coach_action"]["position_state"] != "EMPTY"
+
+
+def test_get_radar_internal_call_handles_query_defaults(monkeypatch):
+    class EmptyCursor:
+        def fetchone(self):
+            return None
+
+    class Wrapper:
+        def execute(self, *args, **kwargs):
+            return EmptyCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(radar, "get_connection", lambda: Wrapper())
+    monkeypatch.setattr(radar, "_load_adapter_structure", lambda symbol: asyncio.sleep(0, result=make_adapter_result()))
+
+    response = asyncio.run(radar.get_radar("sh600519", user_id=1))
+
+    assert response["status"] == "success"
+    assert response["data"]["symbol"] == "sh.600519"
+    assert response["data"]["mode"] == "EMPTY"
+
+
+def test_historical_high_excludes_current_bar_new_high():
+    result = radar._historical_high_from_klines([
+        {"time": "2026-04-24", "high": 50.0, "close": 48.0},
+        {"time": "2026-04-27", "high": 55.0, "close": 53.0},
+        {"time": "2026-04-28", "high": 58.0, "close": 54.0},
+    ])
+
+    assert result["price"] == 55.0
+    assert result["time"] == "2026-04-27"
+    assert result["current_bar_high"] == 58.0
+    assert result["is_current_bar_new_high"] is True
+
+
+def test_historical_high_prefers_confirmed_bi_before_current_leg():
+    result = radar._historical_high_from_level_data({
+        "price": 179.37,
+        "klines": [
+            {"time": "2026-04-27", "high": 171.96, "close": 170.0},
+            {"time": "2026-04-28", "high": 180.0, "close": 179.37},
+        ],
+        "bis": [
+            {"x0": "2026-02-06", "y0": 110.33, "x1": "2026-02-25", "y1": 164.56, "is_up": True},
+            {"x0": "2026-02-25", "y0": 164.56, "x1": "2026-03-23", "y1": 124.71, "is_up": False},
+            {"x0": "2026-03-23", "y0": 124.71, "x1": "2026-04-10", "y1": 164.8, "is_up": True},
+            {"x0": "2026-04-10", "y0": 164.8, "x1": "2026-04-17", "y1": 149.69, "is_up": False},
+        ],
+    })
+
+    assert result["price"] == 164.8
+    assert result["time"] == "2026-04-10"
+    assert result["source"] == "confirmed_bi"
+    assert result["current_bar_high"] == 180.0
+    assert result["is_current_bar_new_high"] is True
 
 
 def test_position_context_uses_realtime_quote(monkeypatch):

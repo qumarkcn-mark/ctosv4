@@ -179,6 +179,55 @@ def test_analyze_structure_sync_refreshes_lagging_level(monkeypatch):
     assert result["freshness"]["is_stale"] is False
 
 
+def test_analyze_structure_sync_marks_minute_stale_when_not_same_trading_day(monkeypatch):
+    calls = []
+    day_rows = dated_rows(date(2026, 1, 1), suffix="")
+    stale_5_rows = dated_rows(date(2025, 12, 28), suffix=" 15:00:00")
+
+    def fake_query(symbol, freq, limit):
+        if freq == "day":
+            return day_rows
+        if freq == "5":
+            return stale_5_rows
+        return []
+
+    def fake_fetch_sync(symbol, freq, start_date=None, end_date=None, adjustflag="2"):
+        calls.append((symbol, freq, start_date))
+        return 0
+
+    monkeypatch.setattr(chan_adapter, "query_klines", fake_query)
+    monkeypatch.setattr(chan_adapter, "fetch_klines_quick", lambda symbol, freq: None)
+    monkeypatch.setattr(chan_adapter, "fetch_klines_sync", fake_fetch_sync)
+    monkeypatch.setattr(
+        chan_adapter,
+        "_run_chan_py",
+        lambda symbol, level_inputs, cchan_preset="live_tolerant": {item.kl_type: object() for item in level_inputs},
+    )
+    monkeypatch.setattr(
+        chan_adapter,
+        "_serialize_one_level",
+        lambda kl_data, ctime, rows, raw_freq, count: {
+            "freq": raw_freq,
+            "klines": [],
+            "bis": [],
+            "segs": [],
+            "bi_zhongshus": [],
+            "seg_zhongshus": [],
+            "zhongshus": [],
+            "bsps": [],
+            "stats": {},
+        },
+    )
+    monkeypatch.setattr(chan_adapter, "_extract_level_relations", lambda levels: {})
+
+    result = chan_adapter.analyze_structure_sync("300666", levels=["day", "5"], count=50)
+
+    assert calls == [("sz.300666", "5", "2026-05-06")]
+    assert result["freshness"]["levels"]["5"]["is_stale"] is True
+    assert result["freshness"]["levels"]["5"]["stale_reason"] == "LEVEL_STALE"
+    assert result["freshness"]["is_stale"] is True
+
+
 def test_analyze_structure_sync_reports_no_data(monkeypatch):
     monkeypatch.setattr(chan_adapter, "query_klines", lambda symbol, freq, limit: [])
     monkeypatch.setattr(chan_adapter, "fetch_klines_quick", lambda symbol, freq: None)

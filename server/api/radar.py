@@ -37,7 +37,7 @@ STRUCTURE_CACHE_MAX_ITEMS = 64
 _structure_cache: dict[tuple, dict] = {}
 _structure_cache_locks: dict[tuple, asyncio.Lock] = {}
 HEALTH_LEVELS = ("day", "60", "30", "15", "5")
-HEALTH_MAX_LAG_DAYS = 7
+HEALTH_MAX_LAG_DAYS = 0
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -67,6 +67,16 @@ def _query_optional_int(value) -> Optional[int]:
     except (TypeError, ValueError):
         default = getattr(value, "default", None)
         return _query_optional_int(default)
+
+
+def _query_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        query_default = getattr(value, "default", default)
+        if query_default is not value:
+            return _query_int(query_default, default)
+        return default
 
 
 def _query_bool(value, default: bool = False) -> bool:
@@ -273,7 +283,7 @@ def _decision_levels_from_adapter(adapter_result: dict, legacy_levels: dict) -> 
             "zoushi_type": data.get("zoushi_type", {}),
             "classifications": data.get("classifications", []),
             "last_bi_dir": data.get("last_bi_dir", "unknown"),
-            "historical_high": _historical_high_from_klines(data.get("klines", [])),
+            "historical_high": _historical_high_from_level_data(data),
         }
 
     merged = dict(legacy_levels)
@@ -281,9 +291,68 @@ def _decision_levels_from_adapter(adapter_result: dict, legacy_levels: dict) -> 
     return merged
 
 
-def _historical_high_from_klines(klines: list[dict]) -> dict:
+def _historical_high_from_level_data(level_data: dict) -> dict:
+    """取当前主动走势之前的结构前高，避免拿同一笔正在上攻的高点当压力。"""
+    klines = list(level_data.get("klines") or [])
+    current_price = _level_last_price(level_data)
+    structural_high = _historical_high_from_bis(level_data.get("bis") or [], current_price)
+    if structural_high:
+        current_bar = klines[-1] if klines else {}
+        high_price = _safe_float(structural_high.get("price"))
+        current_high = _safe_float(current_bar.get("high"))
+        return {
+            **structural_high,
+            "current_bar_high": current_high,
+            "current_bar_time": current_bar.get("time") or current_bar.get("date") or "",
+            "is_current_bar_new_high": current_high > high_price > 0,
+        }
+    return _historical_high_from_klines(klines)
+
+
+def _historical_high_from_bis(bis: list[dict], current_price: float) -> dict:
+    if not bis:
+        return {}
+
+    eligible = list(bis)
+    last_bi = bis[-1]
+    last_end = _safe_float(last_bi.get("y1"))
+
+    # 当前价已越过最后一根确认向上笔的终点时，这个高点属于同一笔/同一段延伸，
+    # 不能再作为“前高压力”；向前找已经确认过的旧结构高点。
+    if bool(last_bi.get("is_up")) and current_price > last_end > 0:
+        eligible = bis[:-1]
+
     best = {}
-    for kline in klines or []:
+    for bi in eligible:
+        if bool(bi.get("is_up")):
+            price = _safe_float(bi.get("y1"))
+            time_value = bi.get("x1") or ""
+        else:
+            price = _safe_float(bi.get("y0"))
+            time_value = bi.get("x0") or ""
+        if price > _safe_float(best.get("price")):
+            best = {
+                "price": price,
+                "time": time_value,
+                "source": "confirmed_bi",
+            }
+    return best
+
+
+def _historical_high_from_klines(klines: list[dict]) -> dict:
+    klines = list(klines or [])
+    if not klines:
+        return {}
+
+    # 历史前高必须是“当前 K 线之前”的价格记忆。
+    # 若今天盘中/当日 K 线刚创出新高，它应被解释为“突破尝试”，不能反过来成为新的压力位。
+    current_bar = klines[-1]
+    prior_klines = klines[:-1]
+    if not prior_klines:
+        return {}
+
+    best = {}
+    for kline in prior_klines:
         try:
             high = float(kline.get("high") or 0)
         except (TypeError, ValueError):
@@ -296,10 +365,22 @@ def _historical_high_from_klines(klines: list[dict]) -> dict:
             best = kline
     if not best:
         return {}
+    current_high = _safe_float(current_bar.get("high"))
+    best_high = _safe_float(best.get("high"))
     return {
         "price": best.get("high"),
         "time": best.get("time") or best.get("date") or "",
+        "current_bar_high": current_high,
+        "current_bar_time": current_bar.get("time") or current_bar.get("date") or "",
+        "is_current_bar_new_high": current_high > best_high > 0,
     }
+
+
+def _safe_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _decision_levels_from_adapter_only(adapter_result: dict) -> dict:
@@ -399,9 +480,10 @@ def _compact_center_binding(binding: dict) -> dict:
 
 
 async def _load_realtime_quote(symbol: str) -> dict:
-    """Load current Tencent quote for display/coaching only.
+    """Load current Tencent quote for intraday display and provisional path overlay.
 
-    结构推演仍使用 CChan K 线切片；实时价只进入持仓盈亏和教练提示。
+    正式结构仍使用 CChan K 线切片；实时价只允许做盘中 provisional
+    A/B/C 覆盖提示，不能替代闭合 K 线结构。
     """
     try:
         quote = await get_current_price(symbol)
@@ -425,6 +507,146 @@ async def _load_realtime_quote(symbol: str) -> dict:
         "time": quote.get("time") or quote.get("datetime") or "",
         "purpose": "position_context_only",
     }
+
+
+def _apply_intraday_quote_overlay(algorithm: dict, quote: dict) -> dict:
+    """Use latest quote to prevent stale closed-bar A/B/C from misleading live view."""
+    price = _query_float((quote or {}).get("price"), 0.0)
+    if price <= 0:
+        return algorithm
+
+    structure_price = _algorithm_structure_price(algorithm)
+    if structure_price <= 0:
+        return algorithm
+
+    gap_pct = abs(price - structure_price) / structure_price * 100
+    if gap_pct < 3:
+        return algorithm
+
+    boundaries = algorithm.get("boundaries") or {}
+    realtime_quote = {"last_price": price, "high": price, "low": price}
+    invalidates = [
+        item for item in boundaries.get("invalidate") or []
+        if _quote_triggers_boundary(item, realtime_quote)
+    ]
+    confirms = boundaries.get("confirm") or []
+    matched_confirms = [
+        item for item in confirms
+        if _quote_triggers_boundary(item, realtime_quote)
+    ]
+    maintains = [
+        item for item in boundaries.get("maintain") or []
+        if _quote_triggers_boundary(item, realtime_quote)
+    ]
+
+    if invalidates:
+        scenario_id = "C"
+        state = "C_INTRADAY_TRIGGERED"
+        meaning = "盘中实时价触发 C 路径失效边界，等待分钟K线闭合确认。"
+        matched = invalidates
+        unmatched = confirms
+        progress = 0.0
+        summary = "盘中实时价触发失效边界，等待分钟结构确认。"
+    elif matched_confirms:
+        scenario_id = "A"
+        state = "A_INTRADAY_FULL_TRIGGERED" if len(matched_confirms) == len(confirms) else "A_INTRADAY_PARTIAL_TRIGGERED"
+        meaning = "盘中实时价触发 A 路径确认边界，等待分钟K线闭合确认。"
+        matched = matched_confirms
+        unmatched = [item for item in confirms if item not in matched_confirms]
+        progress = round(len(matched_confirms) / len(confirms), 4) if confirms else 1.0
+        summary = "盘中实时价已触发转强边界，等待分钟结构回写确认。"
+    elif maintains:
+        scenario_id = "B"
+        state = "B_INTRADAY_MAINTAINED"
+        meaning = "盘中实时价仍满足 B 路径维持边界，等待分钟K线闭合确认。"
+        matched = maintains
+        unmatched = confirms
+        progress = 1.0
+        summary = "盘中实时价仍维持当前路径，等待分钟结构确认。"
+    else:
+        return algorithm
+
+    result = copy.deepcopy(algorithm)
+    overlay = {
+        "source": "realtime_quote",
+        "provider": (quote or {}).get("provider") or "",
+        "price": price,
+        "structure_price": structure_price,
+        "gap_pct": round(gap_pct, 2),
+        "scenario_id": scenario_id,
+        "state": state,
+        "meaning": meaning,
+        "summary": summary,
+        "matched": matched,
+        "unmatched": unmatched,
+        "is_provisional": True,
+    }
+    result["intraday_overlay"] = overlay
+    result["current_scenario_id"] = scenario_id
+    result["a_state"] = state
+    result["confirmation"] = {
+        "state": state,
+        "progress": progress,
+        "matched": matched,
+        "unmatched": unmatched,
+        "meaning": meaning,
+        "source": "realtime_quote",
+        "is_provisional": True,
+    }
+    result["scenarios"] = _scenarios_with_intraday_state(result.get("scenarios") or [], scenario_id)
+    result["summary"] = summary
+    return result
+
+
+def _algorithm_structure_price(algorithm: dict) -> float:
+    for role in ("L2", "L1", "L0"):
+        price = _query_float(((algorithm.get("atoms") or {}).get(role) or {}).get("price"), 0.0)
+        if price > 0:
+            return price
+    return 0.0
+
+
+def _quote_triggers_boundary(boundary: dict, quote: dict) -> bool:
+    value = _query_float((boundary or {}).get("value"), 0.0)
+    if value <= 0:
+        return False
+    trigger = str((boundary or {}).get("trigger") or "")
+    last_price = _query_float(quote.get("last_price"), 0.0)
+    high = _query_float(quote.get("high"), last_price) or last_price
+    low = _query_float(quote.get("low"), last_price) or last_price
+
+    if trigger == "break_above":
+        return last_price > value
+    if trigger == "break_below":
+        return last_price < value
+    if trigger == "hold_above":
+        return low >= value or last_price >= value
+    if trigger == "stay_below":
+        return high < value and last_price < value
+    if trigger == "fail_below":
+        return high < value
+    return False
+
+
+def _scenarios_with_intraday_state(scenarios: list[dict], current_id: str) -> list[dict]:
+    adjusted = []
+    for scenario in scenarios:
+        item = dict(scenario)
+        sid = item.get("id")
+        if sid == current_id:
+            item["state"] = "CURRENT"
+        elif current_id == "A" and sid == "B":
+            item["state"] = "CONFIRMED"
+        elif current_id == "A" and sid == "C":
+            item["state"] = "PENDING"
+        elif current_id == "C" and sid == "A":
+            item["state"] = "BLOCKED"
+        elif current_id == "C" and sid == "B":
+            item["state"] = "FAILED"
+        else:
+            item["state"] = item.get("state") or "PENDING"
+        adjusted.append(item)
+    return adjusted
 
 
 async def _load_adapter_structure(symbol: str) -> dict:
@@ -536,6 +758,8 @@ async def get_radar(
     """获取 Radar contract 形态的单票缠论分析。"""
     symbol_bs = _normalize_symbol(symbol)
     user_id = _query_optional_int(user_id)
+    cost = _query_float(cost, 0.0)
+    qty = _query_int(qty, 0)
     account_value = _query_float(account_value, 0.0)
     risk_pct = _query_float(risk_pct, 0.01)
     atr = _query_float(atr, 0.0)
@@ -583,6 +807,7 @@ async def get_radar(
         disclaimer=DISCLAIMER,
     )
     quote = await _load_realtime_quote(symbol_bs)
+    algorithm_v2 = _apply_intraday_quote_overlay(algorithm_v2, quote)
     position_context = build_position_context(
         holding,
         algorithm_v2,

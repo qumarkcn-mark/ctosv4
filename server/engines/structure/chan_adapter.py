@@ -55,7 +55,8 @@ STRUCTURE_SOURCE = "baostock"
 STRUCTURE_ADJUSTFLAG = "2"
 STRUCTURE_ENGINE = "chan.py"
 _MIN_KLINES = 120
-_MAX_LEVEL_LAG_DAYS = 7
+_MAX_LEVEL_LAG_DAYS = 0
+_WEEK_LEVEL_MAX_LAG_DAYS = 7
 
 _FREQ_ALIASES = {
     "week": "week",
@@ -275,7 +276,7 @@ def _refresh_lagging_level_inputs(symbol: str, level_inputs: list[LevelInput], c
     refreshed = []
     for item in level_inputs:
         last_day = _date_part(_last_row_date(item))
-        if _level_lag_days(last_day, latest_day) <= _MAX_LEVEL_LAG_DAYS:
+        if _level_lag_days(last_day, latest_day) <= _max_lag_days_for_level(item.raw_freq):
             refreshed.append(item)
             continue
 
@@ -398,7 +399,7 @@ def _level_freshness(level_inputs: list[LevelInput], serialized_levels: dict) ->
     for raw_freq, level_data in serialized_levels.items():
         item = by_freq.get(raw_freq)
         last_bar_at = str(_row_get(item.rows[-1], "date", "")) if item and item.rows else ""
-        is_lagging = _level_lag_days(_date_part(last_bar_at), latest_day) > _MAX_LEVEL_LAG_DAYS
+        is_lagging = _level_lag_days(_date_part(last_bar_at), latest_day) > _max_lag_days_for_level(raw_freq)
         is_stale = bool(level_data.get("error")) or is_lagging
         result[raw_freq] = {
             "last_bar_at": last_bar_at,
@@ -431,7 +432,7 @@ def _stale_reason(serialized_levels: dict, requested_levels: list[str], level_in
         default="",
     )
     for item in level_inputs:
-        if _level_lag_days(_date_part(_last_row_date(item)), latest_day) > _MAX_LEVEL_LAG_DAYS:
+        if _level_lag_days(_date_part(_last_row_date(item)), latest_day) > _max_lag_days_for_level(item.raw_freq):
             return "LEVEL_STALE"
     return ""
 
@@ -455,6 +456,11 @@ def _level_lag_days(value: str, latest_value: str) -> int:
     except ValueError:
         return 0
     return max(0, (latest - current).days)
+
+
+def _max_lag_days_for_level(raw_freq: str) -> int:
+    # 周线天然以最近一周收盘日为时间戳；其他正式结构级别必须跟上最新交易日。
+    return _WEEK_LEVEL_MAX_LAG_DAYS if raw_freq == "week" else _MAX_LEVEL_LAG_DAYS
 
 
 def _error_result(symbol: str, requested_levels: list[str], code: str, message: str) -> dict:

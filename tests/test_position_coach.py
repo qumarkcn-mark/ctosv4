@@ -73,6 +73,18 @@ def test_position_context_prefers_quote_price_for_pnl():
     assert context["pnl_pct"] == 20.0
 
 
+def test_realtime_quote_desync_is_explicit_and_does_not_silent_mix_with_structure():
+    algo = algorithm(path="CENTER_REBOUND", price=67.5)
+    context = build_position_context(None, algo, quote={"price": 81.0})
+    action = build_coach_action(context, algo)
+
+    assert context["current_price"] == 81.0
+    assert context["structure_price"] == 67.5
+    assert context["is_realtime_desynced"] is True
+    assert context["realtime_gap_pct"] == 20.0
+    assert "实时价与正式结构价" in action["reason"]
+
+
 def test_coach_action_merges_stop_and_structure_risk_lines():
     algo = algorithm(price=20.0)
     holding = {

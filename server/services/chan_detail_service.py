@@ -270,21 +270,38 @@ def _parse_chan_detail_sync(
     count: int,
     end_date: Optional[str] = None,
     cchan_preset: str = "live_tolerant",
+    kline_source: Optional[str] = None,
+    adjustflag: str = "2",
+    max_compute_bars: Optional[int] = None,
 ) -> dict:
     """
     同步版本的缠论结构解析。调用方应通过 run_in_threadpool 包装。
     """
     # V6 升级：后端强制提取 5000 根历史，保证线段和均线预热
-    COMPUTATION_COUNT = 5000
+    COMPUTATION_COUNT = max_compute_bars or 5000
 
     # 1. 读取 K 线（优先本地缓存）
-    rows = query_klines(symbol, freq, end_date=end_date, limit=max(count, COMPUTATION_COUNT))
+    rows = query_klines(
+        symbol,
+        freq,
+        end_date=end_date,
+        limit=max(count, COMPUTATION_COUNT),
+        source=kline_source,
+        adjustflag=adjustflag,
+    )
 
     if len(rows) < _MIN_KLINES:
         logger.info("本地数据不足 %s/%s，触发 BaoStock 快速拉取...", symbol, freq)
         try:
             fetch_klines_quick(symbol, freq)
-            rows = query_klines(symbol, freq, end_date=end_date, limit=max(count, COMPUTATION_COUNT))
+            rows = query_klines(
+                symbol,
+                freq,
+                end_date=end_date,
+                limit=max(count, COMPUTATION_COUNT),
+                source=kline_source,
+                adjustflag=adjustflag,
+            )
         except Exception as e:
             logger.warning("BaoStock 拉取失败: %s", e)
 
@@ -482,6 +499,9 @@ async def get_chan_detail(
     count: int = 500,
     end_date: Optional[str] = None,
     cchan_preset: str = "live_tolerant",
+    kline_source: Optional[str] = None,
+    adjustflag: str = "2",
+    max_compute_bars: Optional[int] = None,
 ) -> dict:
     """
     异步版本，供 FastAPI 路由调用。
@@ -500,6 +520,9 @@ async def get_chan_detail(
         count,
         end_date,
         cchan_preset,
+        kline_source,
+        adjustflag,
+        max_compute_bars,
     )
 
 
