@@ -1,4 +1,4 @@
-"""SQLite-backed memory for AI Native Radar shadow runs."""
+"""SQLite-backed memory for AI Native Radar commander runs."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def save_reasoning_run(
     gate_result: GateResult,
     model_route: ModelRoute | None = None,
 ) -> Optional[int]:
-    """Persist shadow run. Failure is non-blocking by design."""
+    """Persist commander run. Failure is non-blocking by design."""
     try:
         conn = get_connection()
         try:

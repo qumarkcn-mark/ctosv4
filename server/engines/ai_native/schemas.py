@@ -1,4 +1,4 @@
-"""Contracts for the AI Native Radar shadow pipeline."""
+"""Contracts for the AI Native Radar commander pipeline."""
 
 from __future__ import annotations
 

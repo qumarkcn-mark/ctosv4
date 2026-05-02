@@ -1,4 +1,4 @@
-"""Orchestrate the isolated AI Native Radar shadow flow."""
+"""Orchestrate the AI Native Radar commander flow."""
 
 from __future__ import annotations
 
@@ -36,9 +36,9 @@ async def build_ai_native_reasoning(
     mode: Optional[str] = None,
     llm_service: LLMService | None = None,
 ) -> AIReasoningResponse:
-    """Run the shadow AI-native reasoning loop.
+    """Run the AI-native commander reasoning loop.
 
-    老 Radar contract 是只读输入。任何 AI 失败都降级，不影响老 Radar。
+    Radar contract 是只读输入。任何 AI 失败都降级，不影响确定性结构雷达。
     """
     radar_response = await radar_api.get_radar(symbol, user_id=user_id, include_structure=True)
     radar_contract = radar_response.get("data") or {}
@@ -336,8 +336,8 @@ def _apply_user_model_settings(model_route, *, user_id: int) -> None:
 
     if model_route.tier != "simple" and settings.get("ai_native_radar_model"):
         model_route.model_name = str(settings["ai_native_radar_model"])
-    if isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
+    if model_route.tier != "simple" and isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
         model_route.thinking_enabled = settings["ai_native_radar_thinking_enabled"]
     effort = settings.get("ai_native_radar_reasoning_effort")
-    if effort in {"high", "max"}:
+    if model_route.tier != "simple" and effort in {"high", "max"}:
         model_route.reasoning_effort = effort

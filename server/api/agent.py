@@ -432,7 +432,7 @@ async def radar_deduce(request: InferenceRequest):
 
 @router.post("/ai-native-radar")
 async def ai_native_radar(request: AINativeRadarRequest):
-    """AI Native Radar 影子接口。默认关闭，不影响老 Radar。"""
+    """AI Native Radar 核心推演接口；失败时降级，不替代结构事实。"""
     if not config.AI_NATIVE_RADAR_ENABLED:
         return {"status": "disabled", "message": "AI Native Radar is disabled"}
     try:
@@ -477,7 +477,7 @@ async def list_ai_native_radar_runs(
     symbol: Optional[str] = Query(None),
     replay_status: Optional[str] = Query(None),
 ):
-    """列出 AI Native Radar 影子样本，供人工复盘。"""
+    """列出 AI Native Radar 推演样本，供人工复盘。"""
     try:
         from server.engines.ai_native.observation import list_reasoning_runs
 
@@ -522,7 +522,7 @@ async def review_ai_native_radar_run(run_id: int, request: AINativeRadarReviewRe
 
 @router.get("/ai-native-radar/observation-summary")
 async def ai_native_radar_observation_summary(user_id: int = Query(1)):
-    """汇总 AI Native Radar 影子观测质量，判断是否可进入 UI Beta。"""
+    """汇总 AI Native Radar 推演质量，用于判断核心体验稳定度。"""
     try:
         from server.engines.ai_native.observation import summarize_observation
 

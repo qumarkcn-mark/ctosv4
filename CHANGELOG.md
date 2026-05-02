@@ -4,7 +4,7 @@
 
 ### Radar
 
-- Added the AI Native Radar shadow loop behind `AI_NATIVE_RADAR_ENABLED=false`, with structure transcripts, hypothesis generation, verifier gates, isolated run storage, and fallback behavior that leaves the old Radar path untouched.
+- Promoted AI Native Radar to the default Radar command experience behind `AI_NATIVE_RADAR_ENABLED=true`, with structure transcripts, hypothesis generation, verifier gates, isolated run storage, and fallback behavior that keeps the deterministic structure Radar available.
 - Rebuilt the active Radar surface around trend deduction, A/B/C complete classification, structural templates, key boundaries, and position-aware coaching.
 - Added position linkage to Radar, including holding state, PnL context, nearest risk line, stop/trailing structure boundaries, and empty/holding mode separation.
 - Added realtime data source planning and contracts for QMT read-only bridge, TDX local 1-minute display, and future `data_mode=realtime_preview`.

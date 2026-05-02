@@ -125,7 +125,7 @@ def review_reasoning_run(
 
 
 def summarize_observation(*, user_id: int, target_review_count: int = TARGET_REVIEW_COUNT) -> ObservationSummary:
-    """Summarize whether the shadow loop is ready for a visible beta."""
+    """Summarize whether the AI commander experience is stable enough."""
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -282,7 +282,7 @@ def _readiness_reason(reviewed: int, target: int, avg_replay: float, fallback_ra
         return f"平均复盘分 {avg_replay:.2f} 低于 75"
     if fallback_rate > 0.25:
         return f"fallback 率 {fallback_rate:.2%} 高于 25%"
-    return "已达到 UI Beta 观察门槛"
+    return "已达到核心体验稳定门槛"
 
 
 def _loads(value: object) -> dict:
