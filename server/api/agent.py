@@ -581,6 +581,35 @@ async def auto_settle_ai_native_radar_runs(request: AINativeRadarAutoSettleReque
         raise HTTPException(status_code=500, detail=f"AI Native Radar 自动结算失败: {str(e)}")
 
 
+@router.get("/stop-reduce/training-report")
+async def stop_reduce_training_report(
+    user_id: int = Query(1),
+    limit: int = Query(50, ge=1, le=200),
+    symbol: Optional[str] = Query(None),
+):
+    """读取 AI 止损/减仓影子训练报告，只展示，不触发交易或结算。"""
+    try:
+        from server.engines.ai_native.stop_reduce_report import build_stop_reduce_training_report
+
+        def _load_report():
+            conn = get_connection()
+            try:
+                return build_stop_reduce_training_report(
+                    conn,
+                    user_id=user_id,
+                    symbol=symbol,
+                    limit=limit,
+                )
+            finally:
+                conn.close()
+
+        report = await run_in_threadpool(_load_report)
+        return {"status": "success", "data": report}
+    except Exception as e:
+        logger.error(f"AI Stop/Reduce training report failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI 训练报告加载失败: {str(e)}")
+
+
 def _radar_contract_to_display_snapshot(radar_data: dict) -> dict:
     """把 Radar v1 contract 映射成 TRadar 历史快照仍能读取的显示形状。"""
     structure = radar_data.get("structure") or {}

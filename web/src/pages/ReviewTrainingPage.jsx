@@ -2,11 +2,13 @@ import { useState } from 'react'
 import BehaviorReport from './BehaviorReport.jsx'
 import SandTable from './SandTable.jsx'
 import AIReviewPanel from './AIReviewPanel.jsx'
+import AITrainingReportPanel from './AITrainingReportPanel.jsx'
 import './ReviewTrainingPage.css'
 
 const TABS = [
   { id: 'behavior', label: '行为体检' },
   { id: 'ai-review', label: 'AI 推演复盘' },
+  { id: 'ai-training', label: 'AI 训练报告' },
   { id: 'training', label: '模拟训练' },
 ]
 
@@ -39,6 +41,7 @@ export default function ReviewTrainingPage() {
       <section className={`review-training-body review-training-body--${activeTab}`}>
         {activeTab === 'behavior' && <BehaviorReport />}
         {activeTab === 'ai-review' && <AIReviewPanel />}
+        {activeTab === 'ai-training' && <AITrainingReportPanel />}
         {activeTab === 'training' && <SandTable />}
       </section>
     </div>

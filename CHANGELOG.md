@@ -9,6 +9,7 @@
 - Added position linkage to Radar, including holding state, PnL context, nearest risk line, stop/trailing structure boundaries, and empty/holding mode separation.
 - Added realtime data source planning and contracts for QMT read-only bridge, TDX local 1-minute display, and future `data_mode=realtime_preview`.
 - Added Kline `1分` display mode. It prefers QMT when available, falls back to TDX local 1-minute files, and is explicitly labeled display/replay only.
+- Added the AI Native V1.1 training report for daily holding plans, stop/reduce shadow intents, settlement scores, sparse error memory, and calibration state.
 
 ### Data Sources
 
