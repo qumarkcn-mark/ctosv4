@@ -241,6 +241,24 @@ CREATE TABLE IF NOT EXISTS ai_calibration_stats (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS ai_stop_reduce_daily_runs (
+    run_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    run_date TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    plans_saved INTEGER NOT NULL DEFAULT 0,
+    intents_enqueued INTEGER NOT NULL DEFAULT 0,
+    intents_settled INTEGER NOT NULL DEFAULT 0,
+    case_memory_writes INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    summary_json TEXT DEFAULT '{}',
+    disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
+);
+
 CREATE TABLE IF NOT EXISTS fundamental_snapshots (
     snapshot_id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -988,6 +1006,25 @@ def run_migrations(conn: sqlite3.Connection):
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS ai_stop_reduce_daily_runs (
+            run_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            run_date TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            plans_saved INTEGER NOT NULL DEFAULT 0,
+            intents_enqueued INTEGER NOT NULL DEFAULT 0,
+            intents_settled INTEGER NOT NULL DEFAULT 0,
+            case_memory_writes INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            summary_json TEXT DEFAULT '{}',
+            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS fundamental_snapshots (
             snapshot_id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id),
@@ -1031,6 +1068,7 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_ai_rebalance_intents_plan ON ai_rebalance_intents(source_plan_id)",
         "CREATE INDEX IF NOT EXISTS idx_ai_stop_reduce_scores_intent ON ai_stop_reduce_scores(intent_id)",
         "CREATE INDEX IF NOT EXISTS idx_ai_case_memory_key ON ai_case_memory(user_id, case_key, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_stop_reduce_daily_runs_user_date ON ai_stop_reduce_daily_runs(user_id, run_date, started_at)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_snapshots_symbol ON fundamental_snapshots(user_id, symbol, as_of)",
         "CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_user_date ON ai_holding_plans(user_id, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_symbol ON ai_holding_plans(user_id, symbol, as_of)",

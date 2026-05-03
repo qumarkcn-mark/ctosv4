@@ -9,9 +9,11 @@ from server.db.database import SCHEMA
 from server.engines.ai_native.schemas import AIReasoningResponse, PositionContext
 from server.workers.stop_reduce_daily import (
     StopReduceDailyConfig,
+    StopReduceDailyReport,
     parse_args,
     render_stop_reduce_daily_report,
     run_stop_reduce_daily,
+    run_stop_reduce_daily_logged,
 )
 
 
@@ -127,6 +129,54 @@ def test_daily_dry_run_does_not_persist(monkeypatch):
     assert report.intents == 1
     assert conn.execute("SELECT COUNT(*) FROM ai_holding_plans").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM ai_rebalance_intents").fetchone()[0] == 0
+
+
+def test_daily_logged_persists_success_audit(monkeypatch):
+    conn = make_conn()
+
+    async def fake_runner(**kwargs):
+        return StopReduceDailyReport(
+            generated_at="2026-05-04T15:40:00",
+            rows=[{"stage": "monitor", "status": "PLANNED"}],
+        )
+
+    report = asyncio.run(
+        run_stop_reduce_daily_logged(
+            config=StopReduceDailyConfig(user_id=1, skip_settlement=True),
+            trigger="MANUAL",
+            runner=fake_runner,
+            audit_conn=conn,
+        )
+    )
+
+    row = conn.execute("SELECT * FROM ai_stop_reduce_daily_runs").fetchone()
+    assert report.generated_at == "2026-05-04T15:40:00"
+    assert row["trigger"] == "MANUAL"
+    assert row["mode"] == "MONITOR"
+    assert row["status"] == "SUCCESS"
+    assert row["summary_json"]
+
+
+def test_daily_logged_persists_failure_audit(monkeypatch):
+    conn = make_conn()
+
+    async def fake_runner(**kwargs):
+        raise RuntimeError("boom")
+
+    try:
+        asyncio.run(
+            run_stop_reduce_daily_logged(
+                config=StopReduceDailyConfig(user_id=1, skip_monitor=True),
+                trigger="AUTO",
+                runner=fake_runner,
+                audit_conn=conn,
+            )
+        )
+    except RuntimeError:
+        pass
+
+    row = conn.execute("SELECT mode, status, error FROM ai_stop_reduce_daily_runs").fetchone()
+    assert dict(row) == {"mode": "SETTLEMENT", "status": "FAILED", "error": "boom"}
 
 
 def test_parse_args_supports_daily_flags():

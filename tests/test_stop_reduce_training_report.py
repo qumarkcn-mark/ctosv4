@@ -6,7 +6,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.api import agent
 from server.db.database import SCHEMA
-from server.engines.ai_native.stop_reduce_report import build_stop_reduce_training_report
+from server.engines.ai_native.stop_reduce_report import (
+    build_stop_reduce_training_report,
+    build_stop_reduce_training_status,
+)
+from server.workers.stop_reduce_daily import StopReduceDailyReport
 
 
 def make_conn():
@@ -182,4 +186,70 @@ def test_stop_reduce_training_report_api(monkeypatch):
 
     assert response["status"] == "success"
     assert response["data"]["overview"]["plans"] == 1
+    assert "仅供参考" in response["data"]["disclaimer"]
+
+
+def test_stop_reduce_training_status_reads_daily_audit_and_today_counts():
+    conn = make_conn()
+    seed_plan(conn)
+    seed_intent(conn)
+    conn.execute(
+        """
+        INSERT INTO ai_stop_reduce_daily_runs (
+            run_id, user_id, run_date, trigger, mode, status, started_at,
+            completed_at, plans_saved, intents_enqueued, intents_settled,
+            case_memory_writes, summary_json
+        )
+        VALUES (
+            'daily-1', 1, '2026-05-02', 'AUTO', 'FULL', 'SUCCESS',
+            '2026-05-02T15:40:00', '2026-05-02T15:41:00', 1, 1, 0, 0,
+            '{"plans_saved":1}'
+        )
+        """
+    )
+
+    status = build_stop_reduce_training_status(conn, user_id=1, today="2026-05-02")
+
+    assert status["has_run_today"] is True
+    assert status["today_run"]["trigger"] == "AUTO"
+    assert status["today_run"]["summary"] == {"plans_saved": 1}
+    assert status["today_counts"] == {"plans": 1, "intents": 1, "scores": 0}
+
+
+def test_stop_reduce_training_status_api(monkeypatch):
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO ai_stop_reduce_daily_runs (
+            run_id, user_id, run_date, trigger, mode, status, started_at
+        )
+        VALUES ('daily-1', 1, '2026-05-02', 'MANUAL', 'SETTLEMENT', 'SUCCESS', '2026-05-02T15:40:00')
+        """
+    )
+    monkeypatch.setattr(agent, "get_connection", lambda: conn)
+
+    response = __import__("asyncio").run(
+        agent.stop_reduce_training_status(user_id=1, today="2026-05-02")
+    )
+
+    assert response["status"] == "success"
+    assert response["data"]["has_run_today"] is True
+    assert response["data"]["scheduler"]["enabled"] in {True, False}
+
+
+def test_stop_reduce_run_daily_api(monkeypatch):
+    async def fake_logged(**kwargs):
+        return StopReduceDailyReport(generated_at="2026-05-02T15:40:00")
+
+    monkeypatch.setattr("server.workers.stop_reduce_daily.run_stop_reduce_daily_logged", fake_logged)
+
+    response = __import__("asyncio").run(
+        agent.run_stop_reduce_training_daily(
+            agent.StopReduceDailyRunRequest(user_id=1, mode="SETTLEMENT")
+        )
+    )
+
+    assert response["status"] == "success"
+    assert response["data"]["mode"] == "SETTLEMENT"
+    assert response["data"]["summary"]["intents_settled"] == 0
     assert "仅供参考" in response["data"]["disclaimer"]

@@ -9,11 +9,33 @@ const STATUS_OPTIONS = [
 
 export default function AITrainingReportPanel() {
   const [report, setReport] = useState(null)
+  const [trainingStatus, setTrainingStatus] = useState(null)
   const [symbolInput, setSymbolInput] = useState('')
   const [symbolFilter, setSymbolFilter] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
+  const [statusLoading, setStatusLoading] = useState(false)
+  const [runMode, setRunMode] = useState('')
   const [error, setError] = useState('')
+  const [statusError, setStatusError] = useState('')
+  const [runNotice, setRunNotice] = useState('')
+
+  const loadStatus = useCallback(async () => {
+    setStatusLoading(true)
+    setStatusError('')
+    try {
+      const res = await fetch(`${API_BASE}/agent/stop-reduce/training-status?user_id=1`)
+      const json = await res.json()
+      if (!res.ok || json.status !== 'success') {
+        throw new Error(json?.detail || 'AI 训练状态加载失败')
+      }
+      setTrainingStatus(json.data)
+    } catch (err) {
+      setStatusError(err?.message || 'AI 训练状态加载失败')
+    } finally {
+      setStatusLoading(false)
+    }
+  }, [])
 
   const loadReport = useCallback(async () => {
     setLoading(true)
@@ -37,6 +59,40 @@ export default function AITrainingReportPanel() {
   useEffect(() => {
     loadReport()
   }, [loadReport])
+
+  useEffect(() => {
+    loadStatus()
+  }, [loadStatus])
+
+  const runTraining = async (mode) => {
+    setRunMode(mode)
+    setRunNotice('')
+    setStatusError('')
+    try {
+      const res = await fetch(`${API_BASE}/agent/stop-reduce/run-daily`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: 1,
+          symbol: symbolFilter || null,
+          mode,
+          limit: 20,
+          settlement_limit: 5,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.status !== 'success') {
+        throw new Error(json?.detail || 'AI 训练触发失败')
+      }
+      const summary = json.data?.summary || {}
+      setRunNotice(`完成 ${modeLabel(mode)}：计划 ${summary.plans_saved ?? 0} / 意图 ${summary.intents_enqueued ?? 0} / 结算 ${summary.intents_settled ?? 0}`)
+      await Promise.all([loadStatus(), loadReport()])
+    } catch (err) {
+      setStatusError(err?.message || 'AI 训练触发失败')
+    } finally {
+      setRunMode('')
+    }
+  }
 
   const applyFilter = (event) => {
     event.preventDefault()
@@ -80,6 +136,16 @@ export default function AITrainingReportPanel() {
       <div className="ai-training-disclaimer">
         {report?.disclaimer || '仅供参考，不构成投资建议'}
       </div>
+
+      <TrainingControl
+        status={trainingStatus}
+        loading={statusLoading}
+        running={runMode}
+        error={statusError}
+        notice={runNotice}
+        onRefresh={loadStatus}
+        onRun={runTraining}
+      />
 
       <div className="ai-training-desktop-notice">
         请在桌面端查看 AI 训练报告，以保证计划、评分和机器明细可以完整扫读。
@@ -138,6 +204,51 @@ export default function AITrainingReportPanel() {
         </>
       )}
     </div>
+  )
+}
+
+function TrainingControl({ status, loading, running, error, notice, onRefresh, onRun }) {
+  const todayRun = status?.today_run
+  const latestRun = status?.latest_run
+  const counts = status?.today_counts || {}
+  const scheduler = status?.scheduler || {}
+  return (
+    <section className="ai-training-control" aria-label="AI 训练控制">
+      <div className="ai-training-control-status">
+        <div>
+          <span>今日状态</span>
+          <strong>{loading ? '同步中' : todayRun ? runStatusLabel(todayRun.status) : '未运行'}</strong>
+        </div>
+        <div>
+          <span>最近运行</span>
+          <strong>{latestRun ? `${latestRun.trigger} · ${runStatusLabel(latestRun.status)}` : '--'}</strong>
+        </div>
+        <div>
+          <span>今日产物</span>
+          <strong>{counts.plans ?? 0}/{counts.intents ?? 0}/{counts.scores ?? 0}</strong>
+        </div>
+        <div>
+          <span>自动窗口</span>
+          <strong>{scheduler.enabled ? `${scheduler.start}-${scheduler.end}` : '关闭'}</strong>
+        </div>
+      </div>
+      <div className="ai-training-control-actions">
+        <button type="button" onClick={() => onRun('FULL')} disabled={!!running}>
+          {running === 'FULL' ? '训练中' : '立即训练'}
+        </button>
+        <button type="button" onClick={() => onRun('SETTLEMENT')} disabled={!!running}>
+          {running === 'SETTLEMENT' ? '结算中' : '只结算'}
+        </button>
+        <button type="button" onClick={onRefresh} disabled={loading || !!running}>
+          状态刷新
+        </button>
+      </div>
+      {(error || notice) && (
+        <div className={`ai-training-control-message ${error ? 'is-error' : ''}`}>
+          {error || notice}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -319,6 +430,22 @@ function actionLabel(action) {
     REDUCE: '减仓',
     EXIT: '退出',
   }[action] || action || '--'
+}
+
+function runStatusLabel(status) {
+  return {
+    RUNNING: '运行中',
+    SUCCESS: '成功',
+    FAILED: '失败',
+  }[status] || status || '--'
+}
+
+function modeLabel(mode) {
+  return {
+    FULL: '训练',
+    SETTLEMENT: '结算',
+    MONITOR: '计划',
+  }[mode] || mode
 }
 
 function formatNumber(value) {
