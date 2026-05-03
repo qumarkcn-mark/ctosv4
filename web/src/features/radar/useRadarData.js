@@ -6,8 +6,9 @@ const POLL_INTERVAL_MS = 120_000
 const REQUEST_TIMEOUT_MS = 75_000
 const radarRequests = new Map()
 
-async function loadRadar(symbol) {
-  const cached = radarRequests.get(symbol)
+async function loadRadar(symbol, refreshToken = 0) {
+  const requestKey = `${symbol}:${refreshToken}`
+  const cached = radarRequests.get(requestKey)
   if (cached) return cached
 
   const controller = new AbortController()
@@ -25,14 +26,14 @@ async function loadRadar(symbol) {
     })
     .finally(() => {
       clearTimeout(timeout)
-      radarRequests.delete(symbol)
+      radarRequests.delete(requestKey)
     })
 
-  radarRequests.set(symbol, request)
+  radarRequests.set(requestKey, request)
   return request
 }
 
-export function useRadarData(symbol) {
+export function useRadarData(symbol, refreshToken = 0) {
   const [radar, setRadar] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -47,7 +48,7 @@ export function useRadarData(symbol) {
     if (!silent) setLoading(true)
     setError('')
     try {
-      const nextRadar = await loadRadar(symbol)
+      const nextRadar = await loadRadar(symbol, refreshToken)
       if (mountedRef.current && requestSeqRef.current === requestSeq) {
         setRadar(nextRadar)
       }
@@ -63,7 +64,7 @@ export function useRadarData(symbol) {
         setLoading(false)
       }
     }
-  }, [symbol])
+  }, [symbol, refreshToken])
 
   useEffect(() => {
     mountedRef.current = true

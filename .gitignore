@@ -36,3 +36,4 @@ miniprogram/node_modules/
 logs/
 uvicorn.log
 *.log
+reports/

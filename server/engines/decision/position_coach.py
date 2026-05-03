@@ -65,6 +65,17 @@ def build_position_context(
     structure_price = _structure_price(algorithm, holding)
     quote_price = _num((quote or {}).get("price"))
     price_source = "tencent_quote" if quote_price > 0 else "structure"
+    realtime_desync = _realtime_desync(current_price, structure_price, price_source)
+    price_context = {
+        "current_price": current_price,
+        "structure_price": structure_price,
+        "quote_price": quote_price,
+        "price_source": price_source,
+        "quote_time": (quote or {}).get("time") or "",
+        "is_realtime_desynced": realtime_desync["is_desynced"],
+        "realtime_gap_pct": realtime_desync["gap_pct"],
+        "realtime_note": realtime_desync["note"],
+    }
     if not holding:
         return {
             "state": "EMPTY",
@@ -72,11 +83,7 @@ def build_position_context(
             "is_holding": False,
             "quantity": 0,
             "avg_cost": 0,
-            "current_price": current_price,
-            "structure_price": structure_price,
-            "quote_price": quote_price,
-            "price_source": price_source,
-            "quote_time": (quote or {}).get("time") or "",
+            **price_context,
             "pnl_pct": None,
             "position_value": 0,
             "weight_pct": None,
@@ -108,11 +115,7 @@ def build_position_context(
         "is_holding": True,
         "quantity": qty,
         "avg_cost": cost,
-        "current_price": current_price,
-        "structure_price": structure_price,
-        "quote_price": quote_price,
-        "price_source": price_source,
-        "quote_time": (quote or {}).get("time") or "",
+        **price_context,
         "pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
         "position_value": round(position_value, 2),
         "weight_pct": round(weight_pct, 2) if weight_pct is not None else None,
@@ -164,7 +167,10 @@ def infer_radar_state(algorithm: dict) -> str:
     transition = algorithm.get("transition") or {}
     transition_to = transition.get("to")
     path = algorithm.get("path")
+    a_state = algorithm.get("a_state") or ((algorithm.get("confirmation") or {}).get("state") or "")
 
+    if a_state.startswith("C_"):
+        return "DOWNWARD_LEAVING"
     if "THIRD_BUY_FAST_SELL_RISK" in pattern_codes:
         return "FAST_SELL_RISK"
     if "THIRD_BUY_RETEST_UP" in pattern_codes:
@@ -266,6 +272,16 @@ def _summary(position_state: str, radar_state: str, action: str) -> str:
 
 
 def _reason(position_context: dict, algorithm: dict) -> str:
+    if position_context.get("is_realtime_desynced"):
+        overlay = algorithm.get("intraday_overlay") or {}
+        if overlay.get("is_provisional"):
+            return (
+                f"{overlay.get('summary') or '盘中实时价已触发路径变化'}"
+                "这是盘中临时重判，仍需等待分钟K线闭合回写正式结构。"
+            )
+        gap = position_context.get("realtime_gap_pct")
+        gap_text = f"偏离约 {gap:.1f}%" if isinstance(gap, (int, float)) else "明显偏离"
+        return f"实时价与正式结构价{gap_text}，主推演仍按已闭合K线切片判定；先更新分钟结构或等待新K线闭合。"
     pnl = position_context.get("pnl_pct")
     if pnl is None:
         return algorithm.get("summary") or "当前按结构推演管理。"
@@ -452,6 +468,20 @@ def _structure_price(algorithm: dict, holding: Optional[dict]) -> float:
     if holding:
         return _num(holding.get("current_price"))
     return 0.0
+
+
+def _realtime_desync(current_price: float, structure_price: float, price_source: str) -> dict:
+    if price_source == "structure" or current_price <= 0 or structure_price <= 0:
+        return {"is_desynced": False, "gap_pct": None, "note": ""}
+    gap_pct = abs(current_price - structure_price) / structure_price * 100
+    if gap_pct < 8:
+        return {"is_desynced": False, "gap_pct": round(gap_pct, 2), "note": ""}
+    direction = "高于" if current_price > structure_price else "低于"
+    return {
+        "is_desynced": True,
+        "gap_pct": round(gap_pct, 2),
+        "note": f"实时价{direction}正式结构价 {gap_pct:.1f}%，正式雷达仍按已闭合K线切片判定。",
+    }
 
 
 def _first_valid_boundary(items: list[dict]) -> Optional[dict]:

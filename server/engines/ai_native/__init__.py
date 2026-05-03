@@ -1,5 +1,4 @@
-"""AI Native Radar shadow engine.
+"""AI Native Radar commander engine.
 
-第一期作为影子系统运行，只读老 Radar contract，不影响老 Radar 主路径。
+作为雷达的核心 AI 推演体验运行，只读结构事实；失败时降级到确定性结构雷达。
 """
-

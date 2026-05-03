@@ -1,13 +1,22 @@
 """CSV 导入 + 行情查询 API"""
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi.concurrency import run_in_threadpool
 
 from server.db.database import get_connection
+from server.domain.symbols import normalize_symbol
 from server.services.csv_importer import import_csv
 from server.services.price_service import get_current_price, get_batch_prices, get_daily_klines, get_minute_klines
-from server.services.qmt_bridge_client import fetch_qmt_klines, qmt_health, qmt_stream_probe
+from server.services.qmt_bridge_client import (
+    fetch_qmt_klines,
+    qmt_health,
+    qmt_log_health,
+    qmt_log_quotes,
+    qmt_stream_probe,
+)
 from server.services.tdx_minute_service import read_tdx_1m_klines, tdx_minute_status
 
 router = APIRouter()
@@ -90,6 +99,51 @@ async def sync_klines():
     return result
 
 
+@router.post("/sync-klines/{symbol}")
+async def sync_symbol_klines(symbol: str):
+    """只同步当前股票的正式结构 K 线数据，供看盘页手动刷新使用。"""
+    from server.services.baostock_service import fetch_klines_sync
+    from server.workers.kline_sync_worker import ALL_FREQS
+
+    try:
+        canonical_symbol = normalize_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    def _sync_one_symbol():
+        started_at = datetime.now().isoformat(timespec="seconds")
+        results = []
+        total_written = 0
+        error_count = 0
+
+        for freq in ALL_FREQS:
+            try:
+                written = fetch_klines_sync(canonical_symbol, freq)
+                total_written += written
+                results.append({"freq": freq, "written": written, "status": "ok"})
+            except Exception as exc:  # 单级别失败不阻断其他级别
+                error_count += 1
+                results.append({
+                    "freq": freq,
+                    "written": 0,
+                    "status": "error",
+                    "error": str(exc),
+                })
+
+        return {
+            "status": "success" if error_count == 0 else "partial",
+            "symbol": canonical_symbol,
+            "freqs": ALL_FREQS,
+            "total_written": total_written,
+            "errors": error_count,
+            "results": results,
+            "started_at": started_at,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    return await run_in_threadpool(_sync_one_symbol)
+
+
 @router.get("/sync-status")
 async def sync_status():
     """查询 K 线自动同步状态"""
@@ -131,6 +185,28 @@ async def query_qmt_stream_probe(
         raise HTTPException(502, f"QMT SSE 网关探测失败: {exc}") from exc
 
 
+# ── QMT 日志行情旁路：只做盘中 preview，不进正式结构 ──
+
+@router.get("/qmt-log/health")
+async def query_qmt_log_health():
+    """查询 Windows QMT 日志行情旁路状态；仅用于 preview。"""
+    return await qmt_log_health()
+
+
+@router.get("/qmt-log/quotes")
+async def query_qmt_log_quotes(symbols: str = Query(..., description="逗号分隔的股票代码")):
+    """读取 QMT 日志行情快照；不作为正式 Chan/Radar 结构源。"""
+    symbol_list = [item.strip() for item in symbols.split(",") if item.strip()]
+    if not symbol_list:
+        raise HTTPException(400, "请提供至少一个股票代码")
+    if len(symbol_list) > 50:
+        raise HTTPException(400, "最多同时查询 50 只")
+    try:
+        return await qmt_log_quotes(symbol_list)
+    except Exception as exc:
+        raise HTTPException(502, f"QMT 日志行情查询失败: {exc}") from exc
+
+
 # ── TDX 本地 1 分钟展示源 ──
 
 @router.get("/tdx/minute/health")
@@ -143,10 +219,17 @@ async def query_tdx_minute_health(symbol: Optional[str] = None):
 async def query_tdx_1m_klines(
     symbol: str,
     count: int = Query(240, ge=1, le=5000),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"),
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"),
 ):
     """读取本地 TDX 1分钟 K 线，仅用于 Kline 展示/历史回放。"""
-    rows = read_tdx_1m_klines(symbol, limit=count, end_date=end_date)
+    rows = await run_in_threadpool(
+        read_tdx_1m_klines,
+        symbol,
+        limit=count,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not rows:
         raise HTTPException(404, f"无法读取 {symbol} 的 TDX 本地1分钟数据")
     return {

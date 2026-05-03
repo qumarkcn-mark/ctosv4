@@ -89,6 +89,7 @@ class LevelAtom:
     center_relation: str = "UNKNOWN"
     leave_return_status: dict = field(default_factory=dict)
     last_bi_dir: str = "unknown"
+    last_bi: dict = field(default_factory=dict)
     buy_events: list[BspEvent] = field(default_factory=list)
     sell_events: list[BspEvent] = field(default_factory=list)
     event_sequence: list[dict] = field(default_factory=list)
@@ -152,6 +153,7 @@ def build_level_atom(level: dict, public_level: str) -> LevelAtom:
     event_sequence = _event_sequence(buy_events, sell_events)
     center_binding = _center_binding_index(buy_events, sell_events)
     leave_return_status = _leave_return_status(price, center, buy_events, sell_events)
+    last_bi = _last_bi_from_level(level)
     momentum_compare = _momentum_compare_from_level(level, last_bi_dir)
     historical_high = _historical_high_from_level(level, price)
     divergence = _divergence_from_level(level)
@@ -170,6 +172,7 @@ def build_level_atom(level: dict, public_level: str) -> LevelAtom:
         center_relation=_center_relation(previous_center, center),
         leave_return_status=leave_return_status,
         last_bi_dir=last_bi_dir,
+        last_bi=last_bi,
         buy_events=buy_events,
         sell_events=sell_events,
         event_sequence=event_sequence,
@@ -238,6 +241,18 @@ def classify_path_v2(atoms: dict, freshness: Optional[dict] = None) -> dict:
             blocking_reasons=[],
             warnings=warnings,
             candidates=["BOTTOM_REPAIR"],
+        )
+
+    if _is_up_bias(l0) and _is_up_bias(l1) and _is_structural_high_breakout(l0):
+        return _classification(
+            path="UPWARD_MAJOR_WAVE",
+            phase="BREAKOUT_EXTENSION",
+            relation="L0_STRUCTURAL_HIGH_BREAKOUT",
+            confidence="HIGH" if not warnings else "MEDIUM",
+            reason_codes=["L0_BREAKS_CONFIRMED_STRUCTURAL_HIGH"],
+            blocking_reasons=[],
+            warnings=warnings,
+            candidates=["HIGH_VOLATILITY_OSCILLATION", "PULLBACK_IN_UPTREND"],
         )
 
     if _is_up_bias(l0) and _is_up_bias(l1) and _is_up_extension(l2) and not _has_active_sell_risk(l2):
@@ -398,6 +413,28 @@ def build_boundaries_v2(atoms: dict, classification: dict, patterns: Optional[li
             "support": [
                 _boundary("L1", l1, "ZD", l1.center.zd, "watch", "30分钟中枢下沿"),
                 _boundary("L2", l2, "ZD", l2.center.zd, "watch", "5分钟中枢下沿"),
+            ],
+        }), atoms, patterns or [])
+
+    if path == "UPWARD_MAJOR_WAVE" and phase == "BREAKOUT_EXTENSION":
+        return _apply_pattern_boundaries(_boundary_set({
+            "confirm": [
+                _historical_high_boundary(l0, "hold_above", "守住旧结构前高，突破后的上升离开段有效"),
+            ],
+            "maintain": [
+                _historical_high_boundary(l0, "hold_above", "维持在旧结构前高上方，新高延伸仍有效"),
+                _boundary("L1", l1, "ZG", l1.center.zg, "hold_above", "守住30分钟中枢上沿，中级别仍强"),
+            ],
+            "invalidate": [
+                _historical_high_boundary(l0, "break_below", "跌回旧结构前高下方且拉不回，突破失败转入高位震荡"),
+                _boundary("L1", l1, "ZD", l1.center.zd, "break_below", "跌破30分钟结构下沿，中级别转弱"),
+            ],
+            "pressure": [
+                _current_bar_high_boundary(l0, "watch", "当日新高，观察能否继续延伸或出现背驰"),
+            ],
+            "support": [
+                _historical_high_boundary(l0, "watch", "旧结构前高，突破后回踩不破则偏强"),
+                _boundary("L1", l1, "ZG", l1.center.zg, "watch", "30分钟中枢上沿"),
             ],
         }), atoms, patterns or [])
 
@@ -614,10 +651,12 @@ def compose_radar_output_v2(
 ) -> dict:
     path = classification.get("path") or "NO_EDGE"
     phase = classification.get("phase") or "STANDARD"
-    current_scenario_id = _current_scenario_id(path, classification)
     confirmation = _confirmation_status(boundaries, atoms)
+    current_scenario_id = _invalid_scenario_from_confirmation(confirmation) or _current_scenario_id(path, classification)
+    scenarios = _scenarios_with_confirmation(scenarios, confirmation)
     return {
         "current_scenario_id": current_scenario_id,
+        "scenarios": scenarios,
         "confirmation": confirmation,
         "boundary_groups": _boundary_groups_for_trading(boundaries, atoms),
         "trigger_playbook": _trigger_playbook(boundaries, confirmation, atoms),
@@ -662,12 +701,44 @@ def _current_scenario_id(path: str, classification: dict) -> str:
     return "B"
 
 
+def _invalid_scenario_from_confirmation(confirmation: dict) -> str:
+    state = (confirmation or {}).get("state") or ""
+    if state.startswith("C_"):
+        return "C"
+    return ""
+
+
+def _scenarios_with_confirmation(scenarios: list[dict], confirmation: dict) -> list[dict]:
+    current = _invalid_scenario_from_confirmation(confirmation)
+    if not current:
+        return scenarios
+
+    adjusted = []
+    for scenario in scenarios:
+        item = dict(scenario)
+        sid = item.get("id")
+        if sid == current:
+            item["state"] = "CURRENT"
+        elif current == "A" and sid == "B":
+            item["state"] = "CONFIRMED"
+        elif current == "C" and sid == "B":
+            item["state"] = "FAILED"
+        elif current == "C" and sid == "A":
+            item["state"] = "BLOCKED"
+        else:
+            item["state"] = item.get("state") or "PENDING"
+        adjusted.append(item)
+    return adjusted
+
+
 def _action_bias(path: str, phase: str) -> str:
     if path == "NO_EDGE":
         return "WAIT_STRUCTURE"
     if path == "DOWNWARD_DEFENSE":
         return "DEFENSIVE"
     if path == "UPWARD_MAJOR_WAVE":
+        if phase == "BREAKOUT_EXTENSION":
+            return "WATCH_BREAKOUT_HOLD"
         return "HOLD_OR_TRAIL"
     if path == "PULLBACK_IN_UPTREND" and phase == "MICRO_CONVERSION":
         return "WAIT_BREAKOUT"
@@ -721,6 +792,7 @@ def _output_summary(
     base = {
         ("PULLBACK_IN_UPTREND", "MICRO_CONVERSION"): "5分钟多空转换点",
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST"): "中枢上沿争夺",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION"): "突破旧高后的上升延伸",
         ("UPWARD_MAJOR_WAVE", "STANDARD"): "主升路径维持观察",
         ("PULLBACK_IN_UPTREND", "STANDARD"): "上升趋势中的回落验证",
         ("HIGH_VOLATILITY_OSCILLATION", "STANDARD"): "高波动震荡",
@@ -740,6 +812,18 @@ def _output_summary(
         if state in {"A_FULL_TRIGGERED", "A_PARTIAL_TRIGGERED"}:
             return "三买回踩向上，A 路径已确认。"
         return "三买回踩向上，等待确认后的持有管理。"
+    if "FAILED_PULLBACK_SECOND_BUY_REPAIR" in pattern_codes:
+        if state in {"A_FULL_TRIGGERED", "A_PARTIAL_TRIGGERED"}:
+            return "失效后类二买修复向上确认，进入执行前复核。"
+        if state == "C_TRIGGERED":
+            return "失效后类二买修复失败，继续转入防守。"
+        return "回落失效后出现低位5分钟中枢，进入类二买修复观察。"
+    if path == "UPWARD_MAJOR_WAVE" and phase == "BREAKOUT_EXTENSION":
+        if state in {"A_FULL_TRIGGERED", "A_PARTIAL_TRIGGERED"}:
+            return "突破旧结构前高并站稳，A 路径已确认。"
+        if state == "C_TRIGGERED":
+            return "跌回旧结构前高下方，突破延伸进入失效观察。"
+        return "突破旧高后的上升延伸，观察能否继续站稳。"
     if state == "C_TRIGGERED":
         return f"{base}，当前已进入失效路径。"
     if state == "A_FULL_TRIGGERED":
@@ -977,6 +1061,44 @@ def _trigger_condition_text(item: dict) -> str:
     return f"{trigger}{short}" if trigger and short else short or item.get("meaning", "")
 
 
+def _historical_high_boundary(atom: Optional[LevelAtom], trigger: str, meaning: str) -> Optional[dict]:
+    if not atom:
+        return None
+    high = atom.historical_high or {}
+    price = _num(high.get("price"))
+    if price <= 0:
+        return None
+    return _clean_boundary({
+        "level_role": "L0",
+        "level": atom.public_level,
+        "field": "ATH",
+        "value": _round_price(price),
+        "trigger": trigger,
+        "meaning": meaning,
+        "time": high.get("time") or "",
+        "source": high.get("source") or "confirmed_structure",
+        "distance_pct": _num(high.get("distance_pct")),
+    })
+
+
+def _current_bar_high_boundary(atom: Optional[LevelAtom], trigger: str, meaning: str) -> Optional[dict]:
+    if not atom:
+        return None
+    high = atom.historical_high or {}
+    price = _num(high.get("current_bar_high"))
+    if price <= 0:
+        return None
+    return _clean_boundary({
+        "level_role": "L0",
+        "level": atom.public_level,
+        "field": "HIGH",
+        "value": _round_price(price),
+        "trigger": trigger,
+        "meaning": meaning,
+        "time": high.get("current_bar_time") or "",
+    })
+
+
 def _boundary_filter(items: list[dict], level_role: str) -> list[dict]:
     return [item for item in items if item.get("level_role") == level_role]
 
@@ -1155,6 +1277,9 @@ def _scenario_name(path: str, phase: str, scenario_id: str) -> str:
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "A"): "上沿争夺转强",
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "B"): "中枢上沿震荡",
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "C"): "上沿尝试失败",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "A"): "突破旧高站稳",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "B"): "旧高上方延伸",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "C"): "突破旧高失败",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "A"): "主升继续延伸",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "B"): "主升维持",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "C"): "主升降级",
@@ -1185,6 +1310,9 @@ def _scenario_meaning(path: str, phase: str, scenario_id: str) -> str:
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "A"): "站上结构上沿并化解卖点压力，上沿争夺转强。",
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "B"): "守住中枢下沿，继续围绕上沿争夺。",
         ("HIGH_VOLATILITY_OSCILLATION", "CENTER_UPPER_CONTEST", "C"): "跌破中枢下沿，上沿尝试失败并转入防守。",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "A"): "站稳旧结构前高，突破后的上升离开段继续有效。",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "B"): "仍在旧结构前高上方延伸，重点观察是否形成新5分钟中枢或背驰。",
+        ("UPWARD_MAJOR_WAVE", "BREAKOUT_EXTENSION", "C"): "跌回旧结构前高且反抽站不回，突破失败并转入高位震荡/转弱观察。",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "A"): "短级别继续突破压力，主升延伸。",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "B"): "守住关键中枢上沿，主升路径仍维持。",
         ("UPWARD_MAJOR_WAVE", "STANDARD", "C"): "跌回关键中枢上沿下方，主升路径降级为震荡或回落。",
@@ -1273,6 +1401,30 @@ def _apply_pattern_boundaries(boundaries: dict, atoms: dict, patterns: list[dict
             ],
         }, prefer_front={"confirm"})
 
+    if "FAILED_PULLBACK_SECOND_BUY_REPAIR" in pattern_codes and l1 and l2:
+        result.update(_boundary_set({
+            "confirm": [
+                _boundary("L2", l2, "ZG", l2.center.zg, "break_above", "向上离开新5分钟中枢，短线止跌确认"),
+                _boundary("L1", l1, "ZD", l1.center.zd, "break_above", "重新站回30分钟结构下沿，失效后修复升级"),
+            ],
+            "maintain": [
+                _boundary("L2", l2, "ZD", l2.center.zd, "hold_above", "守住新5分钟中枢下沿，类二买修复窗口仍在"),
+                _event_boundary_by_codes("L1", l1, {"B2", "B2S"}, "hold_above", "守住30分钟二买/类二买防线，修复资格仍在"),
+            ],
+            "invalidate": [
+                _boundary("L2", l2, "ZD", l2.center.zd, "break_below", "跌破新5分钟中枢下沿，低位横盘转为下跌中继"),
+                _event_boundary_by_codes("L1", l1, {"B2", "B2S"}, "break_below", "跌破30分钟二买/类二买防线，修复失败"),
+            ],
+            "pressure": [
+                _boundary("L2", l2, "ZG", l2.center.zg, "watch", "新5分钟中枢上沿，突破后才算短线止跌确认"),
+                _boundary("L1", l1, "ZD", l1.center.zd, "watch", "原30分钟中枢下沿，站回后失效路径降级"),
+            ],
+            "support": [
+                _boundary("L2", l2, "ZD", l2.center.zd, "watch", "新5分钟中枢下沿"),
+                _event_boundary_by_codes("L1", l1, {"B2", "B2S"}, "watch", "30分钟二买/类二买防线"),
+            ],
+        }))
+
     if "THIRD_BUY_RETEST_UP" in pattern_codes and l1 and l2:
         _extend_boundaries(result, {
             "maintain": [
@@ -1309,6 +1461,9 @@ def _historical_high_pressure_boundary(atom: Optional[LevelAtom]) -> Optional[di
         return None
     if high.get("is_breakout"):
         meaning = "已经突破历史前高，进入新高后的延伸/背驰观察"
+        trigger = "watch"
+    elif high.get("is_intraday_breakout_unconfirmed"):
+        meaning = "盘中突破历史前高但尚未站稳，重点观察能否回踩不破旧前高"
         trigger = "watch"
     elif high.get("is_near"):
         meaning = f"距离历史前高约 {distance_pct * 100:.1f}%，注意放量滞涨、顶背驰或突破确认"
@@ -1464,6 +1619,12 @@ def _is_up_extension(atom: LevelAtom) -> bool:
     if atom.position_state == "UP_LEAVING":
         return True
     return atom.position_state == "UP_RETEST" and atom.raw_state == "THIRD_BUY_CONFIRMED" and atom.price > atom.center.zg
+
+
+def _is_structural_high_breakout(atom: LevelAtom) -> bool:
+    high = atom.historical_high or {}
+    price = _num(high.get("price"))
+    return price > 0 and atom.price > price and bool(high.get("is_breakout"))
 
 
 def _is_low_level_weak(atom: LevelAtom) -> bool:
@@ -1847,29 +2008,57 @@ def _momentum_compare_from_level(level: dict, last_bi_dir: str) -> dict:
     return build_momentum_compare(bis, is_up=is_up)
 
 
+def _last_bi_from_level(level: dict) -> dict:
+    bis = level.get("detail_bis") or level.get("recent_bis") or level.get("bis") or []
+    if not bis:
+        return {}
+    bi = dict(bis[-1])
+    is_up = bool(bi.get("is_up") or bi.get("isUp"))
+    return {
+        "x0": str(bi.get("x0") or bi.get("start_date") or ""),
+        "x1": str(bi.get("x1") or bi.get("end_date") or ""),
+        "y0": _round_price(_num(bi.get("y0") or bi.get("start_price"))),
+        "y1": _round_price(_num(bi.get("y1") or bi.get("end_price"))),
+        "is_up": is_up,
+        "is_sure": bool(bi.get("is_sure", bi.get("isSure", True))),
+    }
+
+
 def _historical_high_from_level(level: dict, current_price: float) -> dict:
     explicit = level.get("historical_high") or {}
     if explicit:
         high_price = _num(explicit.get("price") or explicit.get("high"))
         high_time = str(explicit.get("time") or explicit.get("date") or "")
+        current_bar_high = _num(explicit.get("current_bar_high"))
+        current_bar_time = str(explicit.get("current_bar_time") or "")
+        current_bar_new_high = bool(explicit.get("is_current_bar_new_high"))
     else:
         klines = level.get("klines") or level.get("recent_klines") or []
+        current_bar = klines[-1] if klines else {}
         best = {}
-        for kline in klines:
+        for kline in klines[:-1]:
             high = _num(kline.get("high"))
             if high > _num(best.get("high")):
                 best = kline
         high_price = _num(best.get("high"))
         high_time = str(best.get("time") or best.get("date") or "")
+        current_bar_high = _num(current_bar.get("high"))
+        current_bar_time = str(current_bar.get("time") or current_bar.get("date") or "")
+        current_bar_new_high = current_bar_high > high_price > 0
     if high_price <= 0 or current_price <= 0:
         return {}
     distance_pct = round((high_price - current_price) / current_price, 4)
+    is_breakout = current_price >= high_price
     return {
         "price": _round_price(high_price),
         "time": high_time,
         "distance_pct": distance_pct,
         "is_near": 0 <= distance_pct <= 0.08,
-        "is_breakout": current_price >= high_price,
+        "is_breakout": is_breakout,
+        "is_current_bar_new_high": current_bar_new_high,
+        "current_bar_high": _round_price(current_bar_high),
+        "current_bar_time": current_bar_time,
+        "is_intraday_breakout_unconfirmed": current_bar_new_high and not is_breakout,
     }
 
 

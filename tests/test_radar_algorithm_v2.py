@@ -108,6 +108,28 @@ def test_level_atom_exposes_historical_centers():
     assert atom.center.zg == 20.0
 
 
+def test_level_atom_exposes_latest_bi_identity_for_parent_context():
+    atom = build_level_atom(
+        level(
+            "m15",
+            last_bi_dir="down",
+            bis=[
+                {"x0": "2026-04-24 10:00:00", "x1": "2026-04-24 10:15:00", "y0": 180.0, "y1": 176.0, "is_up": False},
+            ],
+        ),
+        "15",
+    )
+
+    assert atom.last_bi == {
+        "x0": "2026-04-24 10:00:00",
+        "x1": "2026-04-24 10:15:00",
+        "y0": 180.0,
+        "y1": 176.0,
+        "is_up": False,
+        "is_sure": True,
+    }
+
+
 def test_level_atom_normalizes_buy_and_sell_bsp_codes():
     atom = build_level_atom(
         level(
@@ -762,6 +784,55 @@ def test_confirmation_marks_pullback_reclaim_as_full_a_after_zg_break():
     assert "A 路径已确认" in result["summary"]
 
 
+def test_confirmation_marks_pullback_breakdown_as_current_c():
+    day = level("day", price=280.0, zd=186.41, zg=234.63, state="UPWARD_LEAVING")
+    m30 = level("m30", price=280.0, zd=287.13, zg=287.48, state="THIRD_BUY_CONFIRMED", last_bi_dir="down")
+    m5 = level("m5", price=280.0, zd=302.57, zg=307.62, state="IN_CENTER_OSC", last_bi_dir="down")
+
+    result = build_radar_algorithm_v2(levels(day=day, m30=m30, m5=m5), freshness())
+    states = {item["id"]: item["state"] for item in result["scenarios"]}
+
+    assert result["path"] == "PULLBACK_IN_UPTREND"
+    assert result["a_state"] == "C_TRIGGERED"
+    assert result["current_scenario_id"] == "C"
+    assert states["A"] == "BLOCKED"
+    assert states["B"] == "FAILED"
+    assert states["C"] == "CURRENT"
+    assert "当前已进入失效路径" in result["summary"]
+
+
+def test_failed_pullback_near_second_buy_with_new_m5_center_enters_repair_watch():
+    day = level("day", price=310.0, zd=197.5, zg=228.0, state="UPWARD_LEAVING", last_bi_dir="up")
+    m30 = level(
+        "m30",
+        price=310.0,
+        zd=325.68,
+        zg=336.0,
+        state="THIRD_BUY_CONFIRMED",
+        last_bi_dir="down",
+        bsps=[{"type": "2", "is_buy": True, "time": "2026-03-24 14:30:00", "price": 290.55}],
+    )
+    m5 = level("m5", price=310.0, zd=305.0, zg=315.0, state="IN_CENTER_OSC", last_bi_dir="up")
+
+    result = build_radar_algorithm_v2(levels(day=day, m30=m30, m5=m5), freshness())
+    codes = [item["code"] for item in result["patterns"]]
+
+    assert result["path"] == "PULLBACK_IN_UPTREND"
+    assert "FAILED_PULLBACK_SECOND_BUY_REPAIR" in codes
+    assert result["transition"]["status"] == "WATCH"
+    assert result["a_state"] == "B_MAINTAINED"
+    assert result["current_scenario_id"] == "B"
+    assert result["summary"] == "回落失效后出现低位5分钟中枢，进入类二买修复观察。"
+    assert result["boundaries"]["confirm"][0]["value"] == 315.0
+    assert result["boundaries"]["confirm"][1]["value"] == 325.68
+    assert result["boundaries"]["invalidate"][0]["value"] == 305.0
+    assert result["boundaries"]["invalidate"][1]["value"] == 290.55
+    conditions = [item["condition"] for item in result["trigger_playbook"]]
+    assert "突破5ZG 315" in conditions
+    assert "跌破5ZD 305" in conditions
+    assert "跌破30B2 290.55" in conditions
+
+
 def test_high_volatility_summary_keeps_future_risk_conditional_after_a_confirmed():
     m5 = level(
         "m5",
@@ -826,6 +897,57 @@ def test_near_historical_high_adds_pressure_observation_without_path_trigger():
     assert ath["distance_pct"] == 0.0606
     assert all(item["condition"] != "观察历史前高 188.88" for item in result["trigger_playbook"])
     assert all(item["condition"] != "观察5ZD 157.68" for item in result["trigger_playbook"])
+
+
+def test_current_bar_new_high_uses_prior_high_as_boundary():
+    day = level("day", price=54.0, zd=40.0, zg=45.0, state="UPWARD_LEAVING", last_bi_dir="up")
+    day["historical_high"] = {
+        "price": 55.0,
+        "time": "2026-04-27",
+        "current_bar_high": 58.0,
+        "current_bar_time": "2026-04-28",
+        "is_current_bar_new_high": True,
+    }
+    m30 = level("m30", price=54.0, zd=48.0, zg=50.0, state="UPWARD_LEAVING", last_bi_dir="up")
+    m5 = level("m5", price=54.0, zd=52.0, zg=53.0, state="IN_CENTER_OSC", last_bi_dir="down")
+
+    result = build_radar_algorithm_v2(levels(day=day, m30=m30, m5=m5), freshness())
+
+    high = result["atoms"]["L0"]["historical_high"]
+    assert high["price"] == 55.0
+    assert high["current_bar_high"] == 58.0
+    assert high["is_intraday_breakout_unconfirmed"] is True
+    ath = next(item for item in result["boundaries"]["pressure"] if item["field"] == "ATH")
+    assert ath["value"] == 55.0
+    assert ath["meaning"] == "盘中突破历史前高但尚未站稳，重点观察能否回踩不破旧前高"
+
+
+def test_structural_high_breakout_overrides_low_level_retest_wording():
+    day = level("day", price=179.37, zd=124.71, zg=131.99, state="UPWARD_LEAVING", last_bi_dir="up")
+    day["historical_high"] = {
+        "price": 164.8,
+        "time": "2026-04-10",
+        "source": "confirmed_bi",
+        "current_bar_high": 180.0,
+        "current_bar_time": "2026-04-28",
+        "is_current_bar_new_high": True,
+    }
+    m30 = level("m30", price=179.37, zd=133.43, zg=141.0, state="UPWARD_LEAVING", last_bi_dir="up")
+    m5 = level("m5", price=179.37, zd=154.81, zg=157.2, state="UPWARD_LEAVING", last_bi_dir="down")
+
+    result = build_radar_algorithm_v2(levels(day=day, m30=m30, m5=m5), freshness())
+
+    assert result["path"] == "UPWARD_MAJOR_WAVE"
+    assert result["phase"] == "BREAKOUT_EXTENSION"
+    assert result["summary"] == "突破旧结构前高并站稳，A 路径已确认。"
+    assert result["a_state"] == "A_FULL_TRIGGERED"
+    assert result["scenarios"][0]["name"] == "突破旧高站稳"
+    assert result["scenarios"][0]["trigger_if"] == [
+        "守住dayATH 164.8：守住旧结构前高，突破后的上升离开段有效"
+    ]
+    assert all("重新站回5分钟中枢" not in item["then"] for item in result["trigger_playbook"])
+    ath = next(item for item in result["boundaries"]["confirm"] if item["field"] == "ATH")
+    assert ath["value"] == 164.8
 
 
 def test_boundaries_for_standard_high_volatility_are_not_empty():

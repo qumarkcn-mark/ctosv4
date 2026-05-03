@@ -262,7 +262,7 @@ export default function Scanner({ onViewInChan }) {
     <div className="scanner-page">
       <div className="scanner-header">
         <div className="scanner-title-group">
-          <h2>今日机会</h2>
+          <h2>机会池</h2>
           <div className="scanner-subtitle">
             技术扫描入库，LLM 只做调研排雷
             {status?.scan_date && <span> · {status.scan_date}</span>}

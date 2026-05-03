@@ -133,6 +133,49 @@ def test_qmt_health_accepts_windows_sse_gateway_shape():
     assert payload["qmt"] == "localhost:58600"
 
 
+class FakeQmtLogHealthClient:
+    async def health(self):
+        return {
+            "ok": True,
+            "source": "qmt_log",
+            "lastQuoteAgeSec": 2.5,
+            "quoteCount": 1472,
+        }
+
+
+def test_qmt_log_health_is_preview_only():
+    import asyncio
+
+    payload = asyncio.run(qmt_bridge_client.qmt_log_health(FakeQmtLogHealthClient()))
+
+    assert payload["available"] is True
+    assert payload["provider"] == "qmt_log"
+    assert payload["usage"] == "preview_only"
+    assert payload["lastQuoteAgeSec"] == 2.5
+
+
+def test_qmt_log_quote_normalizes_l1_snapshot_as_preview_only():
+    quote = qmt_bridge_client._normalize_log_quote({
+        "symbol": "300394.SZ",
+        "source": "qmt_log",
+        "tradeTime": "20260429103215",
+        "price": 308.99,
+        "volume": 1200,
+        "bidPrice": [308.98, 308.95],
+        "askPrice": [309.01, 309.05],
+        "bidVolume": [300, 200],
+        "askVolume": [100, 400],
+        "receivedAt": 1777429935.0,
+    })
+
+    assert quote["symbol"] == "sz.300394"
+    assert quote["qmt_symbol"] == "300394.SZ"
+    assert quote["usage"] == "preview_only"
+    assert quote["price"] == 308.99
+    assert quote["bid1"] == 308.98
+    assert quote["ask1"] == 309.01
+
+
 def test_fetch_qmt_klines_caches_only_closed_rows(monkeypatch):
     import asyncio
 

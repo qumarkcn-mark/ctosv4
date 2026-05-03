@@ -4,6 +4,7 @@ import WatchlistPanel from '../components/WatchlistPanel.jsx'
 import KlineChart from '../components/KlineChart.jsx'
 import LayerPanel from '../components/LayerPanel.jsx'
 import RadarPanel from '../features/radar/RadarPanel.jsx'
+import { API_BASE } from '../config.js'
 import { loadVisibility, saveVisibility } from '../store/layerState.js'
 import './ChanView.css'
 
@@ -22,7 +23,14 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
   const [layerVisibility, setLayerVisibility] = useState(loadVisibility)
   const [showWatchlistMenu, setShowWatchlistMenu] = useState(false)
   const [groupNames, setGroupNames] = useState([])
+  const [dataRefreshToken, setDataRefreshToken] = useState(0)
+  const [syncState, setSyncState] = useState({
+    status: 'idle',
+    progress: 0,
+    message: '更新当前股票数据',
+  })
   const watchlistRef = useRef(null)
+  const syncTimerRef = useRef(null)
 
   // 面板折叠状态（持久化到 localStorage）
   const [watchlistCollapsed, setWatchlistCollapsed] = useState(
@@ -78,6 +86,70 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
     watchlistRef.current?.addToGroup(groupName, { symbol, name: symbolName })
     setShowWatchlistMenu(false)
   }, [symbol, symbolName])
+
+  const handleSyncCurrentSymbol = useCallback(async () => {
+    if (!symbol || syncState.status === 'syncing') return
+
+    if (syncTimerRef.current) {
+      clearInterval(syncTimerRef.current)
+    }
+
+    setSyncState({
+      status: 'syncing',
+      progress: 8,
+      message: `正在更新 ${symbolName || symbol}`,
+    })
+
+    syncTimerRef.current = setInterval(() => {
+      setSyncState((prev) => {
+        if (prev.status !== 'syncing') return prev
+        const step = prev.progress < 50 ? 9 : prev.progress < 78 ? 5 : 2
+        return { ...prev, progress: Math.min(92, prev.progress + step) }
+      })
+    }, 520)
+
+    try {
+      const res = await fetch(`${API_BASE}/data/sync-klines/${encodeURIComponent(symbol)}`, {
+        method: 'POST',
+      })
+      const json = await res.json()
+      if (!res.ok || !['success', 'partial'].includes(json?.status)) {
+        throw new Error(json?.detail || json?.message || '数据更新失败')
+      }
+
+      clearInterval(syncTimerRef.current)
+      syncTimerRef.current = null
+      setSyncState({
+        status: json.status === 'partial' ? 'partial' : 'done',
+        progress: 100,
+        message: json.status === 'partial'
+          ? `部分级别更新完成，${json.errors || 0} 个级别失败`
+          : `已更新 ${symbolName || symbol}`,
+      })
+      setDataRefreshToken((v) => v + 1)
+      window.setTimeout(() => {
+        setSyncState((prev) => prev.status === 'syncing'
+          ? prev
+          : { status: 'idle', progress: 0, message: '更新当前股票数据' })
+      }, 1800)
+    } catch (err) {
+      clearInterval(syncTimerRef.current)
+      syncTimerRef.current = null
+      setSyncState({
+        status: 'error',
+        progress: 0,
+        message: err?.message || '数据更新失败',
+      })
+    }
+  }, [symbol, symbolName, syncState.status])
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) {
+        clearInterval(syncTimerRef.current)
+      }
+    }
+  }, [])
 
   return (
     <div className="chan-view">
@@ -135,13 +207,25 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
                 </div>
               )}
             </div>
+            <button
+              className={`data-sync-btn data-sync-btn--${syncState.status}`}
+              onClick={handleSyncCurrentSymbol}
+              disabled={syncState.status === 'syncing'}
+              title={syncState.message}
+              aria-label={syncState.message}
+            >
+              <span
+                className="data-sync-ring"
+                style={{ '--progress-deg': `${syncState.progress * 3.6}deg` }}
+              />
+            </button>
             <LayerPanel visibility={layerVisibility} onChange={handleLayerChange} />
           </div>
         </div>
 
         {/* 图表 + 雷达并排 */}
         <div className="chan-content-row">
-          <KlineChart symbol={symbol} layerVisibility={layerVisibility} />
+          <KlineChart symbol={symbol} layerVisibility={layerVisibility} refreshToken={dataRefreshToken} />
 
           {/* 右侧雷达面板（可折叠） */}
           <div className={`radar-collapse-wrapper${radarCollapsed ? ' collapsed' : ''}`}>
@@ -154,7 +238,7 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
               <span className="panel-toggle-icon">{radarCollapsed ? '‹' : '›'}</span>
             </button>
             <div className="chan-radar-sidebar">
-              <RadarPanel symbol={symbol} />
+              <RadarPanel symbol={symbol} refreshToken={dataRefreshToken} />
             </div>
           </div>
         </div>

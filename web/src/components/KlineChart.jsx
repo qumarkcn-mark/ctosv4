@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { init, dispose, registerOverlay } from 'klinecharts'
+import { init, dispose } from 'klinecharts'
 import { renderChanOverlays } from '../plugins/chanOverlay.js'
-import { phantomOverlay, renderPhantomOverlays } from '../plugins/phantom_overlay.js'
 import { API_BASE } from '../config.js'
 import { toTimestamp } from '../utils.js'
 import './KlineChart.css'
@@ -50,12 +49,10 @@ function saveToolbar(state) {
   localStorage.setItem(TOOLBAR_KEY, JSON.stringify(state))
 }
 
-registerOverlay(phantomOverlay)
-
 const MAIN_INDICATORS = ['MA', 'BOLL', 'None']
 const SUB_INDICATORS = ['MACD', 'KDJ', 'RSI']
 
-export default function KlineChart({ symbol, layerVisibility }) {
+export default function KlineChart({ symbol, layerVisibility, refreshToken = 0 }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const chanDataRef = useRef(null)
@@ -70,11 +67,11 @@ export default function KlineChart({ symbol, layerVisibility }) {
   const [mainIndicator, setMainIndicator] = useState(() => loadToolbar().mainIndicator)
   const [subIndicator, setSubIndicator] = useState(() => loadToolbar().subIndicator)
   const [loading, setLoading] = useState(false)
-  const [isInferring, setIsInferring] = useState(false)
   const [stats, setStats] = useState(null)
   const [configMeta, setConfigMeta] = useState(null)
   const [dataBadge, setDataBadge] = useState(null)
-  const [oneMinuteAvailable, setOneMinuteAvailable] = useState(true)
+  const [qmtLogQuote, setQmtLogQuote] = useState(null)
+  const [oneMinuteStatus, setOneMinuteStatus] = useState({ available: false, reason: '检测中', checked: false })
   const [error, setError] = useState(null)
   const cchanPreset = layerVisibility?.cchan_preset || 'live_tolerant'
 
@@ -87,20 +84,58 @@ export default function KlineChart({ symbol, layerVisibility }) {
     if (!symbol) return
     let cancelled = false
     Promise.allSettled([
-      fetch(`${API_BASE}/data/qmt/health`).then((r) => r.ok ? r.json() : null),
+      fetch(`${API_BASE}/data/qmt/klines/${encodeURIComponent(symbol)}?period=1m&count=1&cache_closed=false`)
+        .then((r) => r.ok ? r.json() : null),
       fetch(`${API_BASE}/data/tdx/minute/health?symbol=${encodeURIComponent(symbol)}`).then((r) => r.ok ? r.json() : null),
-    ]).then(([qmt, tdx]) => {
+    ]).then(([qmtKline, tdx]) => {
       if (cancelled) return
-      const qmtAvailable = qmt.status === 'fulfilled' && Boolean(qmt.value?.available)
+      const qmtAvailable = qmtKline.status === 'fulfilled' && Array.isArray(qmtKline.value?.klines) && qmtKline.value.klines.length > 0
       const tdxAvailable = tdx.status === 'fulfilled' && Boolean(tdx.value?.available)
-      setOneMinuteAvailable(qmtAvailable || tdxAvailable)
+      setOneMinuteStatus({
+        available: qmtAvailable || tdxAvailable,
+        reason: qmtAvailable
+          ? 'QMT 1分钟预览可用'
+          : (tdx.value?.reason || '1分钟展示源不可用'),
+        checked: true,
+      })
     }).catch(() => {
-      if (!cancelled) setOneMinuteAvailable(false)
+      if (!cancelled) setOneMinuteStatus({ available: false, reason: '1分钟展示源不可用', checked: true })
     })
     return () => { cancelled = true }
   }, [symbol])
 
-  // ─── 核心 Effect: 初始化图表 + 加载数据 (symbol/interval 变化时完全重建)
+  useEffect(() => {
+    if (interval !== 'm1' || !oneMinuteStatus.checked || oneMinuteStatus.available) return
+    setIntervalKey('m5')
+    saveToolbar({ ...loadToolbar(), interval: 'm5' })
+  }, [interval, oneMinuteStatus])
+
+  useEffect(() => {
+    if (!symbol) return
+    let cancelled = false
+    let timer = null
+
+    const loadQuote = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/data/qmt-log/quotes?symbols=${encodeURIComponent(symbol)}`)
+        if (!res.ok) throw new Error('qmt log unavailable')
+        const json = await res.json()
+        const quote = Array.isArray(json?.quotes) ? json.quotes[0] : null
+        if (!cancelled) setQmtLogQuote(quote?.price ? quote : null)
+      } catch {
+        if (!cancelled) setQmtLogQuote(null)
+      }
+    }
+
+    loadQuote()
+    timer = window.setInterval(loadQuote, 5000)
+    return () => {
+      cancelled = true
+      if (timer) window.clearInterval(timer)
+    }
+  }, [symbol])
+
+  // ─── 核心 Effect: 初始化图表 + 加载数据 (symbol/interval/refreshToken 变化时完全重建)
   useEffect(() => {
     if (!chartContainerRef.current || !symbol) return
 
@@ -294,7 +329,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
         chartRef.current = null
       }
     }
-  }, [symbol, interval, cchanPreset])
+  }, [symbol, interval, cchanPreset, refreshToken])
 
   // ─── 主指标切换
   const handleMainIndicator = useCallback(
@@ -415,41 +450,7 @@ export default function KlineChart({ symbol, layerVisibility }) {
         }
       })
       .catch((e) => console.warn('[ChanOverlay] 上级别数据拉取失败:', e))
-  }, [layerVisibility?.projection, symbol, interval, cchanPreset])
-
-  // ─── DeepSeek 推演
-  const handleInferScenarios = async () => {
-    if (!symbol || isInferring) return
-    setIsInferring(true)
-    setError(null)
-    try {
-      const chart = chartRef.current
-      if (!chart) return
-
-      // clear existing overlays if any
-      chart.removeOverlay({ groupId: 'phantom_group' })
-
-      const res = await fetch(`${API_BASE}/agent/infer_scenarios`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol })
-      })
-      const data = await res.json()
-      
-      if (!data.scenarios || data.scenarios.length === 0) {
-        throw new Error('推演结果为空')
-      }
-
-      // 使用批量渲染函数，长线系统与 chanOverlay 一致
-      renderPhantomOverlays(chart, data.scenarios)
-
-    } catch (e) {
-      console.error(e)
-      setError('Agent 推演失败: ' + e.message)
-    } finally {
-      setIsInferring(false)
-    }
-  }
+  }, [layerVisibility?.projection, symbol, interval, cchanPreset, refreshToken])
 
   return (
     <div className="kline-chart-wrapper">
@@ -461,14 +462,14 @@ export default function KlineChart({ symbol, layerVisibility }) {
               key={iv.key}
               className={`kline-iv-btn ${interval === iv.key ? 'active' : ''} ${iv.displayOnly ? 'is-display-only' : ''}`}
               onClick={() => {
-                if (iv.key === 'm1' && !oneMinuteAvailable) return
+                if (iv.key === 'm1' && !oneMinuteStatus.available) return
                 setIntervalKey(iv.key)
                 saveToolbar({ ...loadToolbar(), interval: iv.key })
               }}
-              disabled={iv.key === 'm1' && !oneMinuteAvailable}
+              disabled={iv.key === 'm1' && !oneMinuteStatus.available}
               title={
-                iv.key === 'm1' && !oneMinuteAvailable
-                  ? '1分钟需要 QMT 实时数据或 TDX 本地1分钟文件'
+                iv.key === 'm1' && !oneMinuteStatus.available
+                  ? `1分钟展示源不可用：${oneMinuteStatus.reason}`
                   : (iv.displayOnly ? '1分仅用于盘中展示/历史回放，不确认雷达主推演' : iv.label)
               }
             >
@@ -502,27 +503,19 @@ export default function KlineChart({ symbol, layerVisibility }) {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {qmtLogQuote && (
+            <div className="kline-live-quote" title="QMT日志行情，仅用于盘中preview，不参与正式结构">
+              <span>QMT日志</span>
+              <strong>{formatQuotePrice(qmtLogQuote.price)}</strong>
+              {qmtLogQuote.trade_time && <em>{formatQmtTradeTime(qmtLogQuote.trade_time)}</em>}
+            </div>
+          )}
           {dataBadge && (
             <div className={`kline-data-badge kline-data-badge--${dataBadge.tone}`}>
               <span>{dataBadge.label}</span>
               <em>{dataBadge.detail}</em>
             </div>
           )}
-          <button 
-            className="kline-ind-btn"
-            onClick={handleInferScenarios}
-            disabled={isInferring}
-            style={{
-              background: 'rgba(239, 83, 80, 0.15)',
-              borderColor: 'rgba(239, 83, 80, 0.5)',
-              color: '#ef5350',
-              fontWeight: 'bold',
-              cursor: isInferring ? 'wait' : 'pointer'
-            }}
-          >
-            {isInferring ? '推演中...' : 'DeepSeek 推演'}
-          </button>
-          
           {stats && (
             <div className="kline-stats" style={{ marginLeft: 0 }}>
               <span className="stat-pill">{stats.kline_count} 根</span>
@@ -557,11 +550,18 @@ async function loadDisplayOnlyKlines(symbol, count) {
     }
   } catch {}
 
-  const tdxRes = await fetch(`${API_BASE}/data/tdx/minute/${symbol}?count=${count}`)
-  if (!tdxRes.ok) {
+  const today = formatLocalDate(new Date())
+  const todayUrl = `${API_BASE}/data/tdx/minute/${symbol}?count=${count}&start_date=${encodeURIComponent(`${today} 00:00:00`)}`
+  const tdxRes = await fetch(todayUrl)
+  if (tdxRes.ok) {
+    return await tdxRes.json()
+  }
+
+  const fallbackRes = await fetch(`${API_BASE}/data/tdx/minute/${symbol}?count=${count}`)
+  if (!fallbackRes.ok) {
     throw new Error('1分钟数据不可用')
   }
-  return await tdxRes.json()
+  return await fallbackRes.json()
 }
 
 function normalizeChartPayload(json, { isDisplayOnly }) {
@@ -586,4 +586,25 @@ function normalizeChartPayload(json, { isDisplayOnly }) {
     ...(json?.data || {}),
     klines: json?.data?.klines || [],
   }
+}
+
+function formatQuotePrice(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return '--'
+  return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0$/, '').replace(/0$/, '')
+}
+
+function formatQmtTradeTime(value) {
+  const text = String(value || '')
+  if (text.length >= 14) {
+    return `${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}`
+  }
+  return text
+}
+
+function formatLocalDate(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }

@@ -84,6 +84,32 @@ def test_read_tdx_1m_klines_respects_limit(tmp_path):
     ]
 
 
+def test_read_tdx_1m_klines_respects_start_and_end_date(tmp_path):
+    file_path = tmp_path / "sz" / "minline" / "sz000001.lc1"
+    write_lc1(
+        file_path,
+        [
+            lc1_row(2026, 4, 27, 14, 59, 10, 11, 9, 10),
+            lc1_row(2026, 4, 28, 9, 31, 11, 12, 10, 11),
+            lc1_row(2026, 4, 28, 9, 32, 12, 13, 11, 12),
+            lc1_row(2026, 4, 28, 9, 33, 13, 14, 12, 13),
+        ],
+    )
+
+    rows = read_tdx_1m_klines(
+        "sz.000001",
+        vipdoc=str(tmp_path),
+        start_date="2026-04-28 09:31:00",
+        end_date="2026-04-28 09:32:00",
+        limit=10,
+    )
+
+    assert [row["date"] for row in rows] == [
+        "2026-04-28 09:31:00",
+        "2026-04-28 09:32:00",
+    ]
+
+
 def test_tdx_minute_status_reports_missing_file(tmp_path):
     payload = tdx_minute_status("sh.600519", vipdoc=str(tmp_path))
 
@@ -91,11 +117,23 @@ def test_tdx_minute_status_reports_missing_file(tmp_path):
     assert payload["reason"] == "MINUTE_FILE_NOT_FOUND"
 
 
+def test_read_tdx_1m_klines_returns_empty_on_mount_io_error(tmp_path, monkeypatch):
+    file_path = tmp_path / "sh" / "minline" / "sh600519.lc1"
+    write_lc1(file_path, [lc1_row(2026, 4, 28, 9, 31, 10, 10.2, 9.9, 10.1)])
+
+    def raise_os_error(*args, **kwargs):
+        raise OSError("Input/output error")
+
+    monkeypatch.setattr(tdx_minute_service, "_read_lc1_tail", raise_os_error)
+
+    assert read_tdx_1m_klines("sh600519", vipdoc=str(tmp_path), limit=10) == []
+
+
 def test_tdx_minute_api_uses_display_replay_only_contract(monkeypatch):
     monkeypatch.setattr(
         data_api,
         "read_tdx_1m_klines",
-        lambda symbol, limit=240, end_date=None: [
+        lambda symbol, limit=240, start_date=None, end_date=None: [
             {
                 "symbol": "sh.600519",
                 "freq": "1",

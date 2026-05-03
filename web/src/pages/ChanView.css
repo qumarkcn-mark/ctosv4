@@ -197,6 +197,94 @@
   border-color: var(--action-gold, #f0b90b);
 }
 
+.data-sync-btn {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+  border-radius: 8px;
+  background: var(--bg-elevated, #1a1b24);
+  color: var(--text-secondary, #9aa0a6);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+}
+
+.data-sync-btn:hover {
+  border-color: rgba(240,185,11,0.55);
+  background: rgba(240,185,11,0.08);
+}
+
+.data-sync-btn:disabled {
+  cursor: wait;
+  opacity: 0.86;
+}
+
+.data-sync-ring {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      var(--action-gold, #f0b90b) var(--progress-deg, 0deg),
+      rgba(255,255,255,0.12) 0deg
+    );
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+}
+
+.data-sync-ring::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--bg-elevated, #1a1b24);
+}
+
+.data-sync-btn--idle .data-sync-ring {
+  background:
+    conic-gradient(
+      rgba(154,160,166,0.52) 315deg,
+      rgba(255,255,255,0.10) 0deg
+    );
+}
+
+.data-sync-btn--syncing .data-sync-ring {
+  animation: dataSyncPulse 0.9s ease-in-out infinite alternate;
+}
+
+.data-sync-btn--done .data-sync-ring {
+  background:
+    conic-gradient(
+      var(--success, #1dd882) 360deg,
+      rgba(255,255,255,0.12) 0deg
+    );
+}
+
+.data-sync-btn--partial .data-sync-ring {
+  background:
+    conic-gradient(
+      var(--action-gold, #f0b90b) 360deg,
+      rgba(255,255,255,0.12) 0deg
+    );
+}
+
+.data-sync-btn--error .data-sync-ring {
+  background:
+    conic-gradient(
+      var(--danger, #ef5350) 360deg,
+      rgba(255,255,255,0.12) 0deg
+    );
+}
+
+@keyframes dataSyncPulse {
+  from { filter: brightness(0.92); }
+  to { filter: brightness(1.35); }
+}
+
 /* ─── Watchlist Dropdown ─── */
 .watchlist-dropdown-container {
   position: relative;

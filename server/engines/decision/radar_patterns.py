@@ -42,6 +42,7 @@ def detect_patterns(
         _detect_third_buy_retest_up,
         _detect_historical_high_pressure,
         _detect_third_buy_fast_sell_risk,
+        _detect_failed_pullback_second_buy_repair,
         _detect_big_center_small_center_pullback_repair,
         _detect_small_turn_big_fast_b2_b3,
         _detect_micro_conversion_breakout,
@@ -95,6 +96,17 @@ def build_transition(
             trigger="reclaim small center ZG before breaking sell pressure",
             pattern=pattern,
             meaning="跌回原中枢后出现小转大拉回，但前卖点压力未完全化解，只能算部分修复。",
+        )
+
+    if "FAILED_PULLBACK_SECOND_BUY_REPAIR" in pattern_codes:
+        pattern = _pattern_by_code(patterns, "FAILED_PULLBACK_SECOND_BUY_REPAIR")
+        return _transition(
+            from_state="C_TRIGGERED",
+            to_state="BOTTOM_REPAIR",
+            status="WATCH",
+            trigger="new L2 center above L1 B2/B2S after failed pullback",
+            pattern=pattern,
+            meaning="回落验证失效后，低位重新形成5分钟中枢且未跌破30分钟二买防线，进入类二买修复观察。",
         )
 
     if "THIRD_BUY_FAST_SELL_RISK" in pattern_codes:
@@ -243,10 +255,16 @@ def _detect_historical_high_pressure(
         return None
     is_near = bool(high.get("is_near"))
     is_breakout = bool(high.get("is_breakout"))
-    if not (is_near or is_breakout):
+    is_intraday_unconfirmed = bool(high.get("is_intraday_breakout_unconfirmed"))
+    if not (is_near or is_breakout or is_intraday_unconfirmed):
         return None
     distance_pct = _num(high.get("distance_pct"))
-    meaning = "已经突破历史前高" if is_breakout else "接近历史前高压力"
+    if is_breakout:
+        meaning = "已经突破历史前高"
+    elif is_intraday_unconfirmed:
+        meaning = "盘中突破历史前高但尚未站稳"
+    else:
+        meaning = "接近历史前高压力"
     return RadarPattern(
         code="HISTORICAL_HIGH_PRESSURE",
         name="历史前高压力观察",
@@ -332,6 +350,54 @@ def _detect_big_center_small_center_pullback_repair(
             _ev("L1", l1, "LEAVE_RETURN", leave_status.get("status") or "UNKNOWN", "中级别离开/拉回状态"),
         ],
         notes=["拉回后仍需突破前卖点压力，未突破前只算修复而非完整主升。"],
+    )
+
+
+def _detect_failed_pullback_second_buy_repair(
+    atoms: dict[str, Any],
+    classification: dict,
+    context: dict,
+) -> RadarPattern | None:
+    l0 = atoms.get("L0")
+    l1 = atoms.get("L1")
+    l2 = atoms.get("L2")
+    if classification.get("path") != "PULLBACK_IN_UPTREND":
+        return None
+    if not l0 or not l1 or not l2:
+        return None
+    if not (_valid_center(l0) and _valid_center(l1) and _valid_center(l2)):
+        return None
+    if _num(getattr(l0, "price", 0)) <= _num(getattr(l0.center, "zg", 0)):
+        return None
+    if _num(getattr(l1, "price", 0)) >= _num(getattr(l1.center, "zd", 0)):
+        return None
+
+    second_buy = _latest_event_by_codes(l1, "buy", {"B2", "B2S"})
+    second_buy_price = _num(getattr(second_buy, "price", 0))
+    if second_buy_price <= 0 or _num(getattr(l1, "price", 0)) <= second_buy_price:
+        return None
+
+    # 新 5 分钟中枢必须在跌破原 30 分钟结构后、30 分钟二买防线之上重新横住。
+    if _num(getattr(l2.center, "zg", 0)) >= _num(getattr(l1.center, "zd", 0)):
+        return None
+    if _num(getattr(l2.center, "zd", 0)) <= second_buy_price:
+        return None
+    if _num(getattr(l2, "price", 0)) < _num(getattr(l2.center, "zd", 0)):
+        return None
+
+    confidence = "HIGH" if _num(getattr(l2, "price", 0)) > _num(getattr(l2.center, "zg", 0)) else "MEDIUM"
+    return RadarPattern(
+        code="FAILED_PULLBACK_SECOND_BUY_REPAIR",
+        name="失效后类二买修复窗口",
+        confidence=confidence,
+        path_hint="PULLBACK_IN_UPTREND_C_TRIGGERED_TO_REPAIR",
+        evidence=[
+            _ev("L0", l0, "ZG", l0.center.zg, "日线仍在大级别中枢上方，保留修复资格"),
+            _ev("L1", l1, "ZD", l1.center.zd, "已跌破原30分钟中枢下沿，原回落验证失效"),
+            _ev("L1", l1, getattr(second_buy, "code", "B2"), second_buy_price, "30分钟二买/类二买防线尚未跌破"),
+            _ev("L2", l2, "ZD/ZG", f"{l2.center.zd:g}-{l2.center.zg:g}", "低位新5分钟中枢形成，说明下跌速度放缓"),
+        ],
+        notes=["这不是直接买点，只是失效后的修复窗口；向上离开新5分钟中枢并回踩不破，才升级为短线止跌确认。"],
     )
 
 
@@ -546,6 +612,12 @@ def _has_event_after(
 def _event_codes(atom: Any, side: str) -> set[str]:
     events = getattr(atom, "buy_events" if side == "buy" else "sell_events", [])
     return {str(getattr(event, "code", "")) for event in events if getattr(event, "code", "")}
+
+
+def _latest_event_by_codes(atom: Any, side: str, codes: set[str]) -> Any | None:
+    events = getattr(atom, "buy_events" if side == "buy" else "sell_events", [])
+    matches = [event for event in events if getattr(event, "code", "") in codes and _num(getattr(event, "price", 0)) > 0]
+    return matches[-1] if matches else None
 
 
 def _first_event(atom: Any, side: str, codes: set[str]) -> Any | None:

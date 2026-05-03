@@ -82,10 +82,16 @@ class PrePlan(BaseModel):
 
 class RadarInferenceResult(BaseModel):
     diagnosis: str
+    chan_talk: Optional[str] = None
     account_status: Optional[AccountStatus] = None
     pre_plans: List[PrePlan] = Field(default=[])
     core_defense: Optional[str] = None
     market_context_verdict: Optional[str] = None
+    plain_reading: Optional[str] = None
+    operator_mistake: Optional[str] = None
+    empty_position_view: Optional[str] = None
+    holding_position_view: Optional[str] = None
+    next_focus: Optional[str] = None
 
 class TradeParseResult(BaseModel):
     """语音/文本交易解析结果"""
@@ -101,6 +107,77 @@ class TradeParseResult(BaseModel):
 class LLMService:
     def __init__(self):
         self.base_url = "https://api.deepseek.com"
+
+    def _get_user_deepseek_api_key(self, user_id: int = 1) -> str:
+        from server.db.database import get_connection
+
+        api_key = ""
+        try:
+            db_conn = get_connection()
+            try:
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
+                if row and row["settings_json"]:
+                    settings = json.loads(row["settings_json"])
+                    api_key = settings.get("deepseek_api_key") or ""
+            finally:
+                db_conn.close()
+        except Exception:
+            logger.debug("读取用户 DeepSeek API Key 失败", exc_info=True)
+        return api_key or os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod")
+
+    def _get_user_ai_native_provider_settings(self, user_id: int = 1) -> dict:
+        from server.db.database import get_connection
+
+        settings = {}
+        try:
+            db_conn = get_connection()
+            try:
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
+                if row and row["settings_json"]:
+                    loaded = json.loads(row["settings_json"])
+                    settings = loaded if isinstance(loaded, dict) else {}
+            finally:
+                db_conn.close()
+        except Exception:
+            logger.debug("读取用户 AI Native 模型设置失败", exc_info=True)
+        return settings
+
+    def _ai_native_client_config(self, user_id: int, model_route=None) -> dict:
+        settings = self._get_user_ai_native_provider_settings(user_id)
+        provider = str(settings.get("ai_native_radar_provider") or "deepseek").strip().lower()
+        if provider == "gemini":
+            model_name = str(settings.get("gemini_model") or config.GEMINI_MODEL or "gemini-2.5-pro").strip()
+            if model_route and model_route.model_name:
+                model_name = model_route.model_name
+            return {
+                "provider": "gemini",
+                "api_key": settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY") or config.GEMINI_API_KEY,
+                "base_url": (settings.get("gemini_base_url") or os.environ.get("GEMINI_BASE_URL") or config.GEMINI_BASE_URL).rstrip("/") + "/",
+                "model_name": model_name,
+                "thinking_enabled": False,
+                "reasoning_effort": "high",
+            }
+
+        model_name = config.AI_NATIVE_RADAR_MODEL
+        thinking_enabled = config.AI_NATIVE_RADAR_THINKING_ENABLED
+        reasoning_effort = config.AI_NATIVE_RADAR_REASONING_EFFORT
+        if settings.get("ai_native_radar_model"):
+            model_name = settings.get("ai_native_radar_model")
+        if isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
+            thinking_enabled = settings["ai_native_radar_thinking_enabled"]
+        reasoning_effort = settings.get("ai_native_radar_reasoning_effort") or reasoning_effort
+        if model_route:
+            model_name = model_route.model_name or model_name
+            thinking_enabled = model_route.thinking_enabled
+            reasoning_effort = model_route.reasoning_effort
+        return {
+            "provider": "deepseek",
+            "api_key": settings.get("deepseek_api_key") or os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod"),
+            "base_url": self.base_url,
+            "model_name": model_name,
+            "thinking_enabled": thinking_enabled,
+            "reasoning_effort": reasoning_effort,
+        }
     
     async def infer_czsc_scenarios(self, system_prompt: str, context_json: str) -> dict:
         """
@@ -212,7 +289,13 @@ class LLMService:
                     }
                 ],
                 "core_defense": "N/A",
-                "market_context_verdict": "未知"
+                "market_context_verdict": "未知",
+                "chan_talk": "现在 AI 解读暂不可用。先按规则雷达处理：没有触发转强条件前，不提前下结论；跌破失效边界并拉不回来，本轮推演先作废；在关键区间内，以观察为主。",
+                "plain_reading": "AI 解读暂不可用，请先按规则雷达的 A/B/C 条件管理。",
+                "operator_mistake": "不要因为 AI 离线而忽略雷达边界。",
+                "empty_position_view": "空仓时只看规则雷达的 A 路径确认，不提前假设。",
+                "holding_position_view": "持仓时先看规则雷达的 C 路径失效线。",
+                "next_focus": "先确认雷达数据健康和核心边界。",
             }
 
     async def infer_portfolio_strategy(self, system_prompt: str, context_json: str) -> str:
@@ -249,11 +332,14 @@ class LLMService:
             logger.error(f"Portfolio LLM Inference failed: {e}")
             return f"❌ 生成全局战略失败，请检查网络或大模型 API Key。错误详情: {e}"
 
-    async def infer_ai_native_radar(self, system_prompt: str, context_json: str, *, user_id: int = 1) -> dict:
+    async def infer_ai_native_radar(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> dict:
         """AI Native Radar 影子系统推理。调用方负责 verifier 和 fallback。"""
         from server.db.database import get_connection
 
         api_key = None
+        model_name = config.AI_NATIVE_RADAR_MODEL
+        thinking_enabled = config.AI_NATIVE_RADAR_THINKING_ENABLED
+        reasoning_effort = config.AI_NATIVE_RADAR_REASONING_EFFORT
         try:
             db_conn = get_connection()
             try:
@@ -261,6 +347,10 @@ class LLMService:
                 if row and row["settings_json"]:
                     settings = json.loads(row["settings_json"])
                     api_key = settings.get("deepseek_api_key")
+                    model_name = settings.get("ai_native_radar_model") or model_name
+                    if isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
+                        thinking_enabled = settings["ai_native_radar_thinking_enabled"]
+                    reasoning_effort = settings.get("ai_native_radar_reasoning_effort") or reasoning_effort
             finally:
                 db_conn.close()
         except Exception:
@@ -269,18 +359,74 @@ class LLMService:
         if not api_key:
             api_key = os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod")
 
-        client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
-        response = await client.chat.completions.create(
-            model=config.AI_NATIVE_RADAR_MODEL,
-            messages=[
+        if model_route:
+            model_name = model_route.model_name or model_name
+            thinking_enabled = model_route.thinking_enabled
+            reasoning_effort = model_route.reasoning_effort
+            timeout = model_route.timeout_seconds
+            max_tokens = model_route.max_tokens
+        else:
+            timeout = config.AI_NATIVE_RADAR_LLM_TIMEOUT
+            max_tokens = config.AI_NATIVE_RADAR_MAX_TOKENS
+
+        client = AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
+        request = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"AI Native Radar Context:\n{context_json}"},
             ],
-            temperature=0.3,
-            response_format={"type": "json_object"},
-        )
+            "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
+        }
+        if thinking_enabled:
+            request["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
+            request["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            request["temperature"] = 0.3
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        response = await client.chat.completions.create(**request)
         raw_content = response.choices[0].message.content
         return json.loads(raw_content)
+
+    async def infer_ai_native_markdown(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> str:
+        """AI Native Radar Markdown 推演。调用方负责语义过滤和确定性门禁。"""
+        client_config = self._ai_native_client_config(user_id, model_route=model_route)
+        api_key = client_config["api_key"]
+        model_name = client_config["model_name"]
+        timeout = config.AI_NATIVE_RADAR_LLM_TIMEOUT
+        max_tokens = config.AI_NATIVE_RADAR_MAX_TOKENS
+        thinking_enabled = client_config["thinking_enabled"]
+        reasoning_effort = client_config["reasoning_effort"]
+
+        if model_route:
+            timeout = model_route.timeout_seconds
+            max_tokens = model_route.max_tokens
+
+        if not api_key:
+            raise RuntimeError(f"{client_config['provider']} API Key 未配置")
+
+        client = AsyncOpenAI(api_key=api_key, base_url=client_config["base_url"], timeout=timeout)
+        request = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context_json},
+            ],
+            "max_tokens": max_tokens,
+        }
+        if client_config["provider"] == "gemini":
+            request["temperature"] = 0.3
+        elif thinking_enabled:
+            request["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
+            request["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            request["temperature"] = 0.3
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        response = await client.chat.completions.create(**request)
+        return response.choices[0].message.content or ""
 
     async def parse_trade_from_text(self, text: str) -> dict:
         """

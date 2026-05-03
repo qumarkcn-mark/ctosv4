@@ -1,17 +1,26 @@
 import { useState } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
 import ChanView from './pages/ChanView.jsx'
-import BehaviorReport from './pages/BehaviorReport.jsx'
-import SandTable from './pages/SandTable.jsx'
+import ReviewTrainingPage from './pages/ReviewTrainingPage.jsx'
 import RotationCompass from './pages/RotationCompass.jsx'
 import Scanner from './pages/Scanner.jsx'
 import DailyPlaybook from './pages/DailyPlaybook.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import './App.css'
 
+const PAGE_ALIASES = {
+  analysis: 'review',
+  'sand-table': 'review',
+  rotation: 'playbook',
+}
+
+function normalizePage(page) {
+  return PAGE_ALIASES[page] || page || 'playbook'
+}
+
 function App() {
   const [page, setPage] = useState(
-    () => localStorage.getItem('ct_last_page') || 'chan'
+    () => normalizePage(localStorage.getItem('ct_last_page')) || 'playbook'
   )
   const [showSettings, setShowSettings] = useState(false)
 
@@ -37,8 +46,9 @@ function App() {
   }
 
   const navigate = (p) => {
-    setPage(p)
-    localStorage.setItem('ct_last_page', p)
+    const nextPage = normalizePage(p)
+    setPage(nextPage)
+    localStorage.setItem('ct_last_page', nextPage)
   }
 
   return (
@@ -52,46 +62,34 @@ function App() {
         </div>
         <nav className="nav-tabs">
           <button
-            className={`nav-tab ${page === 'dashboard' ? 'active' : ''}`}
-            onClick={() => navigate('dashboard')}
-          >
-            📊 交易看板
-          </button>
-          <button
-            className={`nav-tab ${page === 'analysis' ? 'active' : ''}`}
-            onClick={() => navigate('analysis')}
-          >
-            📈 行为分析
-          </button>
-          <button
             className={`nav-tab ${page === 'playbook' ? 'active' : ''}`}
             onClick={() => navigate('playbook')}
           >
-            今日作战
-          </button>
-          <button
-            className={`nav-tab ${page === 'scanner' ? 'active' : ''}`}
-            onClick={() => navigate('scanner')}
-          >
-            今日机会
+            作战台
           </button>
           <button
             className={`nav-tab ${page === 'chan' ? 'active' : ''}`}
             onClick={() => navigate('chan')}
           >
-            缠论看盘
+            雷达工作台
           </button>
           <button
-            className={`nav-tab ${page === 'rotation' ? 'active' : ''}`}
-            onClick={() => navigate('rotation')}
+            className={`nav-tab ${page === 'scanner' ? 'active' : ''}`}
+            onClick={() => navigate('scanner')}
           >
-            调仓罗盘
+            机会池
           </button>
           <button
-            className={`nav-tab ${page === 'sand-table' ? 'active' : ''}`}
-            onClick={() => navigate('sand-table')}
+            className={`nav-tab ${page === 'dashboard' ? 'active' : ''}`}
+            onClick={() => navigate('dashboard')}
           >
-            模拟训练
+            交易账本
+          </button>
+          <button
+            className={`nav-tab ${page === 'review' ? 'active' : ''}`}
+            onClick={() => navigate('review')}
+          >
+            复盘训练
           </button>
         </nav>
         <div className="status-bar-right">
@@ -105,9 +103,8 @@ function App() {
 
       {/* 主内容区 */}
       <main className="main-content">
-        {page === 'dashboard' && <Dashboard onViewInChan={handleViewInChan} />}
-        {page === 'analysis' && <BehaviorReport onViewInChan={handleViewInChan} />}
-        {page === 'playbook' && <DailyPlaybook onViewInChan={handleViewInChan} />}
+        {page === 'dashboard' && <Dashboard onViewInChan={handleViewInChan} onOpenRotation={() => setPage('rotation')} />}
+        {page === 'playbook' && <DailyPlaybook onViewInChan={handleViewInChan} onOpenRotation={() => setPage('rotation')} />}
         {page === 'scanner' && <Scanner onViewInChan={handleViewInChan} />}
         {page === 'chan' && (
           <ChanView
@@ -117,7 +114,7 @@ function App() {
           />
         )}
         {page === 'rotation' && <RotationCompass onViewInChan={handleViewInChan} />}
-        {page === 'sand-table' && <SandTable />}
+        {page === 'review' && <ReviewTrainingPage />}
       </main>
 
       {/* 模态框层 */}
