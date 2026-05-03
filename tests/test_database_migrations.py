@@ -253,6 +253,7 @@ def test_run_migrations_create_stop_reduce_shadow_training_tables():
         "ai_stop_reduce_scores",
         "ai_case_memory",
         "ai_calibration_stats",
+        "ai_stop_reduce_daily_runs",
         "fundamental_snapshots",
         "ai_holding_plans",
     }.issubset(tables)
@@ -277,6 +278,7 @@ def test_run_migrations_create_stop_reduce_shadow_training_tables():
     assert "idx_fundamental_snapshots_symbol" in indexes
     assert "idx_ai_holding_plans_user_date" in indexes
     assert "idx_ai_rebalance_intents_plan" in indexes
+    assert "idx_ai_stop_reduce_daily_runs_user_date" in indexes
 
 
 def test_schema_bootstrap_survives_old_rebalance_intents_without_source_plan_id():

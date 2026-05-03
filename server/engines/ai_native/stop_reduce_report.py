@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 from typing import Any
 
 
@@ -33,6 +34,81 @@ def build_stop_reduce_training_report(
         "case_memory": case_memory,
         "calibration": calibration,
         "disclaimer": DISCLAIMER,
+    }
+
+
+def build_stop_reduce_training_status(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    today: str | None = None,
+) -> dict[str, Any]:
+    """Build the control-plane status for the report page."""
+    today = today or date.today().isoformat()
+    latest_run = _load_latest_daily_run(conn, user_id=user_id)
+    today_run = _load_latest_daily_run(conn, user_id=user_id, run_date=today)
+    today_counts = _load_today_counts(conn, user_id=user_id, today=today)
+    return {
+        "today": today,
+        "has_run_today": bool(today_run),
+        "today_run": today_run,
+        "latest_run": latest_run,
+        "today_counts": today_counts,
+        "disclaimer": DISCLAIMER,
+    }
+
+
+def _load_latest_daily_run(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    run_date: str | None = None,
+) -> dict[str, Any] | None:
+    clauses = ["user_id = ?"]
+    params: list[Any] = [user_id]
+    if run_date:
+        clauses.append("run_date = ?")
+        params.append(run_date)
+    row = conn.execute(
+        f"""
+        SELECT run_id, user_id, run_date, trigger, mode, status, started_at,
+               completed_at, plans_saved, intents_enqueued, intents_settled,
+               case_memory_writes, error, summary_json, disclaimer
+          FROM ai_stop_reduce_daily_runs
+         WHERE {' AND '.join(clauses)}
+         ORDER BY started_at DESC
+         LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["summary"] = _json_dict(item.pop("summary_json", ""))
+    return item
+
+
+def _load_today_counts(conn: sqlite3.Connection, *, user_id: int, today: str) -> dict[str, int]:
+    plan_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM ai_holding_plans WHERE user_id = ? AND trade_date = ?",
+        (user_id, today),
+    ).fetchone()["count"]
+    intent_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM ai_rebalance_intents WHERE user_id = ? AND substr(as_of, 1, 10) = ?",
+        (user_id, today),
+    ).fetchone()["count"]
+    score_count = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+          FROM ai_stop_reduce_scores
+         WHERE user_id = ? AND substr(scored_at, 1, 10) = ?
+        """,
+        (user_id, today),
+    ).fetchone()["count"]
+    return {
+        "plans": int(plan_count or 0),
+        "intents": int(intent_count or 0),
+        "scores": int(score_count or 0),
     }
 
 
