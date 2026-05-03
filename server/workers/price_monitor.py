@@ -54,6 +54,9 @@ class PriceMonitor:
 
                 # 多元宇宙日志：每天 20:30 自动拍快照+结算
                 await self._check_multiverse_auto_run()
+
+                # AI Native V1.1：收盘后每天跑一次持仓计划、影子调仓和结算。
+                await self._check_ai_stop_reduce_daily()
                     
                 self._loop_count += 1
             except asyncio.CancelledError:
@@ -137,6 +140,48 @@ class PriceMonitor:
             logger.info("🌌 多元宇宙日志 — 自动运行完成")
         except Exception as e:
             logger.error("多元宇宙自动运行失败: %s", e)
+
+    async def _check_ai_stop_reduce_daily(self, *, now=None, runner=None):
+        """Run AI stop/reduce shadow-training once per trading day after close."""
+        from datetime import datetime
+        from server import config
+        from server.workers.stop_reduce_daily import StopReduceDailyConfig, run_stop_reduce_daily
+
+        if not config.AI_STOP_REDUCE_DAILY_ENABLED:
+            return
+
+        now = now or datetime.now()
+        if now.weekday() >= 5:
+            return
+
+        today_str = now.strftime("%Y-%m-%d")
+        if getattr(self, "_ai_stop_reduce_daily_attempted_date", None) == today_str:
+            return
+
+        start_time = _parse_hhmm(config.AI_STOP_REDUCE_DAILY_START)
+        end_time = _parse_hhmm(config.AI_STOP_REDUCE_DAILY_END)
+        if start_time is None or end_time is None:
+            logger.warning("[AI训练] 收盘训练窗口配置无效，跳过 daily loop")
+            self._ai_stop_reduce_daily_attempted_date = today_str
+            return
+        if not (start_time <= now.time() <= end_time):
+            return
+
+        self._ai_stop_reduce_daily_attempted_date = today_str
+        logger.info("[AI训练] 开始每日 stop/reduce shadow-training")
+        try:
+            run = runner or run_stop_reduce_daily
+            report = await run(config=StopReduceDailyConfig(user_id=1))
+            self._ai_stop_reduce_daily_completed_date = today_str
+            logger.info(
+                "[AI训练] 每日训练完成 plans=%s intents=%s settled=%s lessons=%s",
+                report.plans,
+                report.intents,
+                report.settled,
+                report.lessons,
+            )
+        except Exception as e:
+            logger.error("[AI训练] 每日 stop/reduce shadow-training 失败: %s", e)
 
     def _db_get_positions(self):
         conn = get_connection()
@@ -529,6 +574,16 @@ class PriceMonitor:
 
 # 单例实例
 monitor = PriceMonitor()
+
+
+def _parse_hhmm(value: str):
+    from datetime import time
+
+    try:
+        hour, minute = str(value).split(":", 1)
+        return time(int(hour), int(minute))
+    except (TypeError, ValueError):
+        return None
 
 
 def _m30_trailing_stop_from_radar(radar_data: dict) -> float:

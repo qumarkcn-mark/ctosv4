@@ -1,5 +1,7 @@
 """Price monitor alert contract tests."""
 
+import asyncio
+from datetime import datetime
 import json
 import os
 import sqlite3
@@ -7,7 +9,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server.workers.price_monitor import PriceMonitor, _build_alert_strategy_contract
+from server.workers.price_monitor import PriceMonitor, _build_alert_strategy_contract, _parse_hhmm
 
 
 def make_alert_conn():
@@ -88,6 +90,70 @@ def test_alert_strategy_contract_maps_entry_signal_to_strategy_version():
     assert contract["strategy_id"] == "war2_trend_step"
     assert contract["strategy_version"] == "1.0.0"
     assert contract["status"] == "TRIGGERED"
+
+
+def test_parse_hhmm_accepts_valid_window_and_rejects_bad_value():
+    assert str(_parse_hhmm("15:35")) == "15:35:00"
+    assert _parse_hhmm("bad") is None
+
+
+def test_ai_stop_reduce_daily_runs_once_inside_post_close_window(monkeypatch):
+    from server import config
+
+    monitor = PriceMonitor()
+    calls = []
+
+    class Report:
+        plans = 1
+        intents = 1
+        settled = 0
+        lessons = 0
+
+    async def fake_runner(**kwargs):
+        calls.append(kwargs["config"])
+        return Report()
+
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_ENABLED", True)
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_START", "15:35")
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_END", "16:30")
+
+    asyncio.run(
+        monitor._check_ai_stop_reduce_daily(
+            now=datetime(2026, 5, 4, 15, 40),
+            runner=fake_runner,
+        )
+    )
+    asyncio.run(
+        monitor._check_ai_stop_reduce_daily(
+            now=datetime(2026, 5, 4, 15, 50),
+            runner=fake_runner,
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0].user_id == 1
+    assert monitor._ai_stop_reduce_daily_completed_date == "2026-05-04"
+
+
+def test_ai_stop_reduce_daily_skips_weekend_disabled_and_outside_window(monkeypatch):
+    from server import config
+
+    monitor = PriceMonitor()
+    calls = []
+
+    async def fake_runner(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_ENABLED", False)
+    asyncio.run(monitor._check_ai_stop_reduce_daily(now=datetime(2026, 5, 4, 15, 40), runner=fake_runner))
+
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_ENABLED", True)
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_START", "15:35")
+    monkeypatch.setattr(config, "AI_STOP_REDUCE_DAILY_END", "16:30")
+    asyncio.run(monitor._check_ai_stop_reduce_daily(now=datetime(2026, 5, 3, 15, 40), runner=fake_runner))
+    asyncio.run(monitor._check_ai_stop_reduce_daily(now=datetime(2026, 5, 4, 14, 40), runner=fake_runner))
+
+    assert calls == []
 
 
 def test_trigger_alert_db_persists_strategy_contract_and_disclaimer():

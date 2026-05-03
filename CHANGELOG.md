@@ -11,6 +11,7 @@
 - Added Kline `1分` display mode. It prefers QMT when available, falls back to TDX local 1-minute files, and is explicitly labeled display/replay only.
 - Added the AI Native V1.1 training report for daily holding plans, stop/reduce shadow intents, settlement scores, sparse error memory, and calibration state.
 - Added Case Memory feedback for AI stop/reduce shadow training, so sparse high-value mistakes can tighten near-stop actions or cap reduce intensity on future same-structure intents.
+- Added a post-close daily scheduler for AI stop/reduce shadow training, wiring the existing daily loop into `PriceMonitor` with weekday window checks, once-per-day dedupe, and env-based controls.
 
 ### Data Sources
 
