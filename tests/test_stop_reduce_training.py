@@ -19,6 +19,7 @@ from server.engines.ai_native.stop_reduce_training import (
     validate_rebalance_intent,
 )
 from server.engines.ai_native.stop_reduce_adapter import build_stop_reduce_intent_from_ai_response
+from server.engines.ai_native.stop_reduce_feedback import StopReduceFeedback
 from server.engines.ai_native.schemas import AIReasoningResponse, AllowedPrice, PositionContext, ReasoningBoundaries
 from server.engines.execution.paper_models import PaperAccount, PaperPosition
 
@@ -175,6 +176,56 @@ def test_case_memory_policy_skips_ordinary_correct_cases():
     assert should_store_case_memory(final_score=82, tags=["REDUCE_WAS_CORRECT"], loss_delta_pct=1.5) is False
     assert should_store_case_memory(final_score=55, tags=["HOLD_ACCEPTABLE"], loss_delta_pct=-1.0) is True
     assert should_store_case_memory(final_score=75, tags=["REDUCE_TOO_EARLY"], loss_delta_pct=1.0) is True
+
+
+def test_feedback_tightens_near_stop_watch_into_reduce():
+    feedback = StopReduceFeedback(
+        case_key="holding:loss:structure_breakdown:near_stop",
+        total_count=5,
+        mistake_count=3,
+        latest_mistake_type="AI_HELD_AFTER_STOP_BROKEN",
+        action_bias="TIGHTEN_STOP",
+        confidence=0.3,
+        latest_lesson="跌破防线后不要把可能修复当成持仓理由。",
+    )
+
+    generated = build_stop_reduce_intent_from_ai_response(
+        user_id=1,
+        symbol="sh603893",
+        response=ai_response(current_price=11.05, stop_price=11.0),
+        as_of="2026-05-02T10:30:00+08:00",
+        feedback=feedback,
+    )
+
+    assert generated is not None
+    assert generated.action == "REDUCE"
+    assert generated.reason["memory_feedback"]["action_bias"] == "TIGHTEN_STOP"
+    assert generated.evidence_refs["case_memory_feedback"]["latest_mistake_type"] == "AI_HELD_AFTER_STOP_BROKEN"
+
+
+def test_feedback_reduce_too_early_caps_reduce_intensity_without_overriding_stop():
+    feedback = StopReduceFeedback(
+        case_key="holding:loss:structure_breakdown:near_stop",
+        total_count=4,
+        mistake_count=2,
+        latest_mistake_type="REDUCE_TOO_EARLY",
+        action_bias="WAIT_FOR_CONFIRMATION",
+        confidence=0.2,
+        latest_lesson="同类结构需要等待日线确认。",
+    )
+
+    generated = build_stop_reduce_intent_from_ai_response(
+        user_id=1,
+        symbol="sh603893",
+        response=ai_response(current_price=10.9, stop_price=11.0),
+        as_of="2026-05-02T10:30:00+08:00",
+        feedback=feedback,
+    )
+
+    assert generated is not None
+    assert generated.action == "REDUCE"
+    assert generated.target_weight_pct == 8.04
+    assert generated.reason["memory_feedback"]["action_bias"] == "WAIT_FOR_CONFIRMATION"
 
 
 def test_render_calibration_summary_is_short_and_specific():
