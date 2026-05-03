@@ -46,6 +46,11 @@ AI_NATIVE_RADAR_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_RADAR_LLM_TIMEOUT", "90
 AI_NATIVE_RADAR_PROMPT_VERSION = os.getenv("AI_NATIVE_RADAR_PROMPT_VERSION", "ai_native_radar.v1")
 AI_NATIVE_RADAR_FINGERPRINT_VERSION = os.getenv("AI_NATIVE_RADAR_FINGERPRINT_VERSION", "fingerprint.v2")
 
+# AI Stop/Reduce shadow training daily loop. Coach-only: creates plans/intents/scores, never sends orders.
+AI_STOP_REDUCE_DAILY_ENABLED = os.getenv("AI_STOP_REDUCE_DAILY_ENABLED", "true").lower() == "true"
+AI_STOP_REDUCE_DAILY_START = os.getenv("AI_STOP_REDUCE_DAILY_START", "15:35")
+AI_STOP_REDUCE_DAILY_END = os.getenv("AI_STOP_REDUCE_DAILY_END", "16:30")
+
 # 行情 API
 PRICE_API_TIMEOUT = 5  # 秒
 PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔
