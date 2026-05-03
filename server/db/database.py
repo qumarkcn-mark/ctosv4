@@ -161,6 +161,126 @@ CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
     disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
 );
 
+-- AI Stop/Reduce Shadow Training V1：止损/减仓影子训练闭环
+CREATE TABLE IF NOT EXISTS ai_rebalance_runs (
+    run_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'STOP_REDUCE',
+    radar_run_id INTEGER,
+    technical_view_json TEXT DEFAULT '{}',
+    fundamental_snapshot_id TEXT,
+    calibration_summary_json TEXT DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'CREATED',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_rebalance_intents (
+    intent_id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES ai_rebalance_runs(run_id),
+    source_plan_id TEXT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    intent_type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    current_weight_pct REAL,
+    target_weight_pct REAL,
+    quantity_policy TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    as_of TEXT NOT NULL,
+    conditions_json TEXT DEFAULT '{}',
+    reason_json TEXT DEFAULT '{}',
+    evidence_refs_json TEXT DEFAULT '{}',
+    disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_stop_reduce_scores (
+    score_id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL REFERENCES ai_rebalance_intents(intent_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    outcome_score INTEGER NOT NULL,
+    process_score INTEGER NOT NULL,
+    final_score INTEGER NOT NULL,
+    settlement_window TEXT NOT NULL,
+    settlement_source TEXT NOT NULL,
+    settlement_prices_json TEXT DEFAULT '[]',
+    tags_json TEXT DEFAULT '[]',
+    lesson_candidate INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    scored_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_case_memory (
+    case_id TEXT PRIMARY KEY,
+    case_key TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    intent_id TEXT REFERENCES ai_rebalance_intents(intent_id),
+    mistake_type TEXT NOT NULL,
+    original_action TEXT,
+    better_action TEXT,
+    outcome TEXT,
+    loss_delta_pct REAL,
+    lesson TEXT NOT NULL,
+    context_hint TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_calibration_stats (
+    calibration_key TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    total_count INTEGER NOT NULL DEFAULT 0,
+    mistake_count INTEGER NOT NULL DEFAULT 0,
+    avg_loss_if_hold_pct REAL DEFAULT 0,
+    avg_benefit_if_reduce_pct REAL DEFAULT 0,
+    latest_mistake_case_id TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fundamental_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    max_position_pct REAL,
+    red_flags_json TEXT DEFAULT '[]',
+    source TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    raw_json TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- AI Daily Holding Plan：每天每个持仓一份教练计划，操作 intent 只是它的触发结果
+CREATE TABLE IF NOT EXISTS ai_holding_plans (
+    plan_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    radar_run_id INTEGER,
+    plan_status TEXT NOT NULL,
+    current_script TEXT,
+    target_weight_pct REAL,
+    max_position_pct REAL,
+    defense_line REAL,
+    repair_line REAL,
+    trigger_conditions_json TEXT DEFAULT '[]',
+    cancel_conditions_json TEXT DEFAULT '[]',
+    observation_focus_json TEXT DEFAULT '[]',
+    evidence_refs_json TEXT DEFAULT '{}',
+    raw_plan_json TEXT DEFAULT '{}',
+    disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, symbol, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_user_date ON ai_holding_plans(user_id, trade_date);
+CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_symbol ON ai_holding_plans(user_id, symbol, as_of);
+
 -- 多元宇宙日志（每日分类快照 + 结算）
 CREATE TABLE IF NOT EXISTS multiverse_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,6 +336,11 @@ CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id
 CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_rebalance_runs_user_symbol ON ai_rebalance_runs(user_id, symbol, as_of);
+CREATE INDEX IF NOT EXISTS idx_ai_rebalance_intents_user_symbol ON ai_rebalance_intents(user_id, symbol, as_of);
+CREATE INDEX IF NOT EXISTS idx_ai_stop_reduce_scores_intent ON ai_stop_reduce_scores(intent_id);
+CREATE INDEX IF NOT EXISTS idx_ai_case_memory_key ON ai_case_memory(user_id, case_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_fundamental_snapshots_symbol ON fundamental_snapshots(user_id, symbol, as_of);
 CREATE INDEX IF NOT EXISTS idx_mv_symbol_date ON multiverse_snapshots(user_id, symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_portfolio_strategies_user ON portfolio_strategies(user_id, created_at);
 
@@ -777,6 +902,138 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC)",
+        # 迁移 M014：AI Stop/Reduce Shadow Training V1
+        """
+        CREATE TABLE IF NOT EXISTS ai_rebalance_runs (
+            run_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'STOP_REDUCE',
+            radar_run_id INTEGER,
+            technical_view_json TEXT DEFAULT '{}',
+            fundamental_snapshot_id TEXT,
+            calibration_summary_json TEXT DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'CREATED',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ai_rebalance_intents (
+            intent_id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES ai_rebalance_runs(run_id),
+            source_plan_id TEXT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            intent_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            current_weight_pct REAL,
+            target_weight_pct REAL,
+            quantity_policy TEXT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            as_of TEXT NOT NULL,
+            conditions_json TEXT DEFAULT '{}',
+            reason_json TEXT DEFAULT '{}',
+            evidence_refs_json TEXT DEFAULT '{}',
+            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ai_stop_reduce_scores (
+            score_id TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL REFERENCES ai_rebalance_intents(intent_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            outcome_score INTEGER NOT NULL,
+            process_score INTEGER NOT NULL,
+            final_score INTEGER NOT NULL,
+            settlement_window TEXT NOT NULL,
+            settlement_source TEXT NOT NULL,
+            settlement_prices_json TEXT DEFAULT '[]',
+            tags_json TEXT DEFAULT '[]',
+            lesson_candidate INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            scored_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ai_case_memory (
+            case_id TEXT PRIMARY KEY,
+            case_key TEXT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            intent_id TEXT REFERENCES ai_rebalance_intents(intent_id),
+            mistake_type TEXT NOT NULL,
+            original_action TEXT,
+            better_action TEXT,
+            outcome TEXT,
+            loss_delta_pct REAL,
+            lesson TEXT NOT NULL,
+            context_hint TEXT,
+            metadata_json TEXT DEFAULT '{}',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ai_calibration_stats (
+            calibration_key TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            total_count INTEGER NOT NULL DEFAULT 0,
+            mistake_count INTEGER NOT NULL DEFAULT 0,
+            avg_loss_if_hold_pct REAL DEFAULT 0,
+            avg_benefit_if_reduce_pct REAL DEFAULT 0,
+            latest_mistake_case_id TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fundamental_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            max_position_pct REAL,
+            red_flags_json TEXT DEFAULT '[]',
+            source TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            raw_json TEXT DEFAULT '{}',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ai_holding_plans (
+            plan_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            radar_run_id INTEGER,
+            plan_status TEXT NOT NULL,
+            current_script TEXT,
+            target_weight_pct REAL,
+            max_position_pct REAL,
+            defense_line REAL,
+            repair_line REAL,
+            trigger_conditions_json TEXT DEFAULT '[]',
+            cancel_conditions_json TEXT DEFAULT '[]',
+            observation_focus_json TEXT DEFAULT '[]',
+            evidence_refs_json TEXT DEFAULT '{}',
+            raw_plan_json TEXT DEFAULT '{}',
+            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, symbol, trade_date)
+        )
+        """,
+        "ALTER TABLE ai_rebalance_intents ADD COLUMN source_plan_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_ai_rebalance_runs_user_symbol ON ai_rebalance_runs(user_id, symbol, as_of)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_rebalance_intents_user_symbol ON ai_rebalance_intents(user_id, symbol, as_of)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_rebalance_intents_plan ON ai_rebalance_intents(source_plan_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_stop_reduce_scores_intent ON ai_stop_reduce_scores(intent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_case_memory_key ON ai_case_memory(user_id, case_key, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_snapshots_symbol ON fundamental_snapshots(user_id, symbol, as_of)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_user_date ON ai_holding_plans(user_id, trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_holding_plans_symbol ON ai_holding_plans(user_id, symbol, as_of)",
     ]
     for sql in migrations:
         try:
