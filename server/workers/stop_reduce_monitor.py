@@ -13,6 +13,10 @@ from server.db.database import get_connection
 from server.engines.ai_native.schemas import AIReasoningResponse
 from server.engines.ai_native.holding_plan import build_holding_plan_from_ai_response
 from server.engines.ai_native.holding_plan_store import save_holding_plan
+from server.engines.ai_native.stop_reduce_feedback import (
+    DEFAULT_STOP_REDUCE_CASE_KEY,
+    load_stop_reduce_feedback,
+)
 from server.engines.ai_native.stop_reduce_adapter import build_stop_reduce_intent_from_ai_response
 from server.engines.ai_native.stop_reduce_store import save_rebalance_intent, save_rebalance_run
 from server.engines.execution.paper_models import PaperAccount, PaperPosition
@@ -81,7 +85,13 @@ async def run_stop_reduce_monitor(
                 if not config.dry_run:
                     save_holding_plan(conn, plan)
                     conn.commit()
-                if plan.plan_status not in {"REDUCE_ALERT", "EXIT_ALERT"}:
+                feedback = load_stop_reduce_feedback(
+                    conn,
+                    user_id=config.user_id,
+                    case_key=DEFAULT_STOP_REDUCE_CASE_KEY,
+                )
+                feedback_allows_intent = feedback.action_bias == "TIGHTEN_STOP"
+                if plan.plan_status not in {"REDUCE_ALERT", "EXIT_ALERT"} and not feedback_allows_intent:
                     rows.append(
                         {
                             **_row(position, "PLANNED", plan.plan_status),
@@ -96,6 +106,7 @@ async def run_stop_reduce_monitor(
                     response=response,
                     as_of=as_of,
                     fundamental_verdict=config.fundamental_verdict,  # type: ignore[arg-type]
+                    feedback=feedback,
                 )
                 if intent is None:
                     rows.append(_row(position, "SKIPPED", "NO_INTENT"))
@@ -110,6 +121,7 @@ async def run_stop_reduce_monitor(
                         as_of=intent.as_of,
                         radar_run_id=_optional_int(response.run_id),
                         technical_view=intent.reason,
+                        calibration_summary=intent.evidence_refs.get("case_memory_feedback") or {},
                         status="WAITING_SETTLEMENT",
                     )
                     save_rebalance_intent(conn, intent, run_id=run_id)

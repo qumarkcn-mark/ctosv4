@@ -1,5 +1,6 @@
 import os
 import asyncio
+import json
 import sqlite3
 import sys
 
@@ -101,6 +102,53 @@ def test_monitor_enqueues_pending_intent_from_current_position():
     intent = conn.execute("SELECT action, symbol FROM ai_rebalance_intents").fetchone()
     assert dict(intent) == {"action": "REDUCE", "symbol": "sh603893"}
     assert conn.execute("SELECT COUNT(*) FROM ai_stop_reduce_scores").fetchone()[0] == 0
+
+
+def test_monitor_injects_case_memory_feedback_into_rebalance_run():
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO ai_case_memory (
+            case_id, case_key, user_id, symbol, mistake_type,
+            original_action, better_action, outcome, loss_delta_pct, lesson, context_hint
+        )
+        VALUES (
+            'case-1', 'holding:loss:structure_breakdown:near_stop', 1, 'sh603893',
+            'AI_HELD_AFTER_STOP_BROKEN', 'HOLD', 'REDUCE',
+            '继续下跌', -4.2, '跌破防线后不要把可能修复当成持仓理由。', '近止损结构'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO ai_calibration_stats (
+            calibration_key, user_id, total_count, mistake_count,
+            avg_loss_if_hold_pct, avg_benefit_if_reduce_pct, latest_mistake_case_id
+        )
+        VALUES ('holding:loss:structure_breakdown:near_stop', 1, 5, 3, -4.2, 1.4, 'case-1')
+        """
+    )
+
+    async def fake_builder(**kwargs):
+        return response(kwargs["symbol"], current_price=11.05, stop_price=11.0)
+
+    report = asyncio.run(
+        run_stop_reduce_monitor(
+            conn=conn,
+            config=StopReduceMonitorConfig(user_id=1, symbol="sh.603893"),
+            reasoning_builder=fake_builder,
+        )
+    )
+
+    assert report.enqueued_intents == 1
+    intent_row = conn.execute("SELECT action, reason_json FROM ai_rebalance_intents").fetchone()
+    run_row = conn.execute("SELECT calibration_summary_json FROM ai_rebalance_runs").fetchone()
+    reason = json.loads(intent_row["reason_json"])
+    calibration = json.loads(run_row["calibration_summary_json"])
+    assert intent_row["action"] == "REDUCE"
+    assert reason["memory_feedback"]["action_bias"] == "TIGHTEN_STOP"
+    assert calibration["latest_mistake_type"] == "AI_HELD_AFTER_STOP_BROKEN"
+    assert conn.execute("SELECT plan_status FROM ai_holding_plans").fetchone()[0] == "WATCH"
 
 
 def test_monitor_dry_run_does_not_write_pending_intent():
