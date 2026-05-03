@@ -74,6 +74,10 @@
   overflow: auto;
 }
 
+.review-training-body--ai-training {
+  overflow: auto;
+}
+
 .ai-review-panel {
   display: flex;
   flex-direction: column;
@@ -318,6 +322,376 @@
   text-align: center;
 }
 
+.ai-training-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ai-training-toolbar,
+.ai-training-overview,
+.ai-training-filters,
+.ai-training-mainline,
+.ai-training-panel-box,
+.ai-training-machine {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.ai-training-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.ai-training-toolbar h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xl);
+}
+
+.ai-training-toolbar p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.ai-training-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ai-training-actions input {
+  width: 150px;
+}
+
+.ai-training-actions input,
+.ai-training-actions button,
+.ai-training-filters button {
+  min-height: 36px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.ai-training-actions input {
+  padding: 0 var(--space-3);
+}
+
+.ai-training-actions button,
+.ai-training-filters button {
+  padding: 0 var(--space-3);
+  cursor: pointer;
+}
+
+.ai-training-actions button:hover,
+.ai-training-filters button:hover,
+.ai-training-filters button.is-active {
+  border-color: rgba(202, 167, 91, 0.65);
+  color: var(--action-gold);
+}
+
+.ai-training-actions button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.ai-training-disclaimer {
+  padding: var(--space-3);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--signal-amber);
+  font-size: var(--text-sm);
+}
+
+.ai-training-desktop-notice {
+  display: none;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.ai-training-overview {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(88px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.ai-training-metric {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.ai-training-metric span,
+.ai-training-section-title span,
+.ai-training-plan span,
+.ai-training-intent span,
+.ai-training-memory-row span,
+.ai-training-calibration-row span,
+.ai-training-score-row span {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.ai-training-metric strong {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xl);
+}
+
+.ai-training-metric--wait {
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.ai-training-metric--warn,
+.ai-training-metric--risk {
+  border: 1px solid rgba(214, 89, 89, 0.28);
+  background: rgba(214, 89, 89, 0.08);
+}
+
+.ai-training-metric--clear {
+  border: 1px solid rgba(74, 163, 111, 0.28);
+  background: rgba(74, 163, 111, 0.08);
+}
+
+.ai-training-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.ai-training-filters .segmented-control {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.ai-training-filters > span {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.ai-training-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  gap: var(--space-4);
+}
+
+.ai-training-mainline,
+.ai-training-panel-box,
+.ai-training-machine {
+  padding: var(--space-4);
+}
+
+.ai-training-side {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.ai-training-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ai-training-section-title strong {
+  font-size: var(--text-md);
+}
+
+.ai-training-timeline {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.ai-training-plan,
+.ai-training-intent {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.ai-training-plan--reduce_alert,
+.ai-training-plan--exit_alert,
+.ai-training-intent--waiting {
+  border-color: rgba(245, 158, 11, 0.32);
+}
+
+.ai-training-intent--settled {
+  border-color: rgba(74, 163, 111, 0.26);
+}
+
+.ai-training-plan strong,
+.ai-training-intent strong,
+.ai-training-memory-row strong,
+.ai-training-calibration-row strong {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+.ai-training-plan p,
+.ai-training-intent p,
+.ai-training-memory-row p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.ai-training-plan ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  color: var(--text-secondary);
+}
+
+.ai-training-row-meta,
+.ai-training-score-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.ai-training-row-meta span,
+.ai-training-score-inline span {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-surface);
+}
+
+.ai-training-score-inline span:first-child {
+  color: var(--action-gold);
+}
+
+.ai-training-score-row,
+.ai-training-memory-row,
+.ai-training-calibration-row {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ai-training-score-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.ai-training-score-row b {
+  font-size: var(--text-xl);
+  color: var(--action-gold);
+  font-family: var(--font-mono);
+}
+
+.ai-training-muted,
+.ai-training-error,
+.ai-training-empty {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+}
+
+.ai-training-muted {
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-subtle);
+}
+
+.ai-training-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  background: rgba(214, 89, 89, 0.12);
+  color: var(--danger);
+}
+
+.ai-training-error button {
+  min-height: 32px;
+  border: 1px solid rgba(214, 89, 89, 0.28);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.ai-training-empty {
+  display: grid;
+  gap: var(--space-1);
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.ai-training-empty strong {
+  color: var(--text-primary);
+}
+
+.ai-training-table {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.ai-training-table-head,
+.ai-training-table-row {
+  display: grid;
+  grid-template-columns: 100px 90px 110px 80px minmax(240px, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.ai-training-table-head {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.ai-training-table-row {
+  min-height: 32px;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.ai-training-table-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-training-skeleton {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.ai-training-skeleton span {
+  min-height: 96px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg-surface), var(--bg-elevated), var(--bg-surface));
+}
+
+@media (max-width: 1023px) {
+  .ai-training-desktop-notice {
+    display: block;
+  }
+}
+
 @media (max-width: 900px) {
   .review-training-header {
     flex-direction: column;
@@ -325,12 +699,27 @@
 
   .ai-review-toolbar,
   .ai-review-filters,
-  .ai-review-card-head {
+  .ai-review-card-head,
+  .ai-training-toolbar,
+  .ai-training-filters {
     flex-direction: column;
   }
 
   .ai-review-summary,
-  .ai-review-form {
+  .ai-review-form,
+  .ai-training-overview,
+  .ai-training-layout,
+  .ai-training-table-head,
+  .ai-training-table-row,
+  .ai-training-skeleton {
     grid-template-columns: 1fr;
+  }
+
+  .ai-training-actions {
+    width: 100%;
+  }
+
+  .ai-training-actions input {
+    width: 100%;
   }
 }
