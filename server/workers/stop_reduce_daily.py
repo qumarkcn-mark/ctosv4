@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -83,7 +84,10 @@ async def run_stop_reduce_daily_logged(
     mode = stop_reduce_daily_mode(skip_monitor=config.skip_monitor, skip_settlement=config.skip_settlement)
     started_at = datetime.now().isoformat(timespec="seconds")
     run_date = started_at[:10]
-    run_id = f"stop_reduce_daily:{config.user_id}:{run_date}:{trigger.lower()}:{mode.lower()}:{started_at[11:19].replace(':', '')}"
+    run_id = (
+        f"stop_reduce_daily:{config.user_id}:{run_date}:{trigger.lower()}:"
+        f"{mode.lower()}:{started_at[11:19].replace(':', '')}:{uuid.uuid4().hex[:8]}"
+    )
     owns_audit_conn = audit_conn is None
     audit_conn = audit_conn or get_connection()
     try:

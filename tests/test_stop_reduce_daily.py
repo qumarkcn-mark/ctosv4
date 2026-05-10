@@ -157,6 +157,25 @@ def test_daily_logged_persists_success_audit(monkeypatch):
     assert row["summary_json"]
 
 
+def test_daily_logged_allows_same_second_runs(monkeypatch):
+    conn = make_conn()
+
+    async def fake_runner(**kwargs):
+        return StopReduceDailyReport(generated_at="2026-05-04T15:40:00")
+
+    for _ in range(2):
+        asyncio.run(
+            run_stop_reduce_daily_logged(
+                config=StopReduceDailyConfig(user_id=1, skip_settlement=True),
+                trigger="MANUAL",
+                runner=fake_runner,
+                audit_conn=conn,
+            )
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM ai_stop_reduce_daily_runs").fetchone()[0] == 2
+
+
 def test_daily_logged_persists_failure_audit(monkeypatch):
     conn = make_conn()
 
