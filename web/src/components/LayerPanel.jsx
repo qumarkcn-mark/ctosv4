@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { PRESETS, applyPreset, saveVisibility } from '../store/layerState.js'
+import { PRESETS, applyPreset, normalizeVisibilityConstraints, saveVisibility } from '../store/layerState.js'
 import './LayerPanel.css'
 
 const DISPLAY_GROUPS = [
@@ -75,13 +75,13 @@ export default function LayerPanel({ visibility, onChange }) {
   }
 
   const updateVisibility = (patch) => {
-    const next = { ...visibility, ...patch }
+    const next = normalizeVisibilityConstraints({ ...visibility, ...patch })
     saveVisibility(next)
     onChange(next)
   }
 
   const handlePreset = (name) => {
-    const next = { ...applyPreset(name), cchan_preset: visibility.cchan_preset || 'live_tolerant' }
+    const next = normalizeVisibilityConstraints({ ...applyPreset(name), cchan_preset: visibility.cchan_preset || 'live_tolerant' })
     saveVisibility(next)
     onChange(next)
   }

@@ -42,7 +42,7 @@ const PRESETS = {
     projection: false, momentum_compare: false, support_wall: false, decomp_grid: false,
   },
   full: {
-    bi: true, seg: true, bi_zs: true, bi_zs_decomp: true, seg_zs: true,
+    bi: true, seg: true, bi_zs: false, bi_zs_decomp: true, seg_zs: true,
     bsp: true, bsp_buy: true, bsp_sell: true, bsp_types: ['1', '1p', '2', '2s', '3a', '3b'],
     ma: true, vol: true, macd: true, cchan_preset: 'live_tolerant',
     // 全标注预设：背驰辅助和防线预警开启，区间套/切分保持关闭（防止网格叠加）
@@ -63,19 +63,30 @@ export function loadVisibility() {
     if (!['live_tolerant', 'textbook_strict', 'sensitive_probe'].includes(merged.cchan_preset)) {
       merged.cchan_preset = DEFAULT_VISIBILITY.cchan_preset
     }
-    return merged
+    return normalizeVisibilityConstraints(merged)
   } catch {
     return { ...DEFAULT_VISIBILITY }
   }
 }
 
 export function saveVisibility(vis) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(vis))
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeVisibilityConstraints(vis)))
 }
 
 export function applyPreset(name) {
   const preset = PRESETS[name] || PRESETS.standard
-  return { ...preset }
+  return normalizeVisibilityConstraints({ ...preset })
+}
+
+export function normalizeVisibilityConstraints(vis) {
+  const next = { ...DEFAULT_VISIBILITY, ...(vis || {}) }
+  if (next.bi_zs && next.bi_zs_decomp) {
+    next.bi_zs = false
+  }
+  if (next.projection && next.decomp_grid) {
+    next.decomp_grid = false
+  }
+  return next
 }
 
 export { PRESETS, DEFAULT_VISIBILITY }

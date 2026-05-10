@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import sqlite3
 from datetime import datetime
 from server.db.database import get_connection
-from server.domain.symbols import symbol_aliases, to_tencent_symbol
+from server.domain.symbols import normalize_symbol, symbol_aliases, to_tencent_symbol
+from server.workers.kline_sync_worker import ALL_FREQS, sync_new_watchlist_symbol
 
 router = APIRouter()
 
@@ -122,10 +123,16 @@ def delete_group(name: str, user_id: int = 1):
         conn.close()
 
 @router.post("/groups/{group_name}/stocks")
-def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
+def add_stock(
+    group_name: str,
+    item: WatchlistItem,
+    background_tasks: BackgroundTasks,
+    user_id: int = 1,
+):
     """添加股票到分组（保证全局唯一，从其他分组中移除）"""
     import sqlite3
-    stock_symbol = to_tencent_symbol(item.symbol)
+    canonical_symbol = normalize_symbol(item.symbol)
+    stock_symbol = to_tencent_symbol(canonical_symbol)
     aliases = symbol_aliases(item.symbol)
     conn = get_connection()
     try:
@@ -149,7 +156,17 @@ def add_stock(group_name: str, item: WatchlistItem, user_id: int = 1):
             (g_id, stock_symbol, item.name, next_order)
         )
         conn.commit()
-        return {"status": "ok"}
+        background_tasks.add_task(sync_new_watchlist_symbol, canonical_symbol)
+        return {
+            "status": "ok",
+            "symbol": stock_symbol,
+            "data_sync": {
+                "status": "queued",
+                "source": "baostock",
+                "quick_freqs": ["day", "5"],
+                "full_freqs": ALL_FREQS,
+            },
+        }
     except sqlite3.IntegrityError:
         raise HTTPException(400, "添加失败")
     finally:

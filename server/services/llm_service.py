@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from openai import AsyncOpenAI
@@ -7,6 +8,71 @@ import logging
 from server import config
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_qwen_base_url(candidate: Optional[str]) -> str:
+    """只允许官方 DashScope OpenAI-compatible endpoint，避免用户设置劫持 API key。"""
+    default = config.QWEN_BASE_URL.rstrip("/")
+    normalized = str(candidate or default).strip().rstrip("/")
+    allowed = set(config.QWEN_ALLOWED_BASE_URLS)
+    if normalized not in allowed:
+        logger.warning("忽略不受信任的 Qwen Base URL: %s", normalized)
+        normalized = default if default in allowed else "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    return normalized + "/"
+
+
+def _loads_lenient_json_object(raw_content: str) -> dict:
+    """Parse model JSON with small repairs for common response_format drift."""
+    try:
+        return json.loads(raw_content, object_pairs_hook=_merge_duplicate_json_pairs)
+    except json.JSONDecodeError:
+        pass
+
+    content = raw_content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+    start = content.find("{")
+    end = content.rfind("}")
+    if start >= 0 and end > start:
+        content = content[start : end + 1]
+
+    repairs = [
+        content,
+        re.sub(r",(\s*[}\]])", r"\1", content),
+    ]
+    repairs.append(re.sub(r":\s*([+-]?\d+(?:\.\d+)?)\s*%", r': "\1%"', repairs[-1]))
+    repairs.append(repairs[-1].replace(": None", ": null").replace(": True", ": true").replace(": False", ": false"))
+
+    last_error: Optional[Exception] = None
+    for candidate in repairs:
+        try:
+            parsed = json.loads(candidate, object_pairs_hook=_merge_duplicate_json_pairs)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"value": parsed}
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    raise last_error or ValueError("Unable to parse model JSON")
+
+
+def _merge_duplicate_json_pairs(pairs: list) -> dict:
+    """Keep useful model output when JSON contains duplicate keys such as rows then rows: []."""
+    merged = {}
+    for key, value in pairs:
+        if key in merged and _has_content(merged[key]) and not _has_content(value):
+            continue
+        merged[key] = value
+    return merged
+
+
+def _has_content(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (str, list, dict, tuple, set)):
+        return bool(value)
+    return True
+
 
 class ScenarioNode(BaseModel):
     type: str = Field(..., description="Scenario type identifier e.g. right_side_major_wave")
@@ -388,7 +454,7 @@ class LLMService:
 
         response = await client.chat.completions.create(**request)
         raw_content = response.choices[0].message.content
-        return json.loads(raw_content)
+        return _loads_lenient_json_object(raw_content)
 
     async def infer_ai_native_markdown(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> str:
         """AI Native Radar Markdown 推演。调用方负责语义过滤和确定性门禁。"""
@@ -428,36 +494,44 @@ class LLMService:
         response = await client.chat.completions.create(**request)
         return response.choices[0].message.content or ""
 
-    async def parse_trade_from_text(self, text: str) -> dict:
-        """
-        从自然语言中提取交易信息（语音录入核心）。
-        使用 DeepSeek V3，temperature=0.1 确保精度。
-        失败时降级到正则解析。
-        """
-        import re
+    def _get_user_qwen_settings(self, user_id: int = 1) -> dict:
         from server.db.database import get_connection
 
-        # ── 获取 API Key ──
-        api_key = None
         try:
             db_conn = get_connection()
             try:
-                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
+                row = db_conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
                 if row and row["settings_json"]:
-                    settings = json.loads(row["settings_json"])
-                    api_key = settings.get("deepseek_api_key")
+                    loaded = json.loads(row["settings_json"])
+                    return loaded if isinstance(loaded, dict) else {}
             finally:
                 db_conn.close()
         except Exception:
-            pass
+            logger.debug("读取用户 Qwen API 设置失败", exc_info=True)
+        return {}
 
-        if not api_key:
-            api_key = os.environ.get("LLM_API_KEY")
+    async def parse_trade_from_text(self, text: str, user_id: int = 1) -> dict:
+        """
+        从自然语言中提取交易信息（语音录入核心）。
+        使用 Qwen 做事实抽取，temperature=0.1 确保精度。
+        失败时降级到正则解析。
+        """
+        import re
+
+        settings = self._get_user_qwen_settings(user_id)
+        api_key = settings.get("qwen_api_key") or os.environ.get("QWEN_API_KEY") or config.QWEN_API_KEY
+        base_url = _safe_qwen_base_url(settings.get("qwen_base_url") or os.environ.get("QWEN_BASE_URL"))
+        model_name = (
+            settings.get("qwen_trade_parse_model")
+            or settings.get("qwen_default_model")
+            or os.environ.get("QWEN_TRADE_PARSE_MODEL")
+            or config.QWEN_TRADE_PARSE_MODEL
+        )
 
         # ── LLM 解析 ──
         if api_key and api_key != "dummy_key_replace_in_prod":
             try:
-                client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
                 system_prompt = """你是A股交易记录解析助手。从用户输入的自然语言中提取交易信息，返回JSON。
 规则：
 - direction: 买/买入/B/buy → "BUY"；卖/卖出/S/sell → "SELL"
@@ -472,7 +546,7 @@ class LLMService:
 输出: {"direction":"BUY","name":"贵州茅台","symbol_hint":"sh600519","price":1780.0,"quantity":100,"confidence":0.95}"""
 
                 response = await client.chat.completions.create(
-                    model="deepseek-chat",
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": text},
@@ -480,7 +554,7 @@ class LLMService:
                     temperature=0.1,
                     response_format={"type": "json_object"},
                 )
-                raw = json.loads(response.choices[0].message.content)
+                raw = _normalize_trade_parse_payload(_loads_lenient_json_object(response.choices[0].message.content or "{}"))
                 result = TradeParseResult(raw_text=text, **raw)
                 return result.model_dump()
             except Exception as e:
@@ -511,3 +585,18 @@ class LLMService:
         if price_match:
             result["price"] = float(price_match.group(1))
         return result
+
+
+def _normalize_trade_parse_payload(raw: dict) -> dict:
+    payload = dict(raw or {})
+    confidence = payload.get("confidence")
+    if isinstance(confidence, str):
+        stripped = confidence.strip()
+        if stripped.endswith("%"):
+            try:
+                payload["confidence"] = max(0.0, min(1.0, float(stripped[:-1].strip()) / 100))
+            except ValueError:
+                payload["confidence"] = 0.0
+    elif isinstance(confidence, (int, float)) and confidence > 1:
+        payload["confidence"] = max(0.0, min(1.0, float(confidence) / 100))
+    return payload

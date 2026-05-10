@@ -20,6 +20,7 @@ import logging
 import asyncio
 import os
 import socket
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -50,9 +51,25 @@ def _load_baostock_socket_timeout_seconds() -> float:
     return timeout
 
 
+def _load_baostock_circuit_open_seconds() -> float:
+    """读取 BaoStock 登录熔断窗口，配置异常时回退到 60 秒。"""
+
+    raw_seconds = os.getenv("BAOSTOCK_CIRCUIT_OPEN_SECONDS", "60")
+    try:
+        seconds = float(raw_seconds)
+    except (TypeError, ValueError):
+        logger.warning("BAOSTOCK_CIRCUIT_OPEN_SECONDS 无效，使用默认 60 秒: %r", raw_seconds)
+        return 60.0
+    if seconds < 0:
+        logger.warning("BAOSTOCK_CIRCUIT_OPEN_SECONDS 不能为负数，使用默认 60 秒: %r", raw_seconds)
+        return 60.0
+    return seconds
+
+
 # BaoStock 客户端内部直接使用 socket.connect/recv，默认没有超时。
 # 当 public-api.baostock.com:10030 不通时，登录会长期阻塞并拖死 K 线 API。
 BAOSTOCK_SOCKET_TIMEOUT_SECONDS = _load_baostock_socket_timeout_seconds()
+BAOSTOCK_CIRCUIT_OPEN_SECONDS = _load_baostock_circuit_open_seconds()
 
 
 def _install_baostock_socket_timeout() -> None:
@@ -156,19 +173,29 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="baostock")
 _session_lock = threading.Lock()
 _bs_lock = threading.Lock()  # 保护所有 bs.* 操作
 _session_active = False
+_last_login_failure_at = 0.0
 
 
 def _ensure_session():
     """确保 BaoStock 会话处于连接状态（进程级单例）"""
-    global _session_active
+    global _session_active, _last_login_failure_at
     with _session_lock:
+        if (
+            not _session_active
+            and _last_login_failure_at
+            and time.monotonic() - _last_login_failure_at < BAOSTOCK_CIRCUIT_OPEN_SECONDS
+        ):
+            raise ConnectionError("BaoStock login 熔断中，跳过本次拉取")
+
         if not _session_active:
             with _bs_lock:
                 lg = bs.login()
             if lg.error_code != "0":
+                _last_login_failure_at = time.monotonic()
                 logger.error("BaoStock login 失败: %s", lg.error_msg)
                 raise ConnectionError(f"BaoStock login 失败: {lg.error_msg}")
             _session_active = True
+            _last_login_failure_at = 0.0
             logger.info("BaoStock 会话已建立（进程级连接池）")
 
 

@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from server.config import SCANNER_ADMIN_TOKEN
 from server.db.database import get_connection
 from server.engines.coach.event_log import log_user_action
+from server.engines.decision.push_rules import build_scanner_signal_payload
 from server.engines.decision.strategy_definitions import build_strategy_contract, get_strategy_definition
 
 router = APIRouter()
@@ -84,6 +85,8 @@ def _row_to_candidate(row) -> dict:
     item["llm_cons"] = _json_or_empty(item.get("llm_cons"), [])
     item["llm_red_flags"] = _json_or_empty(item.get("llm_red_flags"), [])
     item = _attach_strategy_contract(item)
+    item["signals_v2"] = build_scanner_signal_payload(item)
+    item["signal_code"] = item["signals_v2"].get("primary", {}).get("code", "")
     return item
 
 
@@ -99,7 +102,7 @@ def _update_scan_job(**values):
 
 def _run_scan_job(force: bool):
     """后台执行完整扫描，避免手动触发接口阻塞前端请求。"""
-    from server.workers.scanner import get_today, run_scan as run_worker_scan
+    from server.workers.scanner import get_last_effective_scan_date, get_today, run_scan as run_worker_scan
     from server.workers.scanner import trigger_fundamental_analysis
 
     scan_date = get_today()
@@ -112,6 +115,7 @@ def _run_scan_job(force: bool):
     )
     try:
         count = run_worker_scan(force)
+        scan_date = get_last_effective_scan_date(scan_date)
         if count > 0:
             import asyncio
 

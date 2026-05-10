@@ -11,8 +11,10 @@ from pydantic import ValidationError
 
 from server import config
 from server.api import radar as radar_api
+from server.engines.ai_native.ai_chan_reasoner import build_ai_chan_inference
+from server.engines.ai_native.ai_chan_renderer import render_ai_chan_markdown
 from server.engines.ai_native.case_memory import find_similar_cases, save_reasoning_run
-from server.engines.ai_native.hypothesis_reasoner import infer_ai_hypotheses
+from server.engines.ai_native.fusion_chan_adapter import build_chan_analysis_from_transcript
 from server.engines.ai_native.model_router import choose_model_route
 from server.engines.ai_native.schemas import (
     AIReasoningOutput,
@@ -35,6 +37,8 @@ async def build_ai_native_reasoning(
     user_id: int,
     mode: Optional[str] = None,
     llm_service: LLMService | None = None,
+    expected_signal_code: Optional[str] = None,
+    expected_structure_fingerprint: Optional[str] = None,
 ) -> AIReasoningResponse:
     """Run the AI-native commander reasoning loop.
 
@@ -44,6 +48,14 @@ async def build_ai_native_reasoning(
     radar_contract = radar_response.get("data") or {}
     await _attach_tactical_structure(radar_contract)
     transcript = compile_structure_transcript(radar_contract)
+    current_signal_code = _signal_code_from_transcript(transcript)
+    expected_signal = str(expected_signal_code or "").strip()
+    if expected_signal and current_signal_code != expected_signal:
+        raise ValueError(f"当前信号已变化，请刷新雷达后重试: expected={expected_signal}, actual={current_signal_code or 'NONE'}")
+    expected_fingerprint = str(expected_structure_fingerprint or "").strip()
+    actual_fingerprint = _radar_structure_fingerprint(radar_contract) or transcript.structure_fingerprint
+    if expected_fingerprint and actual_fingerprint != expected_fingerprint:
+        raise ValueError("当前结构已刷新，请刷新雷达后重试")
     if mode in {"EMPTY", "HOLDING"} and transcript.mode != mode:
         transcript.mode = mode  # type: ignore[misc]
     model_route = choose_model_route(transcript)
@@ -55,14 +67,37 @@ async def build_ai_native_reasoning(
     gate = _fallback_gate("LLM_NOT_CALLED", "AI 推理未运行")
 
     try:
-        raw_output = await infer_ai_hypotheses(
+        # P4.5: 统一使用 AI Chan Reasoner（三段式实战教练），取代旧版 hypothesis_reasoner
+        chan_analysis = build_chan_analysis_from_transcript(transcript)
+        ai_chan_inference = await build_ai_chan_inference(
+            chan_analysis=chan_analysis,
+            position_context=transcript.position_context,
             user_id=user_id,
-            transcript=transcript,
-            similar_cases=memory,
             llm_service=llm_service,
-            model_route=model_route,
+            fallback_on_error=True,
         )
-        if config.AI_NATIVE_RADAR_GATE_ENABLED:
+        # 将结构化 JSON 渲染为前端期望的 Markdown
+        coach_md = render_ai_chan_markdown(ai_chan_inference)
+        # raw_output 只包含 AIReasoningOutput schema 期望的字段
+        raw_output = {
+            "raw_reasoning_md": coach_md,
+            "coach_filtered_md": coach_md,
+            "semantic_filter_status": "PASS",
+            "semantic_filter_violations": [],
+            "disclaimer": ai_chan_inference.disclaimer,
+        }
+        if ai_chan_inference.fallback_reason:
+            # AI Chan 超时/异常时也保持三段式展示，不再回到旧版结构保护文案。
+            output, gate = _accept_without_gate(raw_output)
+            if gate.status == "PASS":
+                gate.violations.append(
+                    GateViolation(
+                        code="AI_CHAN_FALLBACK",
+                        message=ai_chan_inference.fallback_reason,
+                        severity="WARN",
+                    )
+                )
+        elif config.AI_NATIVE_RADAR_GATE_ENABLED:
             output, gate = verify_ai_reasoning(raw_output, transcript)
         else:
             output, gate = _accept_without_gate(raw_output)
@@ -71,7 +106,7 @@ async def build_ai_native_reasoning(
         gate = _fallback_gate("LLM_ERROR", f"AI 推理异常: {str(exc)[:120]}")
         output = None
 
-    if gate.status == "PASS" and output:
+    if gate.status != "FALLBACK" and output:
         response = _response_from_output(output, transcript, gate, model_route)
     else:
         response = _fallback_response(radar_contract, transcript, gate, model_route)
@@ -93,6 +128,23 @@ async def build_ai_native_reasoning(
     return response
 
 
+def _signal_code_from_transcript(transcript: StructureTranscript) -> str:
+    signal = transcript.signal_v2 or {}
+    primary = signal.get("primary") if isinstance(signal.get("primary"), dict) else {}
+    return str(primary.get("code") or "").strip()
+
+
+def _radar_structure_fingerprint(radar_contract: dict) -> str:
+    diagnostics = radar_contract.get("diagnostics") if isinstance(radar_contract.get("diagnostics"), dict) else {}
+    kernel = radar_contract.get("structure_kernel") if isinstance(radar_contract.get("structure_kernel"), dict) else {}
+    return str(
+        diagnostics.get("structure_fingerprint")
+        or kernel.get("structure_fingerprint")
+        or radar_contract.get("structure_fingerprint")
+        or ""
+    ).strip()
+
+
 async def _attach_tactical_structure(radar_contract: dict) -> None:
     """Attach the day/30/5 battlefield used by AI Native free reasoning.
 
@@ -107,7 +159,8 @@ async def _attach_tactical_structure(radar_contract: dict) -> None:
         tactical_adapter = await radar_api.analyze_structure(
             symbol,
             levels=["day", "30", "5"],
-            count=800,
+            count=1200,
+            compute_profile="radar_tactical_v1",
         )
         if not radar_api._adapter_structure_ready(tactical_adapter):
             return
@@ -153,20 +206,17 @@ def _fallback_response(radar_contract: dict, transcript: StructureTranscript, ga
         or "沿用规则雷达推演"
     )
     coach_text = (
-        "**1. 【全局语境定性】**\n"
+        "**1. 【当前定位】**\n"
         f"{diagnosis}\n\n"
-        "**2. 【防守看门狗】**\n"
-        "AI 推演本次未展示，先回到结构事实层核对近端边界。\n\n"
-        "**3. 【推演与应对沙盘】**\n"
+        "**2. 【完全分类】**\n"
         "当前先停止强推演，等分钟级别新笔、新中枢或近端买卖点补齐后再判断。\n"
         "不要把远离当前价的旧中枢上沿当成眼前回踩位。仅供参考，不构成投资建议。"
         if structure_gap_text
         else (
-            "**1. 【全局语境定性】**\n"
+            "**1. 【当前定位】**\n"
             f"{diagnosis}\n\n"
-            "**2. 【防守看门狗】**\n"
-            f"AI 推演未通过门禁，本次只保留结构边界事实。{divergence_text}\n\n"
-            "**3. 【推演与应对沙盘】**\n"
+            "**2. 【完全分类】**\n"
+            f"本轮不展示自由推演文本，只保留结构边界事实。{divergence_text}\n"
             "本轮不展示自由推演文本，等待下一次结构刷新或模型输出通过语义过滤。"
             "仅供参考，不构成投资建议。"
         )

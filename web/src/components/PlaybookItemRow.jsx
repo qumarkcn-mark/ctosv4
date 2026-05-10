@@ -17,11 +17,13 @@ const SOURCE_LABEL = {
   positions: '持仓',
   scanner: '机会池',
   watchlist: '自选股',
+  rebalance: '调仓',
   unknown: '来源待定',
 }
 
 function eventType(item) {
   if (item.status === 'STALE' || item.status === 'ENGINE_ERROR') return '数据复核'
+  if (item.source === 'rebalance') return '调仓意图'
   if (item.status === 'TRIGGERED') return '条件触发'
   if (item.source === 'positions' || item.mode === 'HOLDING') return '持仓防线'
   return '观察机会'
@@ -34,23 +36,53 @@ function itemSource(item) {
 }
 
 function planTitle(item) {
+  const rebalanceAction = item.trigger?.rebalance?.action
+  if (item.source === 'rebalance' && rebalanceAction) {
+    if (rebalanceAction.action === 'NO_ACTION' || fusionStatus(item)?.state === 'FALLBACK') {
+      return item.trigger?.plan_title || rebalanceAction.action_label || '结构兜底复核'
+    }
+    return `${rebalanceAction.action || 'ACTION'} · ${rebalanceAction.action_label || '调仓意图'}`
+  }
   return item.trigger?.plan_title || item.plan_id || '结构计划'
 }
 
 function invalidText(item) {
+  if (item.source === 'rebalance') {
+    const conditions = item.trigger?.rebalance?.conditions || {}
+    return conditions.execute_if?.[0] || conditions.delay_if?.[0] || item.invalidation?.invalid_if || '等待调仓条件确认'
+  }
   const aiNative = item.trigger?.ai_native
   if (aiNative?.next_focus) return aiNative.next_focus
   return item.invalidation?.invalid_if || '等待 Radar 给出失效条件'
 }
 
 function aiBadge(item) {
+  if (item.source === 'rebalance') {
+    const memory = item.trigger?.rebalance?.memory || {}
+    const count = Number(memory.previous_intent_count || 0)
+    const suffix = count ? ` · ${memory.urgency_escalated ? '升级' : `第${count + 1}次`}` : ''
+    return `${item.trigger?.rebalance?.urgency || STATUS_LABEL[item.status] || item.status}${suffix}`
+  }
   const aiNative = item.trigger?.ai_native
   if (!aiNative?.primary_path) return null
   return `${aiNative.primary_name || aiNative.primary_path} ${Number(aiNative.primary_score || 0)}`
 }
 
+function fusionStatus(item) {
+  if (item.source !== 'rebalance') return null
+  const rebalance = item.trigger?.rebalance || {}
+  return rebalance.fusion_status || rebalance.evidence?.fusion_status || null
+}
+
+function fusionStatusLabel(status) {
+  if (!status?.state) return null
+  return status.state === 'FALLBACK' ? '结构兜底' : 'AI Ready'
+}
+
 export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }) {
   const stale = item.status === 'STALE' || item.status === 'ENGINE_ERROR'
+  const fusion = fusionStatus(item)
+  const fusionLabel = fusionStatusLabel(fusion)
   return (
     <div
       className={`playbook-row${active ? ' is-active' : ''}${stale ? ' is-stale' : ''}`}
@@ -62,7 +94,7 @@ export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }
       }}
     >
       <div className="playbook-event-cell">
-        <span className={`playbook-event playbook-event--${String(item.status).toLowerCase()}`}>
+        <span className={`playbook-event playbook-event--${String(item.status).toLowerCase()}${item.source === 'rebalance' ? ' playbook-event--rebalance' : ''}`}>
           {SOURCE_LABEL[itemSource(item)] || eventType(item)}
         </span>
         <em>{eventType(item)}</em>
@@ -84,6 +116,11 @@ export default function PlaybookItemRow({ item, active, onSelect, onViewInChan }
         <span className={`playbook-status playbook-status--${String(item.status).toLowerCase()}`}>
           {aiBadge(item) || STATUS_LABEL[item.status] || item.status}
         </span>
+        {fusionLabel && (
+          <em className={`playbook-row-fusion playbook-row-fusion--${fusion.state === 'FALLBACK' ? 'fallback' : 'ready'}`}>
+            {fusionLabel}
+          </em>
+        )}
       </div>
       <div className="playbook-row-actions">
         <button

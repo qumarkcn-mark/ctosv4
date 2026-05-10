@@ -6,15 +6,16 @@ import LayerPanel from '../components/LayerPanel.jsx'
 import RadarPanel from '../features/radar/RadarPanel.jsx'
 import { API_BASE } from '../config.js'
 import { loadVisibility, saveVisibility } from '../store/layerState.js'
+import { readLastViewedSymbol } from '../utils/symbolStorage.js'
 import './ChanView.css'
 
 export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChange }) {
   // 兼容降级：若父组件未传 props（如旧路由），读本地存储
   const [localSymbol, setLocalSymbol] = useState(
-    () => localStorage.getItem('lastViewedSymbol') || 'sh600519'
+    () => readLastViewedSymbol().symbol
   )
   const [localName, setLocalName] = useState(
-    () => localStorage.getItem('lastViewedSymbolName') || '贵州茅台'
+    () => readLastViewedSymbol().name
   )
 
   const symbol = activeSymbol ?? localSymbol
@@ -237,9 +238,11 @@ export default function ChanView({ activeSymbol, activeSymbolName, onSymbolChang
             >
               <span className="panel-toggle-icon">{radarCollapsed ? '‹' : '›'}</span>
             </button>
-            <div className="chan-radar-sidebar">
-              <RadarPanel symbol={symbol} refreshToken={dataRefreshToken} />
-            </div>
+            {!radarCollapsed && (
+              <div className="chan-radar-sidebar">
+                <RadarPanel symbol={symbol} refreshToken={dataRefreshToken} />
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -1,7 +1,9 @@
 import json
 import logging
+import time
+import asyncio
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import traceback
 from fastapi.concurrency import run_in_threadpool
@@ -27,10 +29,15 @@ _llm_service = LLMService()
 def _symbol_variants(symbol: str) -> list[str]:
     raw = (symbol or "").strip()
     variants = {raw}
-    if len(raw) == 8 and raw[:2].lower() in {"sh", "sz"}:
-        variants.add(f"{raw[:2].lower()}.{raw[2:]}")
-    if "." in raw:
-        variants.add(raw.replace(".", ""))
+    try:
+        from server.domain.symbols import symbol_aliases
+
+        variants.update(symbol_aliases(raw))
+    except Exception:
+        if len(raw) == 8 and raw[:2].lower() in {"sh", "sz"}:
+            variants.add(f"{raw[:2].lower()}.{raw[2:]}")
+        if "." in raw:
+            variants.add(raw.replace(".", ""))
     return [item for item in variants if item]
 
 
@@ -44,7 +51,14 @@ def _safe_json_loads(value: object) -> dict:
         return {}
 
 
-def _load_latest_ai_native_radar_run(*, user_id: int, symbol: str, mode: Optional[str] = None) -> Optional[dict]:
+def _load_latest_ai_native_radar_run(
+    *,
+    user_id: int,
+    symbol: str,
+    mode: Optional[str] = None,
+    signal_code: Optional[str] = None,
+    structure_fingerprint: Optional[str] = None,
+) -> Optional[dict]:
     variants = _symbol_variants(symbol)
     if not variants:
         return None
@@ -55,21 +69,27 @@ def _load_latest_ai_native_radar_run(*, user_id: int, symbol: str, mode: Optiona
     if mode:
         mode_clause = " AND mode = ?"
         params.append(mode)
+    fingerprint_clause = ""
+    if structure_fingerprint:
+        fingerprint_clause = " AND structure_fingerprint = ?"
+        params.append(structure_fingerprint)
 
     conn = get_connection()
     try:
         row = conn.execute(
             f"""
-            SELECT id, symbol, mode, created_at, model_name,
+            SELECT id, symbol, mode, created_at, model_name, prompt_version,
                    transcript_json, ai_output_json, gate_result_json, model_route_json
               FROM ai_reasoning_runs
              WHERE user_id = ?
                AND symbol IN ({placeholders})
                {mode_clause}
+               {fingerprint_clause}
+               AND prompt_version = ?
              ORDER BY id DESC
              LIMIT 1
             """,
-            params,
+            [*params, config.AI_NATIVE_RADAR_PROMPT_VERSION],
         ).fetchone()
     finally:
         conn.close()
@@ -79,6 +99,10 @@ def _load_latest_ai_native_radar_run(*, user_id: int, symbol: str, mode: Optiona
 
     output = _safe_json_loads(row["ai_output_json"])
     transcript_payload = _safe_json_loads(row["transcript_json"])
+    if signal_code and not _latest_signal_matches(transcript_payload, signal_code):
+        return None
+    if structure_fingerprint and not _latest_structure_fingerprint_matches(transcript_payload, structure_fingerprint):
+        return None
     gate = _safe_json_loads(row["gate_result_json"])
     model_route = _safe_json_loads(row["model_route_json"])
     reconstructed = _reconstruct_ai_native_report(
@@ -115,6 +139,146 @@ def _load_latest_ai_native_radar_run(*, user_id: int, symbol: str, mode: Optiona
             str(item.get("message") or item.get("code") or item) for item in violations
         )
     return latest
+
+
+def _latest_signal_matches(transcript_payload: dict, signal_code: str) -> bool:
+    expected = str(signal_code or "").strip()
+    if not expected:
+        return True
+    signal = transcript_payload.get("signal_v2") if isinstance(transcript_payload, dict) else {}
+    primary = signal.get("primary") if isinstance(signal, dict) and isinstance(signal.get("primary"), dict) else {}
+    actual = str(primary.get("code") or "").strip()
+    return actual == expected
+
+
+def _latest_structure_fingerprint_matches(transcript_payload: dict, structure_fingerprint: str) -> bool:
+    expected = str(structure_fingerprint or "").strip()
+    if not expected:
+        return True
+    return expected in _structure_fingerprint_candidates_from_transcript_payload(transcript_payload)
+
+
+def _structure_fingerprint_candidates_from_transcript_payload(transcript_payload: dict) -> set[str]:
+    candidates = {str((transcript_payload or {}).get("structure_fingerprint") or "").strip()}
+    evidence_pack = (transcript_payload or {}).get("reasoning_evidence_pack")
+    if isinstance(evidence_pack, dict):
+        structure_kernel = evidence_pack.get("structure_kernel")
+        if isinstance(structure_kernel, dict):
+            candidates.add(str(structure_kernel.get("structure_fingerprint") or "").strip())
+    snapshot = (transcript_payload or {}).get("structure_snapshot")
+    if isinstance(snapshot, dict):
+        candidates.add(str(snapshot.get("structure_fingerprint") or "").strip())
+    return {item for item in candidates if item}
+
+
+def _radar_structure_fingerprint(radar_contract: dict) -> str:
+    diagnostics = radar_contract.get("diagnostics") if isinstance(radar_contract.get("diagnostics"), dict) else {}
+    kernel = radar_contract.get("structure_kernel") if isinstance(radar_contract.get("structure_kernel"), dict) else {}
+    return str(
+        diagnostics.get("structure_fingerprint")
+        or kernel.get("structure_fingerprint")
+        or radar_contract.get("structure_fingerprint")
+        or ""
+    ).strip()
+
+
+def _signal_code_from_transcript(transcript: object) -> Optional[str]:
+    signal = getattr(transcript, "signal_v2", {}) or {}
+    primary = signal.get("primary") if isinstance(signal, dict) and isinstance(signal.get("primary"), dict) else {}
+    code = str(primary.get("code") or "").strip()
+    return code or None
+
+
+def _usable_first_stage_reasoning(report: Optional[dict]) -> bool:
+    if not isinstance(report, dict):
+        return False
+    if str(report.get("gate_status") or "").upper() == "FALLBACK":
+        return False
+    if report.get("fallback_reason"):
+        return False
+    # P4: 旧版推演（非三段式）不再复用，强制重新走 AI Chan Reasoner
+    version = str(report.get("version") or "")
+    if version and "v45" not in version:
+        return False
+    text = str(report.get("coach_filtered_md") or report.get("raw_reasoning_md") or "").strip()
+    if not text:
+        return False
+    # V4.5 三段式推演必须包含 tactical_guide 结构
+    if "tactical_guide" in str(report) or "main_deduction" in str(report):
+        return True
+    if "【当前定位】" in text and ("【完全分类】" in text or "【三种剧本】" in text):
+        return True
+    # 旧版格式含"当前定位"但缺少三段式结构字段 → 不复用
+    return False
+
+
+def _save_generated_ai_chan_reasoning_run(
+    *,
+    user_id: int,
+    symbol: str,
+    mode: str,
+    transcript: object,
+    ai_chan_inference: object,
+) -> Optional[int]:
+    """Persist Fusion-generated AI Chan as the reusable first-stage run.
+
+    只缓存真正可用的 AI 推演；WAITING/兜底态不写入，避免后续点击被低质量缓存污染。
+    """
+    try:
+        if getattr(ai_chan_inference, "fallback_reason", None):
+            return None
+        source_versions = getattr(ai_chan_inference, "source_versions", {}) or {}
+        if source_versions.get("waiting_triggered"):
+            return None
+
+        from server import config
+        from server.engines.ai_native.ai_chan_renderer import render_ai_chan_markdown
+        from server.engines.ai_native.case_memory import save_reasoning_run
+        from server.engines.ai_native.schemas import AIReasoningOutput, GateResult, ModelRoute, SimilarCaseSummary
+
+        coach_md = render_ai_chan_markdown(ai_chan_inference)
+        thinking_enabled = (
+            bool(source_versions["thinking_enabled"])
+            if "thinking_enabled" in source_versions
+            else config.AI_NATIVE_FUSION_THINKING_ENABLED
+        )
+        reasoning_effort = "max" if source_versions.get("reasoning_effort") == "max" else "high"
+        output = AIReasoningOutput(
+            raw_reasoning_md=coach_md,
+            coach_filtered_md=coach_md,
+            semantic_filter_status="PASS",
+            semantic_filter_violations=[],
+            disclaimer=getattr(ai_chan_inference, "disclaimer", "仅供参考，不构成投资建议"),
+        )
+        model_route = ModelRoute(
+            tier="simple",
+            model_name=str(source_versions.get("model_name") or config.AI_NATIVE_FUSION_MODEL),
+            thinking_enabled=thinking_enabled,
+            reasoning_effort=reasoning_effort,
+            max_tokens=config.AI_NATIVE_FUSION_MAX_TOKENS,
+            timeout_seconds=float(source_versions.get("llm_timeout_seconds") or config.AI_NATIVE_FUSION_LLM_TIMEOUT),
+            reasons=["Fusion 首次点击生成的 AI Chan 第一段推演，缓存供同结构复用。"],
+        )
+        gate = GateResult(status="PASS", score=100, violations=[])
+        return save_reasoning_run(
+            user_id=user_id,
+            symbol=symbol,
+            mode=mode,
+            prompt_version=config.AI_NATIVE_RADAR_PROMPT_VERSION,
+            model_name=model_route.model_name or config.AI_NATIVE_FUSION_MODEL,
+            transcript=transcript,
+            memory_context=SimilarCaseSummary(),
+            ai_output=output,
+            gate_result=gate,
+            model_route=model_route,
+        )
+    except Exception as exc:
+        logger.warning("Generated AI Chan cache save skipped: %s", exc)
+        return None
+
+
+def _is_ai_service_busy_error(exc: Exception) -> bool:
+    return "AI 服务忙" in str(exc) or isinstance(exc, (TimeoutError, asyncio.TimeoutError))
 
 
 def _reconstruct_ai_native_report(
@@ -187,6 +351,22 @@ class AINativeRadarRequest(BaseModel):
     symbol: str
     mode: Optional[str] = None
     user_id: int = 1
+    signal_code: Optional[str] = None
+    structure_fingerprint: Optional[str] = None
+
+class AINativeFusionRequest(BaseModel):
+    symbol: str
+    mode: Optional[str] = None
+    user_id: int = 1
+    signal_code: Optional[str] = None
+    structure_fingerprint: Optional[str] = None
+
+class AINativeRebalanceRequest(BaseModel):
+    user_id: int = 1
+    symbols: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=lambda: ["positions", "watchlist"])
+    max_items: int = Field(default=8, ge=1, le=20)
+    refresh_trigger: str = "NEXT_30M_CLOSE"
 
 class AINativeRadarReviewRequest(BaseModel):
     user_id: int = 1
@@ -451,11 +631,472 @@ async def ai_native_radar(request: AINativeRadarRequest):
             user_id=request.user_id,
             mode=request.mode,
             llm_service=_llm_service,
+            expected_signal_code=request.signal_code,
+            expected_structure_fingerprint=request.structure_fingerprint,
         )
         return {"status": "success", "data": result.model_dump()}
+    except ValueError as e:
+        if "当前信号已变化" in str(e) or "当前结构已刷新" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        logger.error(f"AI Native Radar failed for {request.symbol}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Radar 失败: {str(e)}")
     except Exception as e:
         logger.error(f"AI Native Radar failed for {request.symbol}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"AI Native Radar 失败: {str(e)}")
+
+
+@router.post("/ai-native-fusion")
+async def ai_native_fusion(request: AINativeFusionRequest):
+    """V4.5 AI Fusion：缠论结构 + Kronos 概率 + AI 统一推演。"""
+    if not config.AI_NATIVE_RADAR_ENABLED:
+        return {"status": "disabled", "message": "AI Native Fusion is disabled"}
+    try:
+        from server.domain.symbols import normalize_symbol
+        from server.engines.ai_native.ai_chan_reasoner import build_ai_chan_inference
+        from server.engines.ai_native.ai_fusion_engine import build_ai_fusion_inference, build_data_alignment_snapshot
+        from server.engines.ai_native.fusion_chan_adapter import build_chan_analysis_from_transcript
+        from server.engines.ai_native.fusion_kronos_adapter import build_kronos_forecast_from_service_result
+        from server.engines.ai_native.transcript_compiler import compile_structure_transcript
+        from server.services.kronos_service import KronosUnavailable, kronos_service
+
+        total_started = time.perf_counter()
+        radar_started = time.perf_counter()
+        radar_response = await radar_api.get_radar(
+            request.symbol,
+            user_id=request.user_id,
+            include_structure=True,
+        )
+        radar_ms = _elapsed_ms(radar_started)
+        radar_contract = radar_response.get("data") or {}
+        if request.mode in {"EMPTY", "HOLDING"}:
+            radar_contract["mode"] = request.mode
+
+        transcript_started = time.perf_counter()
+        transcript = compile_structure_transcript(radar_contract)
+        chan_analysis = build_chan_analysis_from_transcript(transcript)
+        transcript_ms = _elapsed_ms(transcript_started)
+        current_signal_code = _signal_code_from_transcript(transcript)
+        expected_signal_code = str(request.signal_code or "").strip()
+        if expected_signal_code and current_signal_code != expected_signal_code:
+            raise HTTPException(
+                status_code=409,
+                detail=f"当前信号已变化，请刷新雷达后重试: expected={expected_signal_code}, actual={current_signal_code or 'NONE'}",
+            )
+        expected_structure_fingerprint = str(request.structure_fingerprint or "").strip()
+        actual_structure_fingerprint = _radar_structure_fingerprint(radar_contract) or transcript.structure_fingerprint
+        if expected_structure_fingerprint and actual_structure_fingerprint != expected_structure_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="当前结构已刷新，请刷新雷达后重试",
+            )
+
+        first_stage_reasoning = await run_in_threadpool(
+            _load_latest_ai_native_radar_run,
+            user_id=request.user_id,
+            symbol=request.symbol,
+            mode=transcript.mode,
+            signal_code=current_signal_code,
+            structure_fingerprint=transcript.structure_fingerprint,
+        )
+        if not _usable_first_stage_reasoning(first_stage_reasoning):
+            first_stage_reasoning = None
+
+        ai_chan_started = time.perf_counter()
+        ai_chan_inference = None
+        ai_chan_error = None
+        ai_chan_cache_run_id = None
+        if first_stage_reasoning is None:
+            async def _run_ai_chan() -> tuple[object, int, Optional[str]]:
+                started = time.perf_counter()
+                inference = await build_ai_chan_inference(
+                    chan_analysis=chan_analysis,
+                    position_context=transcript.position_context,
+                    user_id=request.user_id,
+                    llm_service=_llm_service,
+                )
+                return inference, _elapsed_ms(started), None
+
+            async def _run_kronos() -> tuple[object, int, Optional[str]]:
+                started = time.perf_counter()
+                kronos_error = None
+                try:
+                    raw = await kronos_service.get_multi_level_analysis(normalize_symbol(request.symbol))
+                except KronosUnavailable as exc:
+                    logger.warning("AI Native Fusion proceeding without Kronos for %s: %s", request.symbol, exc)
+                    raw = None
+                    kronos_error = str(exc)
+                forecast = build_kronos_forecast_from_service_result(
+                    raw,
+                    chan_analysis=chan_analysis,
+                )
+                return forecast, _elapsed_ms(started), kronos_error
+
+            (ai_chan_inference, ai_chan_ms, ai_chan_error), (kronos_forecast, kronos_ms, kronos_error) = await asyncio.gather(
+                _run_ai_chan(),
+                _run_kronos(),
+            )
+            if ai_chan_inference is not None:
+                ai_chan_cache_run_id = await run_in_threadpool(
+                    _save_generated_ai_chan_reasoning_run,
+                    user_id=request.user_id,
+                    symbol=request.symbol,
+                    mode=transcript.mode,
+                    transcript=transcript,
+                    ai_chan_inference=ai_chan_inference,
+                )
+        else:
+            ai_chan_ms = _elapsed_ms(ai_chan_started)
+            kronos_started = time.perf_counter()
+            kronos_error = None
+            try:
+                kronos_raw = await kronos_service.get_multi_level_analysis(normalize_symbol(request.symbol))
+            except KronosUnavailable as exc:
+                logger.warning("AI Native Fusion proceeding without Kronos for %s: %s", request.symbol, exc)
+                kronos_raw = None
+                kronos_error = str(exc)
+            kronos_forecast = build_kronos_forecast_from_service_result(
+                kronos_raw,
+                chan_analysis=chan_analysis,
+            )
+            kronos_ms = _elapsed_ms(kronos_started)
+        data_alignment = build_data_alignment_snapshot(
+            chan_analysis,
+            kronos_forecast,
+            ai_chan_inference,
+            first_stage_generated_at=str((first_stage_reasoning or {}).get("generated_at") or ""),
+        )
+
+        # Kronos Phase 1: 用 Kronos 数据重建 signals_v2（含时间线+信封）
+        enriched_signals_v2 = _enrich_signals_v2_with_kronos(
+            radar_contract, kronos_forecast,
+        )
+        chan_analysis.signal_v2 = enriched_signals_v2
+
+        output = await build_ai_fusion_inference(
+            chan_analysis=chan_analysis,
+            kronos_forecast=kronos_forecast,
+            position_context=transcript.position_context,
+            ai_chan_inference=ai_chan_inference,
+            first_stage_reasoning=first_stage_reasoning,
+            user_id=request.user_id,
+            llm_service=_llm_service,
+        )
+        output.diagnostics = {
+            **(output.diagnostics or {}),
+            "radar_ms": radar_ms,
+            "transcript_ms": transcript_ms,
+            "ai_chan_ms": ai_chan_ms,
+            "kronos_ms": kronos_ms,
+            "total_ms": _elapsed_ms(total_started),
+            "fallback_reason": output.fallback_reason,
+            "first_stage_source": "latest_ai_reasoning" if first_stage_reasoning else "generated_ai_chan",
+            "ai_chan_error": ai_chan_error,
+            "kronos_error": kronos_error,
+            "ai_chan_cache_run_id": ai_chan_cache_run_id,
+            "structure_profile": (radar_contract.get("diagnostics") or {}).get("structure_profile"),
+            "structure_ms": (radar_contract.get("diagnostics") or {}).get("structure_ms"),
+            "structure_cache_hit": bool((radar_contract.get("diagnostics") or {}).get("structure_cache_hit")),
+            "structure_persistent_cache_hit": bool((radar_contract.get("diagnostics") or {}).get("structure_persistent_cache_hit")),
+            "structure_fingerprint": (radar_contract.get("diagnostics") or {}).get("structure_fingerprint"),
+        }
+        return {
+            "status": "success",
+            "data": {
+                "fusion": output.model_dump(),
+                "first_stage_reasoning": first_stage_reasoning,
+                "ai_chan_inference": ai_chan_inference.model_dump() if ai_chan_inference else None,
+                "chan_analysis": chan_analysis.model_dump(),
+                "kronos_forecast": kronos_forecast.model_dump(),
+                "data_alignment": data_alignment.model_dump(),
+                "signals_v2": enriched_signals_v2,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if _is_ai_service_busy_error(e):
+            logger.warning("AI Native Fusion busy for %s: %s", request.symbol, e)
+            raise HTTPException(status_code=503, detail="AI 服务忙，请稍后重试")
+        logger.error(f"AI Native Fusion failed for {request.symbol}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Fusion 失败: {str(e)}")
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.perf_counter() - started_at) * 1000))
+
+
+def _enrich_signals_v2_with_kronos(
+    radar_contract: dict,
+    kronos_forecast: object,
+) -> dict:
+    """用 Kronos 数据重建 signals_v2，注入时间线和信封。
+
+    radar.py 产出的 signals_v2 不含 Kronos（保持快速），
+    这里在 Agent 流程中用已有的 kronos_forecast 重新编译一次。
+    """
+    try:
+        from server.engines.signal import build_signal_v2
+
+        algorithm_v2 = radar_contract.get("algorithm_v2") or {}
+        quote = radar_contract.get("quote") or {}
+        position_context = radar_contract.get("position_context") or {}
+        symbol = radar_contract.get("symbol") or ""
+
+        # KronosForecastResult 可能是 Pydantic model 或 dict
+        kronos_dict = kronos_forecast.model_dump() if hasattr(kronos_forecast, "model_dump") else (kronos_forecast or {})
+
+        return build_signal_v2(
+            algorithm_v2,
+            symbol=symbol,
+            quote=quote,
+            position_context=position_context,
+            kronos_forecast=kronos_dict,
+        )
+    except Exception as exc:
+        logger.warning("_enrich_signals_v2_with_kronos failed: %s", exc)
+        # 回退到 radar 已有的 signals_v2
+        return radar_contract.get("signals_v2") or {}
+
+
+@router.post("/ai-native-rebalance")
+async def ai_native_rebalance(request: AINativeRebalanceRequest):
+    """AI Native Rebalance：批量消费单票 Fusion，生成条件化调仓 contract。"""
+    if not config.AI_NATIVE_RADAR_ENABLED:
+        return {"status": "disabled", "message": "AI Native Rebalance is disabled"}
+    try:
+        from server.engines.ai_native.rebalance_engine import (
+            RebalanceEngineInputItem,
+            build_rebalance_contract,
+        )
+
+        candidates = await run_in_threadpool(
+            _collect_rebalance_candidates,
+            request.user_id,
+            request.symbols,
+            request.sources,
+            request.max_items,
+        )
+        items: list[RebalanceEngineInputItem] = []
+        for candidate in candidates:
+            mode = "HOLDING" if candidate.get("is_holding") else "EMPTY"
+            fusion_response = await ai_native_fusion(
+                AINativeFusionRequest(
+                    symbol=str(candidate.get("symbol") or ""),
+                    mode=mode,
+                    user_id=request.user_id,
+                )
+            )
+            if fusion_response.get("status") != "success":
+                continue
+            payload = fusion_response.get("data") or {}
+            fusion = payload.get("fusion") or {}
+            chan = payload.get("chan_analysis") or {}
+            kronos = payload.get("kronos_forecast") or {}
+            items.append(
+                RebalanceEngineInputItem(
+                    symbol=str(candidate.get("symbol") or fusion.get("symbol") or ""),
+                    name=str(candidate.get("name") or ""),
+                    is_holding=bool(candidate.get("is_holding")),
+                    quantity=candidate.get("quantity"),
+                    weight_pct=candidate.get("weight_pct"),
+                    avg_cost=candidate.get("avg_cost"),
+                    current_price=candidate.get("current_price"),
+                    unrealized_pnl_pct=candidate.get("unrealized_pnl_pct"),
+                    radar={
+                        "primary_level": chan.get("primary_level"),
+                        "current_position": chan.get("current_position"),
+                        "structure_state": chan.get("structure_state"),
+                        "key_levels": chan.get("key_levels") or [],
+                    },
+                    kronos={
+                        "levels": kronos.get("levels") or [],
+                        "regime_shift_score": kronos.get("regime_shift_score"),
+                        "signal_validation": kronos.get("signal_validation") or {},
+                        "warnings": kronos.get("warnings") or [],
+                    },
+                    ai_fusion=fusion,
+                    memory=candidate.get("memory") or {},
+                )
+            )
+
+        contract = build_rebalance_contract(
+            items,
+            user_id=request.user_id,
+            portfolio_state=_rebalance_portfolio_state(candidates),
+            refresh_trigger=request.refresh_trigger,  # type: ignore[arg-type]
+        )
+        return {"status": "success", "data": contract.model_dump()}
+    except Exception as e:
+        logger.error(f"AI Native Rebalance failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI Native Rebalance 失败: {str(e)}")
+
+
+def _collect_rebalance_candidates(
+    user_id: int,
+    symbols: list[str],
+    sources: list[str],
+    max_items: int,
+) -> list[dict]:
+    """Collect explicit symbols or positions/watchlist rows for rebalance runs."""
+    explicit = [item.strip() for item in symbols if item and item.strip()]
+    conn = get_connection()
+    try:
+        if explicit:
+            rows = [
+                {
+                    "symbol": symbol,
+                    "name": "",
+                    "is_holding": False,
+                    "source": "explicit",
+                }
+                for symbol in explicit[:max_items]
+            ]
+            _attach_rebalance_memory(conn, user_id, rows)
+            return rows
+
+        rows: list[dict] = []
+        seen: set[str] = set()
+        total_value = _portfolio_total_value(conn, user_id)
+
+        def add(row: dict):
+            symbol = str(row.get("symbol") or "")
+            if not symbol or symbol in seen or len(rows) >= max_items:
+                return
+            seen.add(symbol)
+            rows.append(row)
+
+        if "positions" in sources:
+            pos_rows = conn.execute(
+                """
+                SELECT symbol, name, quantity, avg_cost, current_price,
+                       CASE WHEN current_price IS NOT NULL AND avg_cost > 0
+                            THEN round((current_price - avg_cost) / avg_cost * 100, 2)
+                            ELSE 0 END as unrealized_pnl_pct
+                  FROM positions
+                 WHERE user_id = ? AND quantity > 0
+                 ORDER BY (quantity * COALESCE(current_price, avg_cost)) DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            for row in pos_rows:
+                current_price = row["current_price"] or row["avg_cost"] or 0
+                market_value = (row["quantity"] or 0) * current_price
+                add({
+                    "symbol": row["symbol"],
+                    "name": row["name"],
+                    "source": "positions",
+                    "is_holding": True,
+                    "quantity": row["quantity"],
+                    "avg_cost": row["avg_cost"],
+                    "current_price": row["current_price"],
+                    "unrealized_pnl_pct": row["unrealized_pnl_pct"],
+                    "weight_pct": round(market_value / total_value * 100, 2) if total_value > 0 else None,
+                })
+
+        if "watchlist" in sources and len(rows) < max_items:
+            watch_rows = conn.execute(
+                """
+                SELECT wi.symbol, wi.name, wg.name AS group_name
+                  FROM watchlist_items wi
+                  JOIN watchlist_groups wg ON wg.id = wi.group_id
+                 WHERE wg.user_id = ?
+                   AND wi.symbol NOT IN (
+                       SELECT symbol FROM positions
+                        WHERE user_id = ? AND quantity > 0
+                   )
+                 ORDER BY wg.sort_order, wi.sort_order, wi.id
+                """,
+                (user_id, user_id),
+            ).fetchall()
+            for row in watch_rows:
+                add({
+                    "symbol": row["symbol"],
+                    "name": row["name"],
+                    "source": "watchlist",
+                    "watchlist_group": row["group_name"],
+                    "is_holding": False,
+                })
+
+        _attach_rebalance_memory(conn, user_id, rows)
+        return rows
+    finally:
+        conn.close()
+
+
+def _attach_rebalance_memory(conn, user_id: int, rows: list[dict]) -> None:
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        if symbol:
+            row["memory"] = _rebalance_memory_for_symbol(conn, user_id, symbol)
+
+
+def _rebalance_memory_for_symbol(conn, user_id: int, symbol: str) -> dict:
+    """Read prior imported rebalance playbook items as lightweight memory."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT dpi.status, dpi.response_json, dpi.created_at, dpi.updated_at, dp.trade_date
+              FROM daily_playbook_items dpi
+              JOIN daily_playbooks dp ON dp.id = dpi.playbook_id
+             WHERE dpi.user_id = ?
+               AND dpi.symbol = ?
+               AND dpi.source = 'rebalance'
+             ORDER BY datetime(dpi.updated_at) DESC, dpi.id DESC
+            """,
+            (user_id, symbol),
+        ).fetchall()
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+
+    first = rows[-1]
+    latest = rows[0]
+    response = _rebalance_response_value(latest)
+    return {
+        "previous_intent_count": len(rows),
+        "first_seen_at": first["created_at"] or first["trade_date"] or "",
+        "last_user_response": response,
+    }
+
+
+def _rebalance_response_value(row) -> Optional[str]:
+    payload = {}
+    raw = row["response_json"] if "response_json" in row.keys() else None
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {}
+    return payload.get("response") or row["status"]
+
+
+def _portfolio_total_value(conn, user_id: int) -> float:
+    row = conn.execute(
+        """
+        SELECT SUM(quantity * COALESCE(current_price, avg_cost)) AS total_value
+          FROM positions
+         WHERE user_id = ? AND quantity > 0
+        """,
+        (user_id,),
+    ).fetchone()
+    return float(row["total_value"] or 0) if row else 0.0
+
+
+def _rebalance_portfolio_state(candidates: list[dict]) -> dict:
+    holdings = [item for item in candidates if item.get("is_holding")]
+    max_weight = max((float(item.get("weight_pct") or 0) for item in holdings), default=0.0)
+    total_value = sum(
+        (float(item.get("quantity") or 0) * float(item.get("current_price") or item.get("avg_cost") or 0))
+        for item in holdings
+    )
+    return {
+        "total_value": round(total_value, 2) if total_value else None,
+        "position_count": len(holdings),
+        "max_position_weight_pct": round(max_weight, 2) if holdings else None,
+        "risk_posture": "DEFENSIVE" if max_weight >= 20 or len(holdings) > 8 else "BALANCED",
+        "summary": "基于持仓和候选生成条件化调仓意图，释放资金默认等待目标确认。仅供参考，不构成投资建议",
+    }
 
 
 @router.get("/ai-native-radar/latest")
@@ -463,14 +1104,24 @@ async def latest_ai_native_radar_run(
     user_id: int = Query(1),
     symbol: str = Query(...),
     mode: Optional[str] = Query(None),
+    signal_code: Optional[str] = Query(None),
+    structure_fingerprint: Optional[str] = Query(None),
 ):
     """读取某只股票最近一次完整 AI Native 推演，供前端切票/刷新后回填。"""
     try:
+        effective_signal_code = signal_code if isinstance(signal_code, str) and signal_code.strip() else None
+        effective_structure_fingerprint = (
+            structure_fingerprint
+            if isinstance(structure_fingerprint, str) and structure_fingerprint.strip()
+            else None
+        )
         latest = await run_in_threadpool(
             _load_latest_ai_native_radar_run,
             user_id=user_id,
             symbol=symbol,
             mode=mode,
+            signal_code=effective_signal_code,
+            structure_fingerprint=effective_structure_fingerprint,
         )
         return {"status": "success", "data": latest}
     except Exception as e:

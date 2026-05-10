@@ -68,6 +68,14 @@ class PlaybookReportRequest(BaseModel):
     trade_date: Optional[str] = None
 
 
+class ImportRebalanceRequest(BaseModel):
+    """把 RebalanceContract intents 导入今日作战队列。"""
+
+    user_id: int = 1
+    contract: dict
+    trade_date: Optional[str] = None
+
+
 def _today() -> str:
     return date.today().strftime("%Y-%m-%d")
 
@@ -349,6 +357,200 @@ def _insert_item(conn, playbook_id: int, user_id: int, candidate: dict, payload:
         ),
     )
     return cursor.lastrowid
+
+
+def _upsert_rebalance_item(conn, playbook_id: int, user_id: int, intent: dict) -> dict:
+    source = intent.get("source") or {}
+    symbol = source.get("symbol")
+    if not symbol:
+        raise ValueError("rebalance intent missing source.symbol")
+    intent_id = _rebalance_intent_id(intent)
+    intent = {**intent, "intent_id": intent_id}
+    intent = _safe_rebalance_intent_for_playbook(intent)
+    action = intent.get("recommended_action") or {}
+    conditions = intent.get("conditions") or {}
+    risk = intent.get("risk") or {}
+    fusion_status = _rebalance_fusion_status(intent)
+    fusion_fallback = fusion_status.get("state") == "FALLBACK"
+
+    trigger = {
+        "plan_title": "AI 结构兜底复核" if fusion_fallback else action.get("action_label") or action.get("action") or "AI 调仓意图",
+        "conditions": _rebalance_conditions_for_playbook(conditions),
+        "stop_reference": _rebalance_stop_reference(risk),
+        "targets": [],
+        "rebalance": {
+            "intent_id": intent.get("intent_id"),
+            "intent_type": intent.get("intent_type"),
+            "urgency": intent.get("urgency"),
+            "action": action,
+            "conditions": conditions,
+            "risk": risk,
+            "memory": intent.get("memory") or {},
+            "fusion_status": fusion_status,
+        },
+    }
+    invalidation = {
+        "invalid_if": "；".join(str(item) for item in conditions.get("invalidate_if") or []) or None,
+        "freshness": {"is_stale": False, "source": "ai_native_rebalance"},
+        "rebalance": {"intent_id": intent.get("intent_id"), "recheck_at": conditions.get("recheck_at")},
+    }
+    radar_snapshot = {
+        "source": "ai_native_rebalance",
+        "evidence": intent.get("evidence") or {},
+        "risk_disclaimer": risk.get("disclaimer") or DISCLAIMER,
+    }
+    status = "WATCHING" if fusion_fallback else "TRIGGERED" if intent.get("urgency") in {"IMMEDIATE", "NEXT_SESSION"} else "WATCHING"
+    mode = "HOLDING" if source.get("is_holding") else "EMPTY"
+    source_payload = {"rebalance": intent}
+    existing = conn.execute(
+        """
+        SELECT id, response_json
+          FROM daily_playbook_items
+         WHERE playbook_id = ?
+           AND source = 'rebalance'
+           AND plan_id = ?
+         LIMIT 1
+        """,
+        (playbook_id, intent_id),
+    ).fetchone()
+    if existing:
+        if existing["response_json"]:
+            return {"id": existing["id"], "change": "preserved_response"}
+        conn.execute(
+            """
+            UPDATE daily_playbook_items
+               SET name = ?, source_json = ?, mode = ?, strategy_id = ?,
+                   status = ?, trigger_json = ?, invalidation_json = ?, radar_snapshot_json = ?,
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+            """,
+            (
+                source.get("name"),
+                _json(source_payload),
+                mode,
+                "ai_native_rebalance",
+                status,
+                _json(trigger),
+                _json(invalidation),
+                _json(radar_snapshot),
+                existing["id"],
+            ),
+        )
+        return {"id": existing["id"], "change": "updated"}
+
+    cursor = conn.execute(
+        """
+        INSERT INTO daily_playbook_items (
+            playbook_id, user_id, symbol, name, source, source_json, mode, plan_id, strategy_id,
+            status, trigger_json, invalidation_json, radar_snapshot_json
+        )
+        VALUES (?, ?, ?, ?, 'rebalance', ?, ?, ?, 'ai_native_rebalance', ?, ?, ?, ?)
+        """,
+        (
+            playbook_id,
+            user_id,
+            symbol,
+            source.get("name"),
+            _json(source_payload),
+            mode,
+            intent_id,
+            status,
+            _json(trigger),
+            _json(invalidation),
+            _json(radar_snapshot),
+        ),
+    )
+    return {"id": cursor.lastrowid, "change": "inserted"}
+
+
+def _rebalance_fusion_status(intent: dict) -> dict:
+    status = ((intent.get("evidence") or {}).get("fusion_status") or {})
+    return status if isinstance(status, dict) else {}
+
+
+def _safe_rebalance_intent_for_playbook(intent: dict) -> dict:
+    fusion_status = _rebalance_fusion_status(intent)
+    if fusion_status.get("state") != "FALLBACK":
+        return intent
+
+    original_action = intent.get("recommended_action") or {}
+    original_conditions = intent.get("conditions") or {}
+    fallback_reason = str(
+        fusion_status.get("fallback_reason")
+        or "AI Fusion 未完成，当前只允许结构兜底复核。"
+    )
+    safe_conditions = {
+        **original_conditions,
+        "execute_if": [],
+        "delay_if": _unique_rebalance_condition_texts([fallback_reason, *(original_conditions.get("delay_if") or [])]),
+        "invalidate_if": _unique_rebalance_condition_texts([
+            "AI Fusion 恢复 AI_READY 后再评估是否导入调仓动作。",
+            *(original_conditions.get("invalidate_if") or []),
+        ]),
+        "recheck_at": original_conditions.get("recheck_at") or "NEXT_30M_CLOSE",
+    }
+    return {
+        **intent,
+        "intent_type": "NO_ACTION",
+        "urgency": "WATCH_ONLY",
+        "recommended_action": {
+            "action": "NO_ACTION",
+            "action_label": "结构兜底复核",
+            "position_delta": "NO_POSITION_CHANGE",
+            "reason": f"{fallback_reason}，不生成调仓动作。仅供参考，不构成投资建议。",
+        },
+        "conditions": safe_conditions,
+        "original_recommended_action": original_action,
+        "original_conditions": original_conditions,
+    }
+
+
+def _unique_rebalance_condition_texts(values: list) -> list[str]:
+    rows = []
+    seen = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        rows.append(text)
+        seen.add(text)
+    return rows
+
+
+def _rebalance_intent_id(intent: dict) -> str:
+    raw = str(intent.get("intent_id") or "").strip()
+    if raw:
+        return raw
+    source = intent.get("source") or {}
+    action = intent.get("recommended_action") or {}
+    symbol = str(source.get("symbol") or "").strip()
+    intent_type = str(intent.get("intent_type") or "UNKNOWN").strip()
+    action_code = str(action.get("action") or "OBSERVE").strip()
+    return f"rb:{symbol}:{intent_type}:{action_code}"
+
+
+def _rebalance_conditions_for_playbook(conditions: dict) -> list[dict]:
+    rows = []
+    for status, key in (("TRIGGER", "execute_if"), ("WAIT", "delay_if"), ("INVALIDATE", "invalidate_if")):
+        for idx, value in enumerate(conditions.get(key) or [], start=1):
+            rows.append({
+                "condition_id": f"rebalance_{key}_{idx}",
+                "label": {"execute_if": "触发", "delay_if": "等待", "invalidate_if": "失效"}[key],
+                "status": status,
+                "description": str(value),
+            })
+    return rows
+
+
+def _rebalance_stop_reference(risk: dict) -> Optional[dict]:
+    if risk.get("defense_line") is None:
+        return None
+    return {
+        "level": "AI",
+        "field": "DEFENSE",
+        "value": risk.get("defense_line"),
+        "meaning": risk.get("failure_mode") or "AI 调仓防线",
+    }
 
 
 def _row_to_item(row) -> dict:
@@ -811,6 +1013,86 @@ def generate_today_report(request: PlaybookReportRequest):
         raise HTTPException(404, str(exc))
     finally:
         conn.close()
+
+
+@router.post("/today/import-rebalance")
+def import_rebalance_to_playbook(request: ImportRebalanceRequest):
+    """把 AI Native RebalanceContract 导入今日作战队列。"""
+    trade_date = request.trade_date or _today()
+    contract = _normalize_rebalance_contract(request.contract or {})
+    intents = contract.get("intents") or []
+    if not isinstance(intents, list):
+        raise HTTPException(400, "contract.intents 必须是数组")
+
+    conn = get_connection()
+    try:
+        playbook_id = _ensure_playbook(conn, request.user_id, trade_date, ["rebalance"])
+        imported = []
+        for intent in intents:
+            if not isinstance(intent, dict):
+                continue
+            try:
+                result = _upsert_rebalance_item(conn, playbook_id, request.user_id, intent)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            item_id = result["id"]
+            preserved_response = result.get("change") == "preserved_response"
+            if not preserved_response:
+                imported.append(item_id)
+            source = intent.get("source") or {}
+            symbol = source.get("symbol")
+            intent_id = _rebalance_intent_id(intent)
+            if symbol and not preserved_response:
+                event_intent = _safe_rebalance_intent_for_playbook({**intent, "intent_id": intent_id})
+                log_user_action(
+                    conn,
+                    user_id=request.user_id,
+                    symbol=symbol,
+                    source="playbook_api",
+                    action_type="PLAYBOOK_REBALANCE_IMPORTED",
+                    dedupe_key=f"playbook_rebalance:{request.user_id}:{trade_date}:{intent_id}",
+                    evidence={
+                        "playbook_id": playbook_id,
+                        "item_id": item_id,
+                        "intent_id": intent_id,
+                        "action": (event_intent.get("recommended_action") or {}).get("action"),
+                        "original_action": (event_intent.get("original_recommended_action") or {}).get("action"),
+                        "fusion_status": _rebalance_fusion_status(event_intent),
+                    },
+                    message={"title": "调仓加入作战", "body": f"{symbol} 调仓意图已加入今日作战。"},
+                )
+        conn.commit()
+        payload = _playbook_payload(conn, request.user_id, trade_date)
+        return {
+            "status": "success",
+            "data": {
+                "imported_count": len(imported),
+                "item_ids": imported,
+                "fusion_status_summary": _rebalance_fusion_status_summary(intents),
+                "playbook": payload,
+            },
+        }
+    finally:
+        conn.close()
+
+
+def _normalize_rebalance_contract(payload: dict) -> dict:
+    if isinstance(payload.get("data"), dict) and payload.get("status") in {"success", "disabled", "error"}:
+        return payload["data"]
+    return payload
+
+
+def _rebalance_fusion_status_summary(intents: list[dict]) -> dict:
+    summary = {"AI_READY": 0, "FALLBACK": 0}
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        state = (((intent.get("evidence") or {}).get("fusion_status") or {}).get("state") or "AI_READY")
+        if state == "FALLBACK":
+            summary["FALLBACK"] += 1
+        else:
+            summary["AI_READY"] += 1
+    return summary
 
 
 @router.post("/items/{item_id}/response")

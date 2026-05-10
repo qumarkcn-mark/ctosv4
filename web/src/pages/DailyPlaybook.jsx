@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import PlaybookItemRow from '../components/PlaybookItemRow.jsx'
 import PlanResponseButtons from '../components/PlanResponseButtons.jsx'
+import { API_BASE } from '../config.js'
 import './DailyPlaybook.css'
 
-const API = ''
 const REQUEST_TIMEOUT_MS = 12000
+const REBALANCE_TIMEOUT_MS = 60000
 
 async function fetchJson(url, options = {}) {
   const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timer = window.setTimeout(() => controller.abort(), options.timeoutMs || REQUEST_TIMEOUT_MS)
   try {
-    const resp = await fetch(url, { ...options, signal: controller.signal })
+    const resp = await fetch(apiUrl(url), { ...options, signal: controller.signal })
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}))
       throw new Error(data.detail || options.errorMessage || '请求失败')
     }
-    return await resp.json()
+    const data = await resp.json()
+    if (data?.status && data.status !== 'success') {
+      throw new Error(data.message || data.detail || options.errorMessage || '请求失败')
+    }
+    return data
   } catch (err) {
     if (err.name === 'AbortError') throw new Error('后端响应超时，请稍后重试')
     throw err
@@ -24,7 +29,21 @@ async function fetchJson(url, options = {}) {
   }
 }
 
+function apiUrl(path) {
+  const value = String(path || '')
+  if (/^https?:\/\//.test(value)) return value
+  if (value.startsWith('/api/')) {
+    return `${API_BASE}${value.slice(4)}`
+  }
+  if (value.startsWith('/')) return `${API_BASE}${value}`
+  return `${API_BASE}/${value}`
+}
+
 function conditionSummary(item) {
+  if (item.source === 'rebalance') {
+    const action = item.trigger?.rebalance?.action || {}
+    return action.reason || action.action_label || 'AI Native 调仓意图已生成，等待条件确认。'
+  }
   const conditions = item.trigger?.conditions || []
   if (!conditions.length) return '暂无明确触发条件，进入 Radar 复核结构。'
   return conditions
@@ -36,28 +55,35 @@ function conditionSummary(item) {
 function stopReference(item) {
   const ref = item.trigger?.stop_reference
   if (!ref?.value) return '—'
-  return `${ref.level || ''}${ref.field || ''} ${Number(ref.value).toFixed(2)}`
+  return [ref.level, ref.field].filter(Boolean).join(' ') + ` ${Number(ref.value).toFixed(2)}`
 }
 
 const SOURCE_LABEL = {
   positions: '持仓',
   scanner: '机会池',
   watchlist: '自选股',
+  rebalance: '调仓',
   unknown: '来源待定',
 }
 
 const QUEUE_SECTIONS = [
   {
     id: 'action',
-    title: '需处理',
-    hint: '条件触发或需要用户今天确认的事件。',
+    title: '立即处理',
+    hint: '条件触发或需要今天先复核的风险项。',
     match: (item) => item.status === 'TRIGGERED' && !item.response,
   },
   {
-    id: 'watching',
-    title: '观察中',
-    hint: '计划内观察项，未触发前不行动。',
-    match: (item) => item.status === 'WATCHING' && !item.response,
+    id: 'defense',
+    title: '持有防线',
+    hint: '持仓项只守结构边界，不因盘中噪音乱动。',
+    match: (item) => item.status === 'WATCHING' && !item.response && (item.mode === 'HOLDING' || item.source === 'positions'),
+  },
+  {
+    id: 'waiting',
+    title: '等待确认',
+    hint: '空仓或候选项等触发条件，未确认前不试仓。',
+    match: (item) => item.status === 'WATCHING' && !item.response && item.mode !== 'HOLDING' && item.source !== 'positions',
   },
   {
     id: 'review',
@@ -75,6 +101,7 @@ const QUEUE_SECTIONS = [
 
 function eventType(item) {
   if (item.status === 'STALE' || item.status === 'ENGINE_ERROR') return '数据复核'
+  if (item.source === 'rebalance') return '调仓意图'
   if (item.status === 'TRIGGERED') return '条件触发'
   if (item.source === 'positions' || item.mode === 'HOLDING') return '持仓防线'
   return '观察机会'
@@ -82,6 +109,13 @@ function eventType(item) {
 
 function nextStep(item) {
   if (!item) return '—'
+  if (item.source === 'rebalance') {
+    const rebalance = item.trigger?.rebalance || {}
+    const action = rebalance.action || {}
+    const conditions = rebalance.conditions || {}
+    const first = conditions.execute_if?.[0] || conditions.delay_if?.[0] || conditions.invalidate_if?.[0]
+    return first ? `${action.action_label || action.action || '调仓'}：${first}` : '按调仓条件复核，不自动执行。'
+  }
   const aiNative = item.trigger?.ai_native
   if (aiNative?.next_focus) return aiNative.next_focus
   if (item.status === 'ENGINE_ERROR') return '结构计算失败，先重试或去雷达查看错误。'
@@ -121,6 +155,12 @@ function freshnessText(item) {
 function sourceDetail(item) {
   const source = item?.source || (item?.mode === 'HOLDING' ? 'positions' : 'unknown')
   const meta = item?.source_json || {}
+  if (source === 'rebalance') {
+    const intent = meta.rebalance || item.trigger?.rebalance || {}
+    const action = intent.recommended_action || intent.action || {}
+    const urgency = intent.urgency ? ` · ${urgencyLabel(intent.urgency)}` : ''
+    return `${action.action_label || action.action || 'AI 调仓意图'}${urgency}`
+  }
   if (source === 'positions') {
     const quantity = meta.position?.quantity
     const avgCost = meta.position?.avg_cost
@@ -144,14 +184,265 @@ function itemSource(item) {
   return 'unknown'
 }
 
+function rebalanceConditions(item, key) {
+  return item?.trigger?.rebalance?.conditions?.[key] || []
+}
+
+function actionTone(action) {
+  if (action === 'EXIT' || action === 'REDUCE') return 'danger'
+  if (action === 'TEST' || action === 'ADD') return 'watch'
+  if (action === 'HOLD') return 'hold'
+  return 'observe'
+}
+
+function actionLabel(action) {
+  return {
+    EXIT: '退出',
+    REDUCE: '减风险',
+    HOLD: '守防线',
+    OBSERVE: '观察',
+    TEST: '试仓',
+    ADD: '加仓',
+    NO_ACTION: '结构兜底',
+  }[action] || action || '观察'
+}
+
+function urgencyLabel(urgency) {
+  return {
+    IMMEDIATE: '立即处理',
+    NEXT_SESSION: '下一交易段',
+    CONDITIONAL_WAIT: '等待确认',
+    WATCH_ONLY: '观察',
+  }[urgency] || urgency || '观察'
+}
+
+function firstCondition(intent) {
+  const conditions = intent?.conditions || {}
+  const source = conditions.execute_if?.length ? conditions.execute_if : conditions.delay_if
+  return source?.[0] || '等待 Fusion 条件补齐'
+}
+
+function fusionStatusFromIntent(intent) {
+  return intent?.evidence?.fusion_status || {}
+}
+
+function fusionStatusFromItem(item) {
+  const rebalance = item?.trigger?.rebalance || {}
+  return rebalance.fusion_status || rebalance.evidence?.fusion_status || {}
+}
+
+function fusionStatusLabel(status) {
+  const state = status?.state || 'AI_READY'
+  return state === 'FALLBACK' ? '结构兜底' : 'AI Ready'
+}
+
+function fusionStatusTone(status) {
+  return status?.state === 'FALLBACK' ? 'fallback' : 'ready'
+}
+
+function rebalanceFusionStatusSummary(intents) {
+  return intents.reduce((acc, intent) => {
+    const state = fusionStatusFromIntent(intent).state === 'FALLBACK' ? 'FALLBACK' : 'AI_READY'
+    acc[state] += 1
+    return acc
+  }, { AI_READY: 0, FALLBACK: 0 })
+}
+
+function rebalanceRecheckSummary(intents) {
+  return intents.reduce((acc, intent) => {
+    const trigger = intent?.conditions?.recheck_at || 'NEXT_30M_CLOSE'
+    if (trigger === 'NEXT_5M_CLOSE') acc.NEXT_5M_CLOSE += 1
+    if (trigger === 'NEXT_30M_CLOSE') acc.NEXT_30M_CLOSE += 1
+    return acc
+  }, { NEXT_5M_CLOSE: 0, NEXT_30M_CLOSE: 0 })
+}
+
+function rebalanceRecheckFromIntent(intent) {
+  return intent?.conditions?.recheck_at || 'NEXT_30M_CLOSE'
+}
+
+function rebalanceRecheckFromItem(item) {
+  return item?.trigger?.rebalance?.conditions?.recheck_at || 'NEXT_30M_CLOSE'
+}
+
+function recheckLabel(trigger) {
+  return {
+    NEXT_5M_CLOSE: '5分复核',
+    NEXT_30M_CLOSE: '30分复核',
+    NEXT_DAILY_CLOSE: '日线复核',
+    PRICE_TOUCH: '触价复核',
+    MANUAL_REFRESH: '手动复核',
+    POSITION_CHANGE: '仓位变化',
+  }[trigger] || '30分复核'
+}
+
+function recheckDetailLabel(trigger) {
+  return {
+    NEXT_5M_CLOSE: '5分钟K线收盘复核',
+    NEXT_30M_CLOSE: '30分钟K线收盘复核',
+    NEXT_DAILY_CLOSE: '日线收盘复核',
+    PRICE_TOUCH: '触价后复核',
+    MANUAL_REFRESH: '手动刷新复核',
+    POSITION_CHANGE: '仓位变化后复核',
+  }[trigger] || '30分钟K线收盘复核'
+}
+
+function recheckTone(trigger) {
+  return trigger === 'NEXT_5M_CLOSE' ? 'fast' : 'normal'
+}
+
+const REBALANCE_ACTION_FILTERS = [
+  { id: 'ALL', label: '全部' },
+  { id: 'RISK', label: '减/退' },
+  { id: 'ENTRY', label: '试/加' },
+  { id: 'HOLD', label: '持有' },
+  { id: 'OBSERVE', label: '观察' },
+]
+
+function matchRebalanceActionFilter(intent, filter) {
+  const action = intent?.recommended_action?.action
+  if (filter === 'ALL') return true
+  if (filter === 'RISK') return action === 'REDUCE' || action === 'EXIT'
+  if (filter === 'ENTRY') return action === 'TEST' || action === 'ADD'
+  if (filter === 'HOLD') return action === 'HOLD'
+  if (filter === 'OBSERVE') return action === 'OBSERVE' || action === 'NO_ACTION'
+  return true
+}
+
+function rebalanceFilterCount(intents, filter) {
+  return intents.filter((intent) => matchRebalanceActionFilter(intent, filter)).length
+}
+
+function rebalanceMemoryLabel(memory) {
+  const count = Number(memory?.previous_intent_count || 0)
+  if (!count) return null
+  return memory?.urgency_escalated ? `第${count + 1}次 · 已升级` : `第${count + 1}次提示`
+}
+
+function RebalanceSummaryCard({ data, loading, importing, error, onRefresh, onImport, onOpenRotation }) {
+  const [actionFilter, setActionFilter] = useState('ALL')
+  const contract = data || {}
+  const summary = contract.summary || {}
+  const portfolio = contract.portfolio_state || {}
+  const intents = contract.intents || []
+  const hasIntents = intents.length > 0
+  const fusionSummary = rebalanceFusionStatusSummary(intents)
+  const recheckSummary = rebalanceRecheckSummary(intents)
+  const filteredIntents = intents.filter((intent) => matchRebalanceActionFilter(intent, actionFilter))
+  const topItems = [
+    ...filteredIntents.filter((item) => item.urgency === 'IMMEDIATE'),
+    ...filteredIntents.filter((item) => item.urgency === 'NEXT_SESSION' || item.urgency === 'CONDITIONAL_WAIT'),
+    ...filteredIntents,
+  ].filter((item, index, array) => array.findIndex((candidate) => candidate.intent_id === item.intent_id) === index).slice(0, 4)
+
+  return (
+    <section className="playbook-rebalance" aria-label="AI 调仓摘要">
+      <div className="playbook-rebalance-head">
+        <div>
+          <span>AI Native Rebalance</span>
+          <h3>今日调仓摘要</h3>
+          <p>{portfolio.summary || '从持仓与候选生成条件化调仓意图。'}</p>
+        </div>
+        <div className="playbook-rebalance-actions">
+          {onOpenRotation && (
+            <button type="button" onClick={onOpenRotation}>
+              调仓罗盘
+            </button>
+          )}
+          <button type="button" onClick={onRefresh} disabled={loading}>
+            {loading ? '推演中...' : '刷新调仓'}
+          </button>
+          {data && hasIntents && (
+            <button type="button" onClick={onImport} disabled={loading || importing}>
+              {importing ? '同步中...' : '加入作战台'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="playbook-rebalance-grid">
+        <div><strong>{portfolio.position_count ?? '--'}</strong><span>持仓数</span></div>
+        <div><strong>{formatPlaybookPct(portfolio.max_position_weight_pct)}</strong><span>最大权重</span></div>
+        <div><strong>{summary.immediate_count ?? 0}</strong><span>立即处理</span></div>
+        <div><strong>{summary.conditional_wait_count ?? 0}</strong><span>等待确认</span></div>
+        <div><strong>{recheckSummary.NEXT_5M_CLOSE}</strong><span>5分复核</span></div>
+        <div><strong>{fusionSummary.AI_READY}</strong><span>AI Ready</span></div>
+        <div><strong>{fusionSummary.FALLBACK}</strong><span>结构兜底</span></div>
+      </div>
+
+      {data && intents.length > 0 && (
+        <div className="playbook-rebalance-filters" aria-label="调仓动作过滤">
+          {REBALANCE_ACTION_FILTERS.map((filter) => (
+            <button
+              key={filter.id}
+              type="button"
+              className={actionFilter === filter.id ? 'is-active' : ''}
+              onClick={() => setActionFilter(filter.id)}
+            >
+              <span>{filter.label}</span>
+              <em>{rebalanceFilterCount(intents, filter.id)}</em>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {error && <div className="playbook-rebalance-error">{error}</div>}
+      {!error && !loading && !data && (
+        <div className="playbook-rebalance-empty">完整调仓会调用 Fusion/Kronos，点击“刷新调仓”后生成。</div>
+      )}
+      {!error && !loading && data && topItems.length === 0 && (
+        <div className="playbook-rebalance-empty">{intents.length ? '当前动作过滤下暂无标的。' : '暂无调仓意图，保持作战队列观察。'}</div>
+      )}
+      {topItems.length > 0 && (
+        <div className="playbook-rebalance-list">
+          {topItems.map((intent) => {
+            const action = intent.recommended_action?.action
+            const memoryText = rebalanceMemoryLabel(intent.memory)
+            const fusionStatus = fusionStatusFromIntent(intent)
+            const recheck = rebalanceRecheckFromIntent(intent)
+            return (
+              <article key={intent.intent_id} className={`playbook-rebalance-item playbook-rebalance-item--${actionTone(action)}`}>
+                <div>
+                  <span className="mono">{intent.source?.symbol || '--'}</span>
+                  {intent.source?.name && <strong>{intent.source.name}</strong>}
+                  <em>{urgencyLabel(intent.urgency)}</em>
+                  <em className={`playbook-fusion-state playbook-fusion-state--${fusionStatusTone(fusionStatus)}`}>
+                    {fusionStatusLabel(fusionStatus)}
+                  </em>
+                  <em className={`playbook-recheck-state playbook-recheck-state--${recheckTone(recheck)}`}>
+                    {recheckLabel(recheck)}
+                  </em>
+                  {memoryText && <i>{memoryText}</i>}
+                </div>
+                <div>
+                  <b>{actionLabel(action)}</b>
+                  <p>{firstCondition(intent)}</p>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="playbook-rebalance-foot">
+        <span>{summary.coach_message || '仅供参考，不构成投资建议。'}</span>
+      </div>
+    </section>
+  )
+}
+
 export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
   const [data, setData] = useState(null)
+  const [rebalance, setRebalance] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [rebalanceLoading, setRebalanceLoading] = useState(false)
+  const [rebalanceImporting, setRebalanceImporting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [reporting, setReporting] = useState(false)
   const [responding, setResponding] = useState(false)
   const [error, setError] = useState(null)
+  const [rebalanceError, setRebalanceError] = useState(null)
   const [notice, setNotice] = useState(null)
 
   const load = async (silent = false) => {
@@ -173,6 +464,51 @@ export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
     const id = window.setInterval(() => load(true), 30000)
     return () => window.clearInterval(id)
   }, [])
+
+  const loadRebalance = async () => {
+    setRebalanceLoading(true)
+    setRebalanceError(null)
+    try {
+      const json = await fetchJson('/api/agent/ai-native-rebalance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: 1, sources: ['positions', 'watchlist'], max_items: 2 }),
+        timeoutMs: REBALANCE_TIMEOUT_MS,
+        errorMessage: 'AI 调仓摘要加载失败',
+      })
+      setRebalance(json.data)
+    } catch (err) {
+      setRebalanceError(err.message)
+    } finally {
+      setRebalanceLoading(false)
+    }
+  }
+
+  const importRebalance = async () => {
+    if (!rebalance || !rebalance.intents?.length) return
+    setRebalanceImporting(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const json = await fetchJson('/api/playbook/today/import-rebalance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: 1, contract: rebalance }),
+        errorMessage: '调仓意图加入作战台失败',
+      })
+      const nextPlaybook = json.data?.playbook || null
+      const importedItemId = json.data?.item_ids?.[0]
+      setData(nextPlaybook)
+      setSelectedId(importedItemId || nextPlaybook?.items?.[0]?.id || null)
+      const statusSummary = json.data?.fusion_status_summary
+      const statusText = statusSummary ? `AI ${statusSummary.AI_READY || 0} / 兜底 ${statusSummary.FALLBACK || 0}` : ''
+      setNotice(`已同步 ${json.data?.imported_count || 0} 条调仓意图到今日作战。${statusText ? `Fusion：${statusText}。` : ''}`)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRebalanceImporting(false)
+    }
+  }
 
   const items = data?.items || []
   const groupedItems = useMemo(() => {
@@ -206,20 +542,22 @@ export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
     return items.find((item) => item.id === selectedId) || firstQueueItem
   }, [items, selectedId, firstQueueItem])
   const selectedAiNative = selectedItem?.trigger?.ai_native
+  const selectedRebalanceMemory = selectedItem?.trigger?.rebalance?.memory
+  const selectedRebalanceMemoryText = rebalanceMemoryLabel(selectedRebalanceMemory)
+  const selectedRebalanceFusionStatus = fusionStatusFromItem(selectedItem)
 
   const metrics = data?.metrics || {}
   const report = data?.report
   const stale = data?.freshness?.is_stale
   const queueStats = useMemo(() => {
-    const staleCount = items.filter((item) => item.status === 'STALE' || item.status === 'ENGINE_ERROR').length
     const respondedCount = items.filter((item) => item.response || ['EXECUTED', 'IGNORED', 'INVALIDATED'].includes(item.status)).length
     return {
-      total: items.length,
-      stale: staleCount,
+      immediate: items.filter((item) => item.status === 'TRIGGERED' && !item.response).length,
+      defense: items.filter((item) => item.status === 'WATCHING' && !item.response && (item.mode === 'HOLDING' || item.source === 'positions')).length,
+      waiting: items.filter((item) => item.status === 'WATCHING' && !item.response && item.mode !== 'HOLDING' && item.source !== 'positions').length,
       responded: respondedCount,
-      unplanned: metrics.unplanned_trades || 0,
     }
-  }, [items, metrics.unplanned_trades])
+  }, [items])
 
   const generate = async () => {
     setGenerating(true)
@@ -301,7 +639,7 @@ export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
         <div className="playbook-actions">
           {onOpenRotation && (
             <button type="button" onClick={onOpenRotation} disabled={loading || generating}>
-              持仓比较
+              调仓罗盘
             </button>
           )}
           <button type="button" onClick={() => load(false)} disabled={loading || generating}>
@@ -325,11 +663,21 @@ export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
       )}
 
       <section className="playbook-metrics">
-        <div><span>{queueStats.total}</span><strong>队列事件</strong></div>
-        <div><span>{queueStats.stale}</span><strong>需复核</strong></div>
+        <div><span>{queueStats.immediate}</span><strong>立即处理</strong></div>
+        <div><span>{queueStats.defense}</span><strong>持有防线</strong></div>
+        <div><span>{queueStats.waiting}</span><strong>等待确认</strong></div>
         <div><span>{queueStats.responded}</span><strong>已响应</strong></div>
-        <div><span>{queueStats.unplanned}</span><strong>计划外交易</strong></div>
       </section>
+
+      <RebalanceSummaryCard
+        data={rebalance}
+        loading={rebalanceLoading}
+        importing={rebalanceImporting}
+        error={rebalanceError}
+        onRefresh={loadRebalance}
+        onImport={importRebalance}
+        onOpenRotation={onOpenRotation}
+      />
 
       {report && (
         <section className={`playbook-report${report.persisted ? ' is-persisted' : ''}`}>
@@ -435,6 +783,45 @@ export default function DailyPlaybook({ onViewInChan, onOpenRotation }) {
                   <h4>下一步</h4>
                   <p>{nextStep(selectedItem)}</p>
                 </div>
+
+                {selectedItem.source === 'rebalance' && (
+                  <div className="playbook-rebalance-detail">
+                    <div className="playbook-rebalance-detail-head">
+                      <span>调仓动作</span>
+                      <strong>{selectedItem.trigger?.rebalance?.action?.action_label || actionLabel(selectedItem.trigger?.rebalance?.action?.action)}</strong>
+                      <em>{selectedItem.trigger?.rebalance?.urgency || 'WATCH_ONLY'}</em>
+                    </div>
+                    <div className={`playbook-rebalance-fusion playbook-rebalance-fusion--${fusionStatusTone(selectedRebalanceFusionStatus)}`}>
+                      <strong>{fusionStatusLabel(selectedRebalanceFusionStatus)}</strong>
+                      <span>{selectedRebalanceFusionStatus.fallback_reason || '完整 AI Fusion 推演已返回'}</span>
+                    </div>
+                    <p>{selectedItem.trigger?.rebalance?.action?.reason || '调仓意图只作为条件化作战项。仅供参考，不构成投资建议。'}</p>
+                    {selectedRebalanceMemoryText && (
+                      <div className={`playbook-rebalance-memory${selectedRebalanceMemory?.urgency_escalated ? ' is-escalated' : ''}`}>
+                        <strong>{selectedRebalanceMemoryText}</strong>
+                        <span>上次响应：{selectedRebalanceMemory?.last_user_response || '未记录'}</span>
+                      </div>
+                    )}
+                    <div className="playbook-rebalance-condition-grid">
+                      <div>
+                        <strong>触发</strong>
+                        <span>{rebalanceConditions(selectedItem, 'execute_if')[0] || '—'}</span>
+                      </div>
+                      <div>
+                        <strong>等待</strong>
+                        <span>{rebalanceConditions(selectedItem, 'delay_if')[0] || '—'}</span>
+                      </div>
+                      <div>
+                        <strong>失效</strong>
+                        <span>{rebalanceConditions(selectedItem, 'invalidate_if')[0] || '—'}</span>
+                      </div>
+                      <div>
+                        <strong>复核</strong>
+                        <span>{recheckDetailLabel(rebalanceRecheckFromItem(selectedItem))}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {selectedAiNative && (
                   <div className={`playbook-ai-native playbook-ai-native--${String(selectedAiNative.priority || 'MEDIUM').toLowerCase()}`}>

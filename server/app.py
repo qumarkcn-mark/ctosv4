@@ -10,6 +10,8 @@ from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
 from server.workers.kline_sync_worker import kline_sync
+from server.workers.ai_native_scheduler import ai_native_scheduler
+from server.workers.structure_compute_worker import structure_compute_worker
 from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
@@ -34,10 +36,14 @@ async def lifespan(app: FastAPI):
 
     monitor.start()
     kline_sync.start()
+    ai_native_scheduler.start()
+    structure_compute_worker.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
     kline_sync.stop()
+    ai_native_scheduler.stop()
+    structure_compute_worker.stop()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
@@ -71,11 +77,12 @@ async def health():
     return {"status": "healthy"}
 
 
-from server.api import trades, positions, data
+from server.api import trades, positions, data, trade_imports
 
 app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
+app.include_router(trade_imports.router, prefix="/api/trade-imports", tags=["trade imports"])
 
 from server.api import auth, chan, behavior, search, sand_table, agent
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -105,6 +112,12 @@ app.include_router(radar.router, prefix="/api/radar", tags=["radar"])
 
 from server.api import playbook
 app.include_router(playbook.router, prefix="/api/playbook", tags=["daily playbook"])
+
+from server.api import kronos
+app.include_router(kronos.router, prefix="/api/kronos", tags=["kronos tsfm"])
+
+from server.api import structure
+app.include_router(structure.router, prefix="/api/structure", tags=["structure jobs"])
 
 # Phase 2+:
 # from server.api import alerts, analysis

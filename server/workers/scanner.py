@@ -35,6 +35,8 @@ from server.engines.decision.push_rules import (
     build_alert_strategy_contract,
     evaluate_scanner_candidate_alert,
 )
+from server.engines.structure.snapshot_query import build_formal_structure_key
+from server.engines.structure.structure_jobs import enqueue_structure_job
 from server.services.screener_filter import batch_screen, load_all_symbols
 from server.services.chan_scanner import scan_symbol
 
@@ -46,12 +48,18 @@ KLINE_TRADING_DAYS    = 120    # 实际交易日数
 ADJUSTFLAG            = "3"    # TDX不复权数据
 CONCURRENT_LLM        = 5      # 基本面分析并发数
 SCAN_STALE_DAYS       = 3      # 清理N天前的历史扫描结果
+_LAST_EFFECTIVE_SCAN_DATE: Optional[str] = None
 
 
 # ── 数据库操作 ────────────────────────────────────────────────────────────────
 
 def get_today() -> str:
     return date.today().strftime("%Y-%m-%d")
+
+
+def get_last_effective_scan_date(default: Optional[str] = None) -> str:
+    """返回最近一次 run_scan 实际写入 scan_results 的日期。"""
+    return _LAST_EFFECTIVE_SCAN_DATE or default or get_today()
 
 
 def cleanup_stale_results(conn):
@@ -160,6 +168,9 @@ def notify_scanner_top_candidates(conn, today: str, user_id: int = 1, min_score:
             name=item["symbol"],
             current_price=candidate.trigger_price,
             score=candidate.extra.get("score", 0),
+            signal_code=candidate.signal_code,
+            signal_label=candidate.signal_context.get("label_plain") or "",
+            signal_action=candidate.signal_context.get("action") or "",
         )
         strategy_contract = build_alert_strategy_contract(
             candidate.alert_type,
@@ -218,6 +229,8 @@ def notify_scanner_top_candidates(conn, today: str, user_id: int = 1, min_score:
                 "rr_ratio": item.get("rr_ratio"),
                 "chan_desc": item.get("chan_desc"),
                 "dedupe_node": candidate.dedupe_node,
+                "signal_code": candidate.signal_code,
+                "signal_context": candidate.signal_context,
             },
         )
         created += 1
@@ -238,6 +251,47 @@ def notify_today_ready_candidates(today: str, user_id: int = 1) -> int:
         raise
     finally:
         conn.close()
+
+
+def enqueue_structure_jobs_for_scan_candidates(
+    symbols,
+    *,
+    freqs: tuple[str, ...] = ("day", "30", "5"),
+    priority: int = 30,
+) -> dict:
+    """低优先级预热扫描候选的正式结构快照。
+
+    scanner 只负责发现候选，不直接计算结构；这里把候选交给后台队列，避免用户点开
+    Radar/Kline 时才集中触发重计算。
+    """
+    items = []
+    for symbol in sorted(set(symbols or [])):
+        for freq in freqs:
+            try:
+                structure_key, _context = build_formal_structure_key(symbol=symbol, freq=freq)
+                if structure_key is None:
+                    items.append({"symbol": symbol, "freq": freq, "status": "skipped", "reason": "NO_DATA"})
+                    continue
+                job = enqueue_structure_job(
+                    structure_key,
+                    priority=priority,
+                    reason="scanner_candidate",
+                    retry_terminal=True,
+                )
+                items.append(
+                    {
+                        "symbol": structure_key.symbol,
+                        "freq": structure_key.freq,
+                        "status": job.get("status"),
+                        "job_id": job.get("job_id"),
+                        "enqueued": job.get("enqueued"),
+                        "bumped": job.get("bumped"),
+                    }
+                )
+            except Exception as exc:
+                logger.warning("扫描候选结构任务入队失败 %s/%s: %s", symbol, freq, exc)
+                items.append({"symbol": symbol, "freq": freq, "status": "error", "error": str(exc)})
+    return {"count": len(items), "items": items}
 
 
 # ── 批量加载 kline 数据（1次查询）──────────────────────────────────────────
@@ -282,7 +336,10 @@ def run_scan(force: bool = False) -> int:
     执行一次完整扫描。
     Returns: 候选股总数
     """
+    global _LAST_EFFECTIVE_SCAN_DATE
+
     today      = get_today()
+    _LAST_EFFECTIVE_SCAN_DATE = today
     ctos_conn  = get_connection()
     lake_conn  = get_lake_connection("tdx")
 
@@ -301,6 +358,7 @@ def run_scan(force: bool = False) -> int:
             return 0
         if latest_bar_date and latest_bar_date != today:
             today = latest_bar_date
+            _LAST_EFFECTIVE_SCAN_DATE = today
 
         # 3. 初筛（1次批量 SQL）
         logger.info("Step 1/3: 批量初筛...")
@@ -321,6 +379,7 @@ def run_scan(force: bool = False) -> int:
         total_candidates = 0
         war1_count = 0
         war2_count = 0
+        candidate_symbols: set[str] = set()
 
         for i, (symbol, rows) in enumerate(klines_map.items(), 1):
             if not rows:
@@ -333,6 +392,7 @@ def run_scan(force: bool = False) -> int:
 
             for result in results:
                 upsert_scan_result(ctos_conn, today, result, force=force)
+                candidate_symbols.add(result.symbol)
                 total_candidates += 1
                 if result.strategy == "war1":
                     war1_count += 1
@@ -349,6 +409,9 @@ def run_scan(force: bool = False) -> int:
             "扫描完成: 战法一 %d 只 / 战法二 %d 只 / 合计 %d 只",
             war1_count, war2_count, total_candidates
         )
+        if candidate_symbols:
+            structure_jobs = enqueue_structure_jobs_for_scan_candidates(candidate_symbols)
+            logger.info("扫描候选结构任务低优先级入队: %d", structure_jobs["count"])
 
         return total_candidates
     finally:
@@ -414,17 +477,16 @@ async def main(force: bool = False):
     # 确保数据库 schema 存在
     init_db()
 
-    today = get_today()
-
     # 扫描
     count = run_scan(force=force)
+    scan_date = get_last_effective_scan_date()
 
     if count == 0:
         logger.info("无候选股，跳过基本面分析")
         return
 
     # 基本面分析
-    await trigger_fundamental_analysis(today)
+    await trigger_fundamental_analysis(scan_date)
 
     logger.info("全流程完成，今日候选股: %d 只", count)
 

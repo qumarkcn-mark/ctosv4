@@ -21,8 +21,15 @@
 
 import sys
 import os
+import copy
+import time
+import asyncio
 import logging
+import threading
+from datetime import datetime, timedelta
 from typing import Optional
+
+import httpx
 from fastapi.concurrency import run_in_threadpool
 
 # 引入官方开源版的 chan.py
@@ -39,17 +46,222 @@ try:
 except ImportError as e:
     logging.error(f"无法导入 chan_py: {e}")
 
-from server.db.kline_lake import query_klines
+from server.db.kline_lake import query_klines, get_kline_window_signature
+from server.config import PRICE_API_TIMEOUT
+from server.domain.symbols import to_tencent_symbol
+from server.engines.structure.chan_snapshot_cache import (
+    load_chan_snapshot,
+    load_latest_chan_snapshot,
+    save_chan_snapshot,
+)
 from server.engines.structure.chan_config_presets import (
     get_chan_config_dict,
     get_chan_config_meta,
 )
 from server.services.baostock_service import fetch_klines_quick
+from server.services.tdx_minute_service import read_tdx_1m_klines
 
 logger = logging.getLogger(__name__)
 
 # 低于此数量，触发 BaoStock 自动补数据
 _MIN_KLINES = 120
+DEFAULT_COMPUTE_BARS = 5000
+FREQ_COMPUTE_BARS = {
+    "1": 800,
+    "5": 2000,
+    "15": 2500,
+    "30": 3000,
+    "60": 3000,
+    "day": 2500,
+    "week": 1200,
+}
+DETAIL_CACHE_TTL_SECONDS = 120
+DETAIL_CACHE_MAX_ITEMS = 64
+DETAIL_RESPONSE_SCHEMA_VERSION = "zs-display-v2"
+_detail_cache: dict[tuple, dict] = {}
+_detail_cache_locks: dict[tuple, asyncio.Lock] = {}
+_background_fetch_keys: set[tuple[str, str]] = set()
+_background_fetch_lock = threading.Lock()
+TAIL_RECOMPUTE_BARS = {
+    "week": 120,
+    "day": 200,
+    "60": 500,
+    "30": 500,
+    "15": 500,
+    "5": 800,
+}
+
+_QT_KLINE_BASE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
+_QT_MKLINE_BASE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline?param="
+_TENCENT_FREQ_MAP = {
+    "day": "day",
+    "60": "m60",
+    "30": "m30",
+    "15": "m15",
+    "5": "m5",
+}
+
+
+def _rows_are_fresh(rows: list[dict], *, stale_days: int = 10) -> bool:
+    """判断短历史 K 线是否足够新鲜，可直接用于新股/次新股展示。"""
+    if not rows:
+        return False
+    last_date_str = str(rows[-1].get("date") or rows[-1].get("time") or "").split(" ", 1)[0]
+    try:
+        last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now() - last_date) <= timedelta(days=stale_days)
+
+
+def _schedule_background_fetch(symbol: str, freq: str, *, reason: str) -> None:
+    """首屏结构请求不等待 BaoStock；缺口数据交给后台静默补齐。"""
+    key = (symbol, freq)
+    with _background_fetch_lock:
+        if key in _background_fetch_keys:
+            return
+        _background_fetch_keys.add(key)
+
+    def _run() -> None:
+        try:
+            logger.info("后台补齐 K 线 %s/%s reason=%s", symbol, freq, reason)
+            fetch_klines_quick(symbol, freq)
+        except Exception as exc:
+            logger.warning("后台 BaoStock 补齐失败 %s/%s: %s", symbol, freq, exc)
+        finally:
+            with _background_fetch_lock:
+                _background_fetch_keys.discard(key)
+
+    threading.Thread(target=_run, name=f"chan-kline-fetch-{symbol}-{freq}", daemon=True).start()
+
+
+def resolve_chan_compute_bars(freq: str, requested_count: int = 0, max_compute_bars: Optional[int] = None) -> int:
+    """按级别限制 CChan 计算深度，避免短周期默认读取 5000 根拖慢首屏。"""
+    if max_compute_bars:
+        return max(int(requested_count or 0), int(max_compute_bars))
+    normalized = str(freq or "day").strip().lower()
+    if normalized.startswith("m") and normalized[1:].isdigit():
+        normalized = normalized[1:]
+    target = FREQ_COMPUTE_BARS.get(normalized, DEFAULT_COMPUTE_BARS)
+    return max(int(requested_count or 0), target, _MIN_KLINES)
+
+
+def _fetch_tencent_fallback_klines(symbol: str, freq: str, count: int) -> list[dict]:
+    """BaoStock 不可用时给图表首屏兜底；只读不落库，避免污染正式 BaoStock 缓存。"""
+    interval = _TENCENT_FREQ_MAP.get(freq)
+    if not interval:
+        return []
+
+    qt_symbol = to_tencent_symbol(symbol)
+    try:
+        if freq == "day":
+            url = f"{_QT_KLINE_BASE}{qt_symbol},day,,,{count},qfq"
+        else:
+            url = f"{_QT_MKLINE_BASE}{qt_symbol},{interval},,{count}"
+
+        with httpx.Client(timeout=PRICE_API_TIMEOUT) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+
+        if data.get("code") != 0 or not data.get("data"):
+            return []
+
+        stock_data = data["data"].get(qt_symbol, {})
+        raw_rows = stock_data.get("qfqday" if freq == "day" else interval)
+        if raw_rows is None and freq == "day":
+            raw_rows = stock_data.get("day", [])
+        if not raw_rows:
+            return []
+
+        rows = []
+        for item in raw_rows:
+            if len(item) < 6:
+                continue
+            date_value = str(item[0])
+            if freq != "day" and len(date_value) >= 12:
+                date_value = f"{date_value[:4]}-{date_value[4:6]}-{date_value[6:8]} {date_value[8:10]}:{date_value[10:12]}"
+            rows.append({
+                "date": date_value,
+                "open": float(item[1]),
+                "close": float(item[2]),
+                "high": float(item[3]),
+                "low": float(item[4]),
+                "volume": float(item[5]),
+                "amount": 0.0,
+            })
+        return rows
+    except Exception as exc:
+        logger.warning("腾讯 K 线兜底失败 %s/%s: %s", symbol, freq, exc)
+        return []
+
+
+def _aggregate_1m_rows(rows: list[dict], target_freq: str, limit: int) -> list[dict]:
+    """把本地 TDX 1分钟 CLOSED K 聚合为展示用分钟级别，不写入正式结构缓存。"""
+    try:
+        step = int(target_freq)
+    except (TypeError, ValueError):
+        return []
+    if step <= 1:
+        return rows[-limit:]
+
+    aggregated = []
+    current_day = ""
+    bucket = []
+    for row in rows:
+        day = str(row.get("date", "")).split(" ", 1)[0]
+        if current_day and day != current_day and bucket:
+            aggregated.append(_merge_rows(bucket))
+            bucket = []
+        current_day = day
+        bucket.append(row)
+        if len(bucket) >= step:
+            aggregated.append(_merge_rows(bucket))
+            bucket = []
+    if bucket:
+        aggregated.append(_merge_rows(bucket))
+    return aggregated[-limit:]
+
+
+def _merge_rows(rows: list[dict]) -> dict:
+    return {
+        "date": rows[-1]["date"],
+        "open": float(rows[0]["open"]),
+        "high": max(float(row["high"]) for row in rows),
+        "low": min(float(row["low"]) for row in rows),
+        "close": float(rows[-1]["close"]),
+        "volume": sum(float(row.get("volume", 0)) for row in rows),
+        "amount": sum(float(row.get("amount", 0)) for row in rows),
+    }
+
+
+def _fetch_tdx_minute_fallback_klines(symbol: str, freq: str, count: int) -> list[dict]:
+    """TDX 本地分钟兜底只用于图表展示/回放，不污染 BaoStock 正式结构缓存。"""
+    if freq not in {"5", "15", "30", "60"}:
+        return []
+    try:
+        step = int(freq)
+        read_limit = min(20000, max(count * step * 2, _MIN_KLINES * step))
+        rows_1m = read_tdx_1m_klines(symbol, limit=read_limit)
+        if len(rows_1m) < step:
+            return []
+        return _aggregate_1m_rows(rows_1m, freq, max(count, _MIN_KLINES))
+    except Exception as exc:
+        logger.warning("TDX 本地分钟兜底失败 %s/%s: %s", symbol, freq, exc)
+        return []
+
+
+def _source_badge(provider: str, freq: str, rows: list[dict]) -> dict:
+    last_date = str(rows[-1].get("date") or rows[-1].get("time") or "") if rows else ""
+    if provider == "baostock":
+        return {"label": f"{freq} · BaoStock", "detail": f"前复权 · {last_date}", "tone": "history"}
+    if provider == "tdx":
+        return {"label": f"{freq} · TDX本地", "detail": f"不复权 · {last_date}", "tone": "history"}
+    if provider == "tdx_minute":
+        return {"label": f"{freq} · TDX本地分钟", "detail": f"不复权 · {last_date}", "tone": "history"}
+    if provider == "tencent":
+        return {"label": f"{freq} · 腾讯兜底", "detail": f"临时数据 · {last_date}", "tone": "live"}
+    return {"label": f"{freq} · 未知来源", "detail": last_date, "tone": "history"}
 
 # ---------------------------------------------------------------------------
 # MACD 计算（纯 Python，不依赖 ta-lib）
@@ -112,6 +324,132 @@ def _format_time(ctime: CTime, ctime_to_date_str: dict) -> str:
     """完美映射 CTime 回原始的 date_str，保障前端不出现查不到 index 的错误"""
     key = f"{ctime.year}-{ctime.month}-{ctime.day}-{ctime.hour}-{ctime.minute}"
     return ctime_to_date_str.get(key, "")
+
+
+def _iter_line_klus(line):
+    """遍历一笔/一段覆盖的原始 K 线，供显示边界精确落到 K 线。"""
+    if line is None:
+        return
+    begin_klu = line.get_begin_klu()
+    end_klu = line.get_end_klu()
+    current = begin_klu
+    end_idx = getattr(end_klu, "idx", None)
+    seen = 0
+    while current is not None:
+        yield current
+        seen += 1
+        if current is end_klu or (end_idx is not None and getattr(current, "idx", None) >= end_idx):
+            break
+        current = getattr(current, "next", None)
+        if seen > 10000:
+            break
+
+
+def _line_value_at_klu(line, klu) -> Optional[float]:
+    """按笔/段几何线在指定 K 线位置插值得到价格。"""
+    if line is None or klu is None:
+        return None
+    if not hasattr(line, "get_begin_val") or not hasattr(line, "get_end_val"):
+        return None
+    begin_klu = line.get_begin_klu()
+    end_klu = line.get_end_klu()
+    x0 = getattr(begin_klu, "idx", None)
+    x1 = getattr(end_klu, "idx", None)
+    x = getattr(klu, "idx", None)
+    if x0 is None or x1 is None or x is None:
+        return None
+    y0 = float(line.get_begin_val())
+    y1 = float(line.get_end_val())
+    if x1 == x0:
+        return y1
+    ratio = (x - x0) / (x1 - x0)
+    return y0 + (y1 - y0) * ratio
+
+
+def _first_klu_entering_range(line, zd: float, zg: float):
+    """找到进中枢段几何线第一次进入 [ZD, ZG] 的 K 线。"""
+    if line is None:
+        return None
+    is_up = bool(line.is_up()) if hasattr(line, "is_up") else False
+    is_down = bool(line.is_down()) if hasattr(line, "is_down") else False
+    was_outside = False
+    for klu in _iter_line_klus(line):
+        value = _line_value_at_klu(line, klu)
+        candle_high = float(getattr(klu, "high", 0) or 0)
+        candle_low = float(getattr(klu, "low", 0) or 0)
+        inside = zd <= value <= zg if value is not None else candle_low <= zg and candle_high >= zd
+        if not inside:
+            was_outside = True
+            continue
+        if not was_outside:
+            continue
+        if value is None:
+            return klu
+        if is_up and value >= zd:
+            return klu
+        if is_down and value <= zg:
+            return klu
+        if not is_up and not is_down and zd <= value <= zg:
+            return klu
+    return None
+
+
+def _first_klu_fully_outside(line, zd: float, zg: float):
+    """找到出中枢段几何线第一次离开 [ZD, ZG] 的 K 线。"""
+    if line is None:
+        return None
+    is_up = bool(line.is_up()) if hasattr(line, "is_up") else False
+    is_down = bool(line.is_down()) if hasattr(line, "is_down") else False
+    was_inside = False
+    for klu in _iter_line_klus(line):
+        value = _line_value_at_klu(line, klu)
+        candle_high = float(getattr(klu, "high", 0) or 0)
+        candle_low = float(getattr(klu, "low", 0) or 0)
+        inside = zd <= value <= zg if value is not None else candle_low <= zg and candle_high >= zd
+        if inside:
+            was_inside = True
+            continue
+        if not was_inside:
+            continue
+        if value is None:
+            if is_up and candle_low > zg:
+                return klu
+            if is_down and candle_high < zd:
+                return klu
+            if not is_up and not is_down and (candle_low > zg or candle_high < zd):
+                return klu
+            continue
+        if is_up and value > zg:
+            return klu
+        if is_down and value < zd:
+            return klu
+        if not is_up and not is_down and (value > zg or value < zd):
+            return klu
+    return None
+
+
+def _resolve_zhongshu_display_dates(zs, ctime_to_date_str) -> tuple[str, str]:
+    """
+    计算中枢矩形的视觉起止点。
+
+    算法 begin/end 保留结构语义；display_* 更贴近盘面阅读：
+    进入时按进中枢段的几何线穿过 ZD/ZG 的 K 线画起，
+    离开时按出中枢段的几何线穿出 ZD/ZG 的 K 线画止。
+    """
+    zd = float(zs.low)
+    zg = float(zs.high)
+    begin_fallback = _format_time(zs.begin.time, ctime_to_date_str)
+    end_fallback = _format_time(zs.end.time, ctime_to_date_str)
+
+    enter_line = getattr(zs, "bi_in", None) or getattr(zs, "begin_bi", None)
+    enter_klu = _first_klu_entering_range(enter_line, zd, zg)
+    display_begin = _format_time(enter_klu.time, ctime_to_date_str) if enter_klu is not None else begin_fallback
+
+    out_line = getattr(zs, "bi_out", None)
+    out_klu = _first_klu_fully_outside(out_line, zd, zg)
+    display_end = _format_time(out_klu.time, ctime_to_date_str) if out_klu is not None else end_fallback
+
+    return display_begin or begin_fallback, display_end or end_fallback
 
 def _serialize_bis(bi_list, ctime_to_date_str, macd_data, date_to_idx) -> list[dict]:
     """将 CBi 列表序列化为前端可用格式，并打上 MACD 动能分"""
@@ -203,12 +541,10 @@ def _serialize_zhongshus(zs_list, ctime_to_date_str) -> list[dict]:
     """
     将 CZS 列表序列化为前端矩形框数据。
 
-    中枢框右端的确定规则（符合缠论原文）：
-      - bi_out 存在（中枢已被突破）→ 框右端 = bi_out 结束时刻
-        （出中枢那一笔结束即代表"已离开中枢"，三买/三卖是其后的确认信号，
-         不属于中枢本体范围，框不应延伸到三买/三卖那根笔）
-      - bi_out 不存在（中枢仍在延伸）→ 框右端 = 最后一根在中枢内的笔结束时刻
-        （价格尚未正式离开，用最新边界）
+    begin/end 保留 chan.py 的结构语义；display_begin/display_end 专门服务前端视觉：
+      - 起点 = 进入中枢区间 [ZD, ZG] 的第一根 K 线
+      - 终点 = 出中枢笔/段里第一根完全离开 [ZD, ZG] 的 K 线
+      - 若仍在延伸或无法定位，回退到结构 begin/end
     """
     result = []
     for zs in zs_list:
@@ -229,9 +565,13 @@ def _serialize_zhongshus(zs_list, ctime_to_date_str) -> list[dict]:
             if not begin_date or not end_date:
                 continue
 
+            display_begin_date, display_end_date = _resolve_zhongshu_display_dates(zs, ctime_to_date_str)
+
             result.append({
                 "begin_date": begin_date,
                 "end_date":   end_date,
+                "display_begin_date": display_begin_date,
+                "display_end_date": display_end_date,
                 "zg":  round(zs.high, 4),
                 "zd":  round(zs.low, 4),
                 "gg":  round(zs.peak_high, 4),
@@ -277,8 +617,8 @@ def _parse_chan_detail_sync(
     """
     同步版本的缠论结构解析。调用方应通过 run_in_threadpool 包装。
     """
-    # V6 升级：后端强制提取 5000 根历史，保证线段和均线预热
-    COMPUTATION_COUNT = max_compute_bars or 5000
+    # 按级别限制计算深度：短周期降低 CChan 输入量，日/周线保留足够上下文。
+    COMPUTATION_COUNT = resolve_chan_compute_bars(freq, count, max_compute_bars)
 
     # 1. 读取 K 线（优先本地缓存）
     rows = query_klines(
@@ -289,21 +629,42 @@ def _parse_chan_detail_sync(
         source=kline_source,
         adjustflag=adjustflag,
     )
+    data_provider = "baostock" if not kline_source else str(kline_source)
 
-    if len(rows) < _MIN_KLINES:
-        logger.info("本地数据不足 %s/%s，触发 BaoStock 快速拉取...", symbol, freq)
-        try:
-            fetch_klines_quick(symbol, freq)
-            rows = query_klines(
-                symbol,
-                freq,
-                end_date=end_date,
-                limit=max(count, COMPUTATION_COUNT),
-                source=kline_source,
-                adjustflag=adjustflag,
-            )
-        except Exception as e:
-            logger.warning("BaoStock 拉取失败: %s", e)
+    if len(rows) < _MIN_KLINES and not _rows_are_fresh(rows):
+        logger.info("本地数据不足 %s/%s，后台触发 BaoStock 补齐，当前请求继续兜底...", symbol, freq)
+        _schedule_background_fetch(symbol, freq, reason="chan_detail_short_cache")
+
+    if freq == "day" and len(rows) < _MIN_KLINES and not _rows_are_fresh(rows) and kline_source is None:
+        tdx_rows = query_klines(
+            symbol,
+            "day",
+            end_date=end_date,
+            limit=max(count, COMPUTATION_COUNT),
+            source="tdx",
+            adjustflag="3",
+        )
+        if len(tdx_rows) >= _MIN_KLINES:
+            rows = tdx_rows
+            data_provider = "tdx"
+            logger.warning("使用 TDX 日线兜底渲染图表: %s/day rows=%d", symbol, len(rows))
+
+    if freq in {"5", "15", "30", "60"} and len(rows) < _MIN_KLINES and not _rows_are_fresh(rows) and kline_source is None:
+        tdx_minute_rows = _fetch_tdx_minute_fallback_klines(
+            symbol,
+            freq,
+            count=max(count, _MIN_KLINES),
+        )
+        if len(tdx_minute_rows) >= _MIN_KLINES:
+            rows = tdx_minute_rows
+            data_provider = "tdx_minute"
+            logger.warning("使用 TDX 本地分钟兜底渲染图表: %s/%s rows=%d", symbol, freq, len(rows))
+
+    if len(rows) < _MIN_KLINES and not _rows_are_fresh(rows):
+        rows = _fetch_tencent_fallback_klines(symbol, freq, count=max(count, _MIN_KLINES))
+        if rows:
+            data_provider = "tencent"
+            logger.warning("使用腾讯 K 线兜底渲染图表: %s/%s rows=%d", symbol, freq, len(rows))
 
     if not rows:
         return {"error": f"无可用 K 线数据: {symbol}/{freq}"}
@@ -466,6 +827,7 @@ def _parse_chan_detail_sync(
     return {
         "symbol":     symbol,
         "freq":       freq,
+        "compute_bars": COMPUTATION_COUNT,
         "klines":     klines_out_sliced,
         "bis":        serialized_bis,
         "segs":       serialized_segs,
@@ -476,6 +838,13 @@ def _parse_chan_detail_sync(
         "bsps":       serialized_bsps,
         "macd":       macd_sliced,
         "config":     config_meta,
+        "data_source": {
+            "provider": data_provider,
+            "freq": freq,
+            "adjustflag": "3" if data_provider in {"tdx", "tdx_minute"} else adjustflag,
+            "last_date": str(rows[-1].get("date", "")) if rows else "",
+        },
+        "dataBadge": _source_badge(data_provider, freq, rows),
         "stats": {
             "kline_count":        len(klines_out_sliced),
             "bi_count":           len(serialized_bis),
@@ -513,8 +882,7 @@ async def get_chan_detail(
     if len(symbol_bs) > 2 and symbol_bs[2] != ".":
         symbol_bs = f"{symbol_bs[:2]}.{symbol_bs[2:]}"
 
-    return await run_in_threadpool(
-        _parse_chan_detail_sync,
+    cache_key = _detail_cache_key(
         symbol_bs,
         freq,
         count,
@@ -524,6 +892,601 @@ async def get_chan_detail(
         adjustflag,
         max_compute_bars,
     )
+    cached = _detail_cache_get(cache_key)
+    if cached is not None:
+        cached["cache"] = {"hit": True, "ttl_seconds": DETAIL_CACHE_TTL_SECONDS}
+        return cached
+
+    snapshot_context = _build_snapshot_context(
+        symbol=symbol_bs,
+        freq=freq,
+        count=count,
+        end_date=end_date,
+        cchan_preset=cchan_preset,
+        kline_source=kline_source,
+        adjustflag=adjustflag,
+        max_compute_bars=max_compute_bars,
+    )
+    snapshot = _load_persistent_snapshot(snapshot_context)
+    if snapshot is not None:
+        snapshot["cache"] = {
+            "hit": True,
+            "tier": "persistent_snapshot",
+            "ttl_seconds": DETAIL_CACHE_TTL_SECONDS,
+        }
+        _detail_cache_set(cache_key, snapshot)
+        return snapshot
+
+    lock = _detail_cache_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _detail_cache_get(cache_key)
+        if cached is not None:
+            cached["cache"] = {"hit": True, "ttl_seconds": DETAIL_CACHE_TTL_SECONDS}
+            return cached
+        snapshot = _load_persistent_snapshot(snapshot_context)
+        if snapshot is not None:
+            snapshot["cache"] = {
+                "hit": True,
+                "tier": "persistent_snapshot",
+                "ttl_seconds": DETAIL_CACHE_TTL_SECONDS,
+            }
+            _detail_cache_set(cache_key, snapshot)
+            return snapshot
+
+        incremental_result = await _try_incremental_chan_detail(
+            snapshot_context=snapshot_context,
+            symbol=symbol_bs,
+            freq=freq,
+            count=count,
+            end_date=end_date,
+            cchan_preset=cchan_preset,
+            kline_source=kline_source,
+            adjustflag=adjustflag,
+            max_compute_bars=max_compute_bars,
+        )
+        if incremental_result is not None:
+            _save_persistent_snapshot(snapshot_context, incremental_result)
+            _detail_cache_set(cache_key, incremental_result)
+            return incremental_result
+
+        started = time.perf_counter()
+        result = await run_in_threadpool(
+            _parse_chan_detail_sync,
+            symbol_bs,
+            freq,
+            count,
+            end_date,
+            cchan_preset,
+            kline_source,
+            adjustflag,
+            max_compute_bars,
+        )
+        result["cache"] = {
+            "hit": False,
+            "ttl_seconds": DETAIL_CACHE_TTL_SECONDS,
+            "compute_ms": round((time.perf_counter() - started) * 1000),
+        }
+        if not result.get("error"):
+            save_context = snapshot_context or _build_snapshot_context(
+                symbol=symbol_bs,
+                freq=freq,
+                count=count,
+                end_date=end_date,
+                cchan_preset=cchan_preset,
+                kline_source=kline_source,
+                adjustflag=adjustflag,
+                max_compute_bars=max_compute_bars,
+            )
+            _save_persistent_snapshot(save_context, result)
+            _detail_cache_set(cache_key, result)
+        return result
+
+
+async def prewarm_chan_details(
+    *,
+    symbols: list[str],
+    freqs: list[str],
+    count: int = 500,
+    cchan_preset: str = "live_tolerant",
+    concurrency: int = 2,
+) -> dict:
+    """Pre-generate Chan detail snapshots for a small symbol/frequency batch."""
+    safe_symbols = [item for item in symbols if item][:30]
+    safe_freqs = [item for item in freqs if item][:6]
+    semaphore = asyncio.Semaphore(max(1, min(int(concurrency or 1), 4)))
+    items = []
+
+    async def run_one(symbol: str, freq: str) -> None:
+        async with semaphore:
+            try:
+                result = await get_chan_detail(
+                    symbol,
+                    freq=freq,
+                    count=count,
+                    cchan_preset=cchan_preset,
+                )
+                cache = result.get("cache") or {}
+                snapshot = result.get("snapshot") or {}
+                items.append({
+                    "symbol": result.get("symbol") or symbol,
+                    "freq": result.get("freq") or freq,
+                    "status": "error" if result.get("error") else "ok",
+                    "error": result.get("error"),
+                    "cache_tier": cache.get("tier") or ("memory" if cache.get("hit") else "computed"),
+                    "snapshot_source": snapshot.get("source"),
+                    "last_kline_time": snapshot.get("last_kline_time") or result.get("data_source", {}).get("last_date"),
+                    "stats": result.get("stats") or {},
+                })
+            except Exception as exc:
+                items.append({
+                    "symbol": symbol,
+                    "freq": freq,
+                    "status": "error",
+                    "error": str(exc),
+                })
+
+    await asyncio.gather(*(run_one(symbol, freq) for symbol in safe_symbols for freq in safe_freqs))
+    ok_count = sum(1 for item in items if item.get("status") == "ok")
+    return {
+        "status": "success" if ok_count == len(items) else "partial",
+        "requested": len(safe_symbols) * len(safe_freqs),
+        "ok": ok_count,
+        "items": sorted(items, key=lambda item: (item.get("symbol") or "", item.get("freq") or "")),
+    }
+
+
+def _build_snapshot_context(
+    *,
+    symbol: str,
+    freq: str,
+    count: int,
+    end_date: Optional[str],
+    cchan_preset: str,
+    kline_source: Optional[str],
+    adjustflag: str,
+    max_compute_bars: Optional[int],
+) -> Optional[dict]:
+    compute_bars = resolve_chan_compute_bars(freq, count, max_compute_bars)
+    try:
+        signature = get_kline_window_signature(
+            symbol,
+            freq,
+            end_date=end_date,
+            limit=max(int(count or 0), compute_bars),
+            adjustflag=adjustflag,
+            source=kline_source,
+        )
+    except Exception as exc:
+        logger.warning("Chan snapshot signature skipped: %s", exc)
+        return None
+
+    if int(signature.get("row_count") or 0) <= 0 or not signature.get("signature"):
+        return None
+    return {
+        "symbol": symbol,
+        "freq": freq,
+        "count": int(count or 0),
+        "end_date": end_date or "",
+        "cchan_preset": cchan_preset,
+        "kline_source": signature.get("source") or (kline_source or ""),
+        "adjustflag": adjustflag,
+        "max_compute_bars": int(max_compute_bars or 0),
+        "compute_bars": compute_bars,
+        "data_signature": signature["signature"],
+        "last_kline_time": signature.get("last_date") or "",
+        "kline_count": int(signature.get("row_count") or 0),
+    }
+
+
+def _load_persistent_snapshot(snapshot_context: Optional[dict]) -> Optional[dict]:
+    if not snapshot_context:
+        return None
+    snapshot = load_chan_snapshot(
+        symbol=snapshot_context["symbol"],
+        freq=snapshot_context["freq"],
+        cchan_preset=snapshot_context["cchan_preset"],
+        kline_source=snapshot_context["kline_source"],
+        adjustflag=snapshot_context["adjustflag"],
+        end_date=snapshot_context["end_date"],
+        max_compute_bars=snapshot_context["max_compute_bars"],
+        data_signature=snapshot_context["data_signature"],
+    )
+    result = (snapshot or {}).get("result") or snapshot
+    if result and not _result_has_display_zhongshu_dates(result):
+        return None
+    return snapshot
+
+
+def _result_has_display_zhongshu_dates(result: dict) -> bool:
+    """旧 snapshot 没有 display_*，会让前端中枢框位置继续使用旧算法坐标。"""
+    center_groups = (
+        result.get("bi_zhongshus") or [],
+        result.get("bi_zhongshus_decomp") or [],
+        result.get("seg_zhongshus") or [],
+    )
+    centers = [item for group in center_groups for item in group]
+    if not centers:
+        return True
+    return all("display_begin_date" in item and "display_end_date" in item for item in centers)
+
+
+def _save_persistent_snapshot(snapshot_context: Optional[dict], result: dict) -> None:
+    if not snapshot_context:
+        return
+    provider = result.get("data_source", {}).get("provider")
+    if provider and provider != snapshot_context["kline_source"]:
+        return
+    fingerprint = save_chan_snapshot(
+        symbol=snapshot_context["symbol"],
+        freq=snapshot_context["freq"],
+        cchan_preset=snapshot_context["cchan_preset"],
+        kline_source=snapshot_context["kline_source"],
+        adjustflag=snapshot_context["adjustflag"],
+        end_date=snapshot_context["end_date"],
+        max_compute_bars=snapshot_context["max_compute_bars"],
+        data_signature=snapshot_context["data_signature"],
+        last_kline_time=snapshot_context["last_kline_time"],
+        kline_count=snapshot_context["kline_count"],
+        compute_bars=int(result.get("compute_bars") or snapshot_context["compute_bars"]),
+        result=result,
+    )
+    if fingerprint:
+        result["snapshot"] = {
+            "hit": False,
+            "source": "generated",
+            "data_signature": snapshot_context["data_signature"],
+            "structure_fingerprint": fingerprint,
+            "last_kline_time": snapshot_context["last_kline_time"],
+            "kline_count": snapshot_context["kline_count"],
+        }
+
+
+async def _try_incremental_chan_detail(
+    *,
+    snapshot_context: Optional[dict],
+    symbol: str,
+    freq: str,
+    count: int,
+    end_date: Optional[str],
+    cchan_preset: str,
+    kline_source: Optional[str],
+    adjustflag: str,
+    max_compute_bars: Optional[int],
+) -> Optional[dict]:
+    if not snapshot_context or end_date:
+        return None
+
+    latest = load_latest_chan_snapshot(
+        symbol=snapshot_context["symbol"],
+        freq=snapshot_context["freq"],
+        cchan_preset=snapshot_context["cchan_preset"],
+        kline_source=snapshot_context["kline_source"],
+        adjustflag=snapshot_context["adjustflag"],
+        end_date=snapshot_context["end_date"],
+        max_compute_bars=snapshot_context["max_compute_bars"],
+    )
+    if not latest:
+        return None
+
+    previous = latest.get("result") or {}
+    previous_meta = latest.get("snapshot") or {}
+    if not _result_has_display_zhongshu_dates(previous):
+        return None
+    old_last_time = str(previous_meta.get("last_kline_time") or "")
+    new_last_time = str(snapshot_context.get("last_kline_time") or "")
+    if not old_last_time or not new_last_time or new_last_time <= old_last_time:
+        return None
+
+    tail_bars = _tail_recompute_bars(freq)
+    tail_rows = query_klines(
+        symbol,
+        freq,
+        end_date=end_date,
+        limit=tail_bars,
+        source=kline_source,
+        adjustflag=adjustflag,
+    )
+    tail_dates = [str(row.get("date")) for row in tail_rows]
+    if old_last_time not in tail_dates:
+        return None
+    if not any(date > old_last_time for date in tail_dates):
+        return None
+
+    started = time.perf_counter()
+    tail_result = await run_in_threadpool(
+        _parse_chan_detail_sync,
+        symbol,
+        freq,
+        tail_bars,
+        end_date,
+        cchan_preset,
+        kline_source,
+        adjustflag,
+        tail_bars,
+    )
+    if tail_result.get("error") or not tail_result.get("klines"):
+        return None
+
+    merged = _merge_incremental_chan_result(
+        previous=previous,
+        tail_result=tail_result,
+        old_last_time=old_last_time,
+        requested_count=int(count or 0),
+        snapshot_context=snapshot_context,
+    )
+    if not merged:
+        return None
+
+    merged["cache"] = {
+        "hit": False,
+        "tier": "incremental_tail",
+        "ttl_seconds": DETAIL_CACHE_TTL_SECONDS,
+        "compute_ms": round((time.perf_counter() - started) * 1000),
+        "tail_bars": tail_bars,
+    }
+    merged["snapshot"] = {
+        "hit": False,
+        "source": "incremental_tail",
+        "previous_data_signature": previous_meta.get("data_signature"),
+        "data_signature": snapshot_context["data_signature"],
+        "last_kline_time": snapshot_context["last_kline_time"],
+        "kline_count": snapshot_context["kline_count"],
+        "tail_bars": tail_bars,
+    }
+    return merged
+
+
+def _merge_incremental_chan_result(
+    *,
+    previous: dict,
+    tail_result: dict,
+    old_last_time: str,
+    requested_count: int,
+    snapshot_context: dict,
+) -> Optional[dict]:
+    tail_klines = tail_result.get("klines") or []
+    tail_times = [str(item.get("time")) for item in tail_klines]
+    if old_last_time not in tail_times:
+        return None
+    cutoff_time = str(tail_klines[0].get("time") or "")
+    if not cutoff_time:
+        return None
+
+    previous_klines = previous.get("klines") or []
+    new_klines = [item for item in tail_klines if str(item.get("time")) > old_last_time]
+    klines = [*previous_klines, *new_klines]
+    if requested_count > 0:
+        klines = klines[-requested_count:]
+    if not klines:
+        return None
+    visible_cutoff = str(klines[0].get("time") or "")
+
+    def stable_by_end(items: list[dict], key: str) -> list[dict]:
+        return [item for item in (items or []) if str(item.get(key) or "") < cutoff_time]
+
+    bis = [
+        *stable_by_end(previous.get("bis") or [], "x1"),
+        *(tail_result.get("bis") or []),
+    ]
+    segs = [
+        *stable_by_end(previous.get("segs") or [], "x1"),
+        *(tail_result.get("segs") or []),
+    ]
+    bi_zhongshus = [
+        *stable_by_end(previous.get("bi_zhongshus") or [], "end_date"),
+        *(tail_result.get("bi_zhongshus") or []),
+    ]
+    bi_zhongshus_decomp = [
+        *stable_by_end(previous.get("bi_zhongshus_decomp") or [], "end_date"),
+        *(tail_result.get("bi_zhongshus_decomp") or tail_result.get("bi_zhongshus") or []),
+    ]
+    seg_zhongshus = [
+        *stable_by_end(previous.get("seg_zhongshus") or [], "end_date"),
+        *(tail_result.get("seg_zhongshus") or []),
+    ]
+    bsps = [
+        *stable_by_end(previous.get("bsps") or [], "time"),
+        *(tail_result.get("bsps") or []),
+    ]
+
+    bis = [item for item in bis if str(item.get("x1") or "") >= visible_cutoff]
+    segs = [item for item in segs if str(item.get("x1") or "") >= visible_cutoff]
+    bi_zhongshus = [item for item in bi_zhongshus if str(item.get("end_date") or "") >= visible_cutoff]
+    bi_zhongshus_decomp = [item for item in bi_zhongshus_decomp if str(item.get("end_date") or "") >= visible_cutoff]
+    seg_zhongshus = [item for item in seg_zhongshus if str(item.get("end_date") or "") >= visible_cutoff]
+    bsps = [item for item in bsps if str(item.get("time") or "") >= visible_cutoff]
+
+    macd = _merge_incremental_macd(previous.get("macd") or {}, tail_result.get("macd") or {}, old_last_time, requested_count)
+    if macd:
+        macd = _slice_macd_to_klines(macd, klines)
+
+    merged = {
+        **previous,
+        "symbol": snapshot_context["symbol"],
+        "freq": snapshot_context["freq"],
+        "compute_bars": _tail_recompute_bars(snapshot_context["freq"]),
+        "klines": klines,
+        "bis": bis,
+        "segs": segs,
+        "bi_zhongshus": bi_zhongshus,
+        "bi_zhongshus_decomp": bi_zhongshus_decomp,
+        "seg_zhongshus": seg_zhongshus,
+        "zhongshus": bi_zhongshus,
+        "bsps": bsps,
+        "macd": macd or previous.get("macd", {}),
+        "config": tail_result.get("config") or previous.get("config"),
+        "data_source": tail_result.get("data_source") or previous.get("data_source"),
+        "dataBadge": tail_result.get("dataBadge") or previous.get("dataBadge"),
+        "stats": {
+            "kline_count": len(klines),
+            "bi_count": len(bis),
+            "seg_count": len(segs),
+            "bi_zs_count": len(bi_zhongshus),
+            "bi_zs_decomp_count": len(bi_zhongshus_decomp),
+            "seg_zs_count": len(seg_zhongshus),
+            "bsp_count": len(bsps),
+            "computation_klines": len(tail_result.get("klines") or []),
+            "incremental_tail": True,
+        },
+    }
+    return merged if _validate_incremental_merge(merged) else None
+
+
+def _merge_incremental_macd(previous_macd: dict, tail_macd: dict, old_last_time: str, requested_count: int) -> dict:
+    previous_dates = [str(item) for item in previous_macd.get("dates") or []]
+    tail_dates = [str(item) for item in tail_macd.get("dates") or []]
+    if old_last_time not in tail_dates:
+        return previous_macd
+
+    append_indexes = [index for index, date in enumerate(tail_dates) if date > old_last_time]
+    merged = {}
+    for key in ("dif", "dea", "hist", "dates"):
+        previous_values = list(previous_macd.get(key) or [])
+        tail_values = list(tail_macd.get(key) or [])
+        append_values = [tail_values[index] for index in append_indexes if index < len(tail_values)]
+        values = [*previous_values, *append_values]
+        if requested_count > 0:
+            values = values[-requested_count:]
+        merged[key] = values
+    return merged
+
+
+def _slice_macd_to_klines(macd: dict, klines: list[dict]) -> dict:
+    dates = [str(item.get("time")) for item in klines]
+    if not dates or not macd.get("dates"):
+        return macd
+    index_by_date = {str(date): index for index, date in enumerate(macd.get("dates") or [])}
+    indexes = [index_by_date.get(date) for date in dates]
+    if any(index is None for index in indexes):
+        return macd
+    return {
+        key: [values[index] for index in indexes if index is not None and index < len(values)]
+        for key, values in macd.items()
+    }
+
+
+def _validate_incremental_merge(result: dict) -> bool:
+    klines = result.get("klines") or []
+    times = [str(item.get("time") or "") for item in klines]
+    if not times or len(times) != len(set(times)) or times != sorted(times):
+        return False
+    visible = set(times)
+
+    def refs_visible(items: list[dict], fields: tuple[str, ...]) -> bool:
+        for item in items or []:
+            for field in fields:
+                value = str(item.get(field) or "")
+                if value and value not in visible:
+                    return False
+        return True
+
+    def ordered_refs(items: list[dict], start_field: str, end_field: str) -> bool:
+        for item in items or []:
+            start = str(item.get(start_field) or "")
+            end = str(item.get(end_field) or "")
+            if not start or not end or start > end:
+                return False
+        return True
+
+    def unique_keys(items: list[dict], fields: tuple[str, ...]) -> bool:
+        keys = []
+        for item in items or []:
+            key = tuple(str(item.get(field) or "") for field in fields)
+            if any(key):
+                keys.append(key)
+        return len(keys) == len(set(keys))
+
+    checks = [
+        ordered_refs(result.get("bis") or [], "x0", "x1"),
+        ordered_refs(result.get("segs") or [], "x0", "x1"),
+        ordered_refs(result.get("bi_zhongshus") or [], "begin_date", "end_date"),
+        ordered_refs(result.get("bi_zhongshus_decomp") or [], "begin_date", "end_date"),
+        ordered_refs(result.get("seg_zhongshus") or [], "begin_date", "end_date"),
+        refs_visible(result.get("bis") or [], ("x1",)),
+        refs_visible(result.get("segs") or [], ("x1",)),
+        refs_visible(result.get("bi_zhongshus") or [], ("end_date",)),
+        refs_visible(result.get("bi_zhongshus_decomp") or [], ("end_date",)),
+        refs_visible(result.get("seg_zhongshus") or [], ("end_date",)),
+        refs_visible(result.get("bsps") or [], ("time",)),
+        unique_keys(result.get("bis") or [], ("x0", "x1", "y0", "y1")),
+        unique_keys(result.get("segs") or [], ("x0", "x1", "y0", "y1")),
+        unique_keys(result.get("bi_zhongshus") or [], ("begin_date", "end_date", "zg", "zd")),
+        unique_keys(result.get("bi_zhongshus_decomp") or [], ("begin_date", "end_date", "zg", "zd")),
+        unique_keys(result.get("seg_zhongshus") or [], ("begin_date", "end_date", "zg", "zd")),
+        unique_keys(result.get("bsps") or [], ("time", "price", "type", "is_buy")),
+    ]
+    if not all(checks):
+        return False
+
+    macd_dates = [str(item) for item in (result.get("macd") or {}).get("dates") or []]
+    if macd_dates and macd_dates != times:
+        return False
+    return True
+
+
+def _tail_recompute_bars(freq: str) -> int:
+    normalized = str(freq or "day").strip().lower()
+    if normalized.startswith("m") and normalized[1:].isdigit():
+        normalized = normalized[1:]
+    return TAIL_RECOMPUTE_BARS.get(normalized, 500)
+
+
+def _detail_cache_key(
+    symbol: str,
+    freq: str,
+    count: int,
+    end_date: Optional[str],
+    cchan_preset: str,
+    kline_source: Optional[str],
+    adjustflag: str,
+    max_compute_bars: Optional[int],
+) -> tuple:
+    return (
+        DETAIL_RESPONSE_SCHEMA_VERSION,
+        symbol,
+        freq,
+        int(count or 0),
+        end_date or "",
+        cchan_preset,
+        kline_source or "",
+        adjustflag,
+        int(max_compute_bars or 0),
+    )
+
+
+def _detail_cache_get(cache_key: tuple) -> Optional[dict]:
+    now = time.monotonic()
+    cached = _detail_cache.get(cache_key)
+    if not cached:
+        return None
+    if now - cached["cached_at"] >= DETAIL_CACHE_TTL_SECONDS:
+        _detail_cache.pop(cache_key, None)
+        return None
+    return copy.deepcopy(cached["result"])
+
+
+def _detail_cache_set(cache_key: tuple, result: dict) -> None:
+    _detail_cache[cache_key] = {
+        "cached_at": time.monotonic(),
+        "result": copy.deepcopy(result),
+    }
+    _trim_detail_cache(time.monotonic())
+
+
+def _trim_detail_cache(now: float) -> None:
+    expired = [
+        key for key, value in _detail_cache.items()
+        if now - value["cached_at"] >= DETAIL_CACHE_TTL_SECONDS
+    ]
+    for key in expired:
+        _detail_cache.pop(key, None)
+
+    while len(_detail_cache) > DETAIL_CACHE_MAX_ITEMS:
+        oldest_key = min(
+            _detail_cache,
+            key=lambda item: _detail_cache[item]["cached_at"],
+        )
+        _detail_cache.pop(oldest_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -547,11 +1510,7 @@ def _build_kline_units(symbol: str, freq: str,
     """从数据湖读取 K 线，返回 (units, ctime_to_date_str, rows)。"""
     rows = query_klines(symbol, freq, limit=max(count, 5000))
     if len(rows) < _MIN_KLINES:
-        try:
-            fetch_klines_quick(symbol, freq)
-            rows = query_klines(symbol, freq, limit=max(count, 5000))
-        except Exception as e:
-            logger.warning("BaoStock 拉取失败 %s/%s: %s", symbol, freq, e)
+        _schedule_background_fetch(symbol, freq, reason="multi_level_units_short_cache")
 
     units = []
     ctime_to_date_str = {}

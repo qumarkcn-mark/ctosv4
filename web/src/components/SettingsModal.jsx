@@ -3,16 +3,26 @@ import { API_BASE } from '../config.js'
 import DataLakePanel from './DataLakePanel.jsx'
 import './SettingsModal.css'
 
+const EXPERT_MODE_STORAGE_KEY = 'ctos.expert_mode'
+
 export default function SettingsModal({ onClose }) {
   const [activeTab, setActiveTab] = useState('settings') // 'settings' | 'lake'
   const [aiNativeProvider, setAiNativeProvider] = useState('deepseek')
   const [apiKey, setApiKey] = useState('')
+  const [hasDeepseekApiKey, setHasDeepseekApiKey] = useState(false)
+  const [qwenApiKey, setQwenApiKey] = useState('')
+  const [hasQwenApiKey, setHasQwenApiKey] = useState(false)
+  const [qwenBaseUrl, setQwenBaseUrl] = useState('https://dashscope.aliyuncs.com/compatible-mode/v1')
+  const [qwenTradeParseModel, setQwenTradeParseModel] = useState('qwen-flash')
+  const [qwenScreenshotOcrModel, setQwenScreenshotOcrModel] = useState('qwen-vl-ocr-latest')
   const [geminiApiKey, setGeminiApiKey] = useState('')
+  const [hasGeminiApiKey, setHasGeminiApiKey] = useState(false)
   const [geminiModel, setGeminiModel] = useState('gemini-2.5-pro')
   const [geminiBaseUrl, setGeminiBaseUrl] = useState('https://generativelanguage.googleapis.com/v1beta/openai/')
   const [aiNativeModel, setAiNativeModel] = useState('')
   const [aiNativeThinkingEnabled, setAiNativeThinkingEnabled] = useState(true)
   const [aiNativeReasoningEffort, setAiNativeReasoningEffort] = useState('high')
+  const [expertMode, setExpertMode] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
@@ -24,8 +34,12 @@ export default function SettingsModal({ onClose }) {
       .then(data => {
         const settings = data.settings || {}
         if (settings.ai_native_radar_provider) setAiNativeProvider(settings.ai_native_radar_provider)
-        if (settings.deepseek_api_key) setApiKey(settings.deepseek_api_key)
-        if (settings.gemini_api_key) setGeminiApiKey(settings.gemini_api_key)
+        if (settings.deepseek_api_key_configured) setHasDeepseekApiKey(true)
+        if (settings.qwen_api_key_configured) setHasQwenApiKey(true)
+        if (settings.qwen_base_url) setQwenBaseUrl(settings.qwen_base_url)
+        if (settings.qwen_trade_parse_model) setQwenTradeParseModel(settings.qwen_trade_parse_model)
+        if (settings.qwen_screenshot_ocr_model) setQwenScreenshotOcrModel(settings.qwen_screenshot_ocr_model)
+        if (settings.gemini_api_key_configured) setHasGeminiApiKey(true)
         if (settings.gemini_model) setGeminiModel(settings.gemini_model)
         if (settings.gemini_base_url) setGeminiBaseUrl(settings.gemini_base_url)
         if (settings.ai_native_radar_model) setAiNativeModel(settings.ai_native_radar_model)
@@ -33,6 +47,10 @@ export default function SettingsModal({ onClose }) {
           setAiNativeThinkingEnabled(settings.ai_native_radar_thinking_enabled)
         }
         if (settings.ai_native_radar_reasoning_effort) setAiNativeReasoningEffort(settings.ai_native_radar_reasoning_effort)
+        if (typeof settings.expert_mode === 'boolean') {
+          setExpertMode(settings.expert_mode)
+          writeExpertModePreference(settings.expert_mode)
+        }
       })
       .catch(e => console.error(e))
       .finally(() => setLoading(false))
@@ -42,25 +60,34 @@ export default function SettingsModal({ onClose }) {
     setSaving(true)
     setMessage(null)
     try {
+      const nextSettings = {
+        ai_native_radar_provider: aiNativeProvider,
+        gemini_model: geminiModel.trim(),
+        gemini_base_url: geminiBaseUrl.trim(),
+        ai_native_radar_model: aiNativeModel.trim(),
+        ai_native_radar_thinking_enabled: aiNativeThinkingEnabled,
+        ai_native_radar_reasoning_effort: aiNativeReasoningEffort,
+        qwen_base_url: qwenBaseUrl.trim(),
+        qwen_trade_parse_model: qwenTradeParseModel.trim(),
+        qwen_screenshot_ocr_model: qwenScreenshotOcrModel.trim(),
+        expert_mode: expertMode
+      }
+      if (apiKey.trim()) nextSettings.deepseek_api_key = apiKey.trim()
+      if (qwenApiKey.trim()) nextSettings.qwen_api_key = qwenApiKey.trim()
+      if (geminiApiKey.trim()) nextSettings.gemini_api_key = geminiApiKey.trim()
+
       const res = await fetch(`${API_BASE}/auth/user/1/settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          settings: {
-            ai_native_radar_provider: aiNativeProvider,
-            deepseek_api_key: apiKey,
-            gemini_api_key: geminiApiKey,
-            gemini_model: geminiModel.trim(),
-            gemini_base_url: geminiBaseUrl.trim(),
-            ai_native_radar_model: aiNativeModel.trim(),
-            ai_native_radar_thinking_enabled: aiNativeThinkingEnabled,
-            ai_native_radar_reasoning_effort: aiNativeReasoningEffort
-          }
+          settings: nextSettings
         })
       })
       if (!res.ok) throw new Error('保存失败')
+      writeExpertModePreference(expertMode)
+      window.dispatchEvent(new CustomEvent('ctos:expert-mode-change', { detail: { expertMode } }))
       setMessage({ type: 'success', text: '保存成功！' })
       setTimeout(() => onClose(), 1500)
     } catch (e) {
@@ -103,6 +130,19 @@ export default function SettingsModal({ onClose }) {
               ) : (
                 <div className="settings-form">
                   <div className="form-group">
+                    <label>雷达显示模式</label>
+                    <label className="settings-switch settings-switch-block">
+                      <input
+                        type="checkbox"
+                        checked={expertMode}
+                        onChange={(e) => setExpertMode(e.target.checked)}
+                      />
+                      <span>专家模式：优先显示语义短码和缠论术语</span>
+                    </label>
+                    <small className="form-hint">关闭时仍保留短码，但优先展示自然语言操作指令。</small>
+                  </div>
+
+                  <div className="form-group">
                     <label>AI Native 模型供应商</label>
                     <div className="settings-segmented" role="tablist" aria-label="AI Native provider">
                       <button
@@ -129,10 +169,61 @@ export default function SettingsModal({ onClose }) {
                       type="password"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-..." 
+                      placeholder={hasDeepseekApiKey ? '已设置，留空则不修改' : 'sk-...'}
                       className="input mono"
+                      autoComplete="new-password"
                     />
                     <small className="form-hint">此密钥将安全保存在本地用户的独立设定区中，用于支撑 Agent 引擎推演计算。</small>
+                  </div>
+
+                  <div className="settings-provider-panel">
+                    <div className="form-group">
+                      <label>Qwen API Key</label>
+                      <input
+                        type="password"
+                        value={qwenApiKey}
+                        onChange={(e) => setQwenApiKey(e.target.value)}
+                        placeholder={hasQwenApiKey ? '已设置，留空则不修改' : 'sk-...'}
+                        className="input mono"
+                        autoComplete="new-password"
+                      />
+                      <small className="form-hint">用于交易文本解析和同花顺截图 OCR；AI 推理仍使用 DeepSeek。</small>
+                    </div>
+
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>交易解析模型</label>
+                        <input
+                          type="text"
+                          value={qwenTradeParseModel}
+                          onChange={(e) => setQwenTradeParseModel(e.target.value)}
+                          placeholder="qwen-flash"
+                          className="input mono"
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>截图 OCR 模型</label>
+                        <input
+                          type="text"
+                          value={qwenScreenshotOcrModel}
+                          onChange={(e) => setQwenScreenshotOcrModel(e.target.value)}
+                          placeholder="qwen-vl-ocr-latest"
+                          className="input mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="form-group settings-inline-url">
+                      <label>Qwen Base URL</label>
+                      <input
+                        type="text"
+                        value={qwenBaseUrl}
+                        onChange={(e) => setQwenBaseUrl(e.target.value)}
+                        placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                        className="input mono"
+                      />
+                      <small className="form-hint">后台只允许官方 DashScope OpenAI-compatible endpoint。</small>
+                    </div>
                   </div>
 
                   <div className="settings-provider-panel">
@@ -142,8 +233,9 @@ export default function SettingsModal({ onClose }) {
                         type="password"
                         value={geminiApiKey}
                         onChange={(e) => setGeminiApiKey(e.target.value)}
-                        placeholder="AIza..."
+                        placeholder={hasGeminiApiKey ? '已设置，留空则不修改' : 'AIza...'}
                         className="input mono"
+                        autoComplete="new-password"
                       />
                       <small className="form-hint">用于 Google Gemini OpenAI-compatible Chat Completions。</small>
                     </div>
@@ -233,4 +325,12 @@ export default function SettingsModal({ onClose }) {
       </div>
     </div>
   )
+}
+
+function writeExpertModePreference(enabled) {
+  try {
+    localStorage.setItem(EXPERT_MODE_STORAGE_KEY, enabled ? 'true' : 'false')
+  } catch {
+    // localStorage 只是前端即时偏好缓存，后端 settings_json 仍是持久来源。
+  }
 }

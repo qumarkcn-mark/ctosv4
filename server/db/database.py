@@ -27,6 +27,13 @@ ALERT_TYPES = (
     "SCANNER_TOP_CANDIDATE",
 )
 
+TRADE_SOURCES = (
+    "VOICE",
+    "MANUAL",
+    "CSV_IMPORT",
+    "THS_DAILY_SUMMARY_SCREENSHOT",
+)
+
 SCHEMA = """
 -- 用户 (微信 OAuth)
 CREATE TABLE IF NOT EXISTS users (
@@ -54,13 +61,57 @@ CREATE TABLE IF NOT EXISTS trades (
         ('CHAN_SIGNAL', 'FRIEND_TIP', 'FEELING', 'OTHER')),
     trend_direction TEXT,
     source TEXT DEFAULT 'MANUAL' CHECK(source IN
-        ('VOICE', 'MANUAL', 'CSV_IMPORT')),
+        ('VOICE', 'MANUAL', 'CSV_IMPORT', 'THS_DAILY_SUMMARY_SCREENSHOT')),
+    broker TEXT,
+    is_aggregated INTEGER DEFAULT 0,
+    import_batch_id TEXT,
+    import_draft_id INTEGER,
     playbook_item_id INTEGER,
     plan_relationship TEXT DEFAULT 'UNKNOWN',
     discipline_tag TEXT,
     coach_event_id TEXT,
     traded_at DATETIME NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 交易截图导入批次。AI 只写草稿，确认后才进入 trades。
+CREATE TABLE IF NOT EXISTS trade_import_batches (
+    batch_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    broker TEXT NOT NULL,
+    import_type TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    image_path TEXT,
+    image_sha256 TEXT,
+    raw_vision_json TEXT DEFAULT '{}',
+    error_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS trade_import_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT NOT NULL REFERENCES trade_import_batches(batch_id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    row_index INTEGER NOT NULL,
+    symbol TEXT,
+    name TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('BUY', 'SELL')),
+    price REAL NOT NULL,
+    quantity INTEGER NOT NULL,
+    amount REAL,
+    confidence REAL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    warnings_json TEXT DEFAULT '[]',
+    raw_text TEXT,
+    row_fingerprint TEXT NOT NULL,
+    matched_candidates_json TEXT DEFAULT '[]',
+    duplicate_ack INTEGER DEFAULT 0,
+    trade_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(batch_id, row_fingerprint)
 );
 
 -- 实时持仓 (由 trades 聚合计算)
@@ -160,6 +211,84 @@ CREATE TABLE IF NOT EXISTS ai_reasoning_runs (
     outcome_json TEXT,
     disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议'
 );
+
+-- Structure Kernel 确定性结构事实缓存。P1: 让 Radar/Kline/AI Native 共用同一套结构事实。
+CREATE TABLE IF NOT EXISTS structure_kernel_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+    data_signature TEXT NOT NULL,
+    structure_fingerprint TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    UNIQUE(symbol, profile, cchan_preset, data_signature)
+);
+
+-- Kline 缠论结构快照：重复打开同一股票/级别时直接复用已确认结构。
+CREATE TABLE IF NOT EXISTS chan_structure_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    freq TEXT NOT NULL,
+    cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+    kline_source TEXT NOT NULL DEFAULT '',
+    adjustflag TEXT NOT NULL DEFAULT '2',
+    end_date TEXT NOT NULL DEFAULT '',
+    max_compute_bars INTEGER NOT NULL DEFAULT 0,
+    compute_bars INTEGER NOT NULL DEFAULT 0,
+    last_kline_time TEXT NOT NULL,
+    kline_count INTEGER NOT NULL,
+    data_signature TEXT NOT NULL,
+    structure_fingerprint TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    structure_key_hash TEXT DEFAULT '',
+    compute_profile TEXT DEFAULT '',
+    engine_version TEXT DEFAULT '',
+    adapter_version TEXT DEFAULT '',
+    payload_kind TEXT DEFAULT 'full_geometry',
+    payload_uri TEXT DEFAULT '',
+    compressed_size_bytes INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(symbol, freq, cchan_preset, kline_source, adjustflag, end_date, max_compute_bars, data_signature)
+);
+
+CREATE TABLE IF NOT EXISTS structure_compute_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL UNIQUE,
+    structure_key TEXT NOT NULL,
+    structure_key_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    freq TEXT NOT NULL,
+    cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+    compute_profile TEXT NOT NULL DEFAULT 'chart_standard_v1',
+    kline_source TEXT NOT NULL DEFAULT 'baostock',
+    adjustflag TEXT NOT NULL DEFAULT '2',
+    data_signature TEXT NOT NULL,
+    source_role TEXT NOT NULL DEFAULT 'formal_structure',
+    priority INTEGER NOT NULL DEFAULT 50,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    reason TEXT NOT NULL DEFAULT '',
+    requested_by_user_id INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    next_run_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    locked_by TEXT NOT NULL DEFAULT '',
+    locked_at TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    result_fingerprint TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(structure_key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_structure_jobs_pick
+ON structure_compute_jobs(status, next_run_at, priority DESC, created_at);
+CREATE INDEX IF NOT EXISTS idx_structure_jobs_symbol
+ON structure_compute_jobs(symbol, freq, status, updated_at DESC);
 
 -- AI Stop/Reduce Shadow Training V1：止损/减仓影子训练闭环
 CREATE TABLE IF NOT EXISTS ai_rebalance_runs (
@@ -348,6 +477,12 @@ CREATE TABLE IF NOT EXISTS portfolio_strategies (
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, traded_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_import_draft_unique
+    ON trades(user_id, import_draft_id)
+    WHERE import_draft_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_trade_import_batches_user ON trade_import_batches(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_trade_import_drafts_batch ON trade_import_drafts(batch_id, status);
+CREATE INDEX IF NOT EXISTS idx_trade_import_drafts_fingerprint ON trade_import_drafts(user_id, row_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, is_triggered);
 CREATE INDEX IF NOT EXISTS idx_radar_deductions_user ON radar_deductions(user_id, symbol);
@@ -662,6 +797,10 @@ def run_migrations(conn: sqlite3.Connection):
         "ALTER TABLE trades ADD COLUMN plan_relationship TEXT DEFAULT 'UNKNOWN'",
         "ALTER TABLE trades ADD COLUMN discipline_tag TEXT",
         "ALTER TABLE trades ADD COLUMN coach_event_id TEXT",
+        "ALTER TABLE trades ADD COLUMN broker TEXT",
+        "ALTER TABLE trades ADD COLUMN is_aggregated INTEGER DEFAULT 0",
+        "ALTER TABLE trades ADD COLUMN import_batch_id TEXT",
+        "ALTER TABLE trades ADD COLUMN import_draft_id INTEGER",
         # 迁移 M011：daily_playbook_items 记录候选来源，用于作战台和复盘链路
         "ALTER TABLE daily_playbook_items ADD COLUMN source TEXT",
         "ALTER TABLE daily_playbook_items ADD COLUMN source_json TEXT",
@@ -732,6 +871,56 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_coach_events_symbol ON coach_events(symbol, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_strategy_triggers_user ON strategy_triggers(user_id, strategy_id, triggered_at)",
         "CREATE INDEX IF NOT EXISTS idx_alert_deliveries_event ON alert_deliveries(event_id)",
+        """
+        CREATE TABLE IF NOT EXISTS trade_import_batches (
+            batch_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            broker TEXT NOT NULL,
+            import_type TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            image_path TEXT,
+            image_sha256 TEXT,
+            raw_vision_json TEXT DEFAULT '{}',
+            error_message TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            confirmed_at DATETIME
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS trade_import_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL REFERENCES trade_import_batches(batch_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            row_index INTEGER NOT NULL,
+            symbol TEXT,
+            name TEXT NOT NULL,
+            direction TEXT NOT NULL CHECK(direction IN ('BUY', 'SELL')),
+            price REAL NOT NULL,
+            quantity INTEGER NOT NULL,
+            amount REAL,
+            confidence REAL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'DRAFT',
+            warnings_json TEXT DEFAULT '[]',
+            raw_text TEXT,
+            row_fingerprint TEXT NOT NULL,
+            matched_candidates_json TEXT DEFAULT '[]',
+            duplicate_ack INTEGER DEFAULT 0,
+            trade_id INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(batch_id, row_fingerprint)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_trades_import_batch ON trades(user_id, import_batch_id)",
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_import_draft_unique
+        ON trades(user_id, import_draft_id)
+        WHERE import_draft_id IS NOT NULL
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_trade_import_batches_user ON trade_import_batches(user_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_trade_import_drafts_batch ON trade_import_drafts(batch_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_trade_import_drafts_fingerprint ON trade_import_drafts(user_id, row_fingerprint)",
         # 迁移 M010：今日作战台
         """
         CREATE TABLE IF NOT EXISTS daily_playbooks (
@@ -920,6 +1109,91 @@ def run_migrations(conn: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_symbol_created ON ai_reasoning_runs(symbol, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_fingerprint ON ai_reasoning_runs(structure_fingerprint)",
         "CREATE INDEX IF NOT EXISTS idx_ai_reasoning_runs_replay ON ai_reasoning_runs(user_id, replay_status, created_at DESC)",
+        # 迁移 M013b：Structure Kernel 持久缓存
+        """
+        CREATE TABLE IF NOT EXISTS structure_kernel_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+            data_signature TEXT NOT NULL,
+            structure_fingerprint TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            UNIQUE(symbol, profile, cchan_preset, data_signature)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_structure_kernel_cache_lookup ON structure_kernel_cache(symbol, profile, cchan_preset, data_signature, expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_structure_kernel_cache_fingerprint ON structure_kernel_cache(structure_fingerprint)",
+        # 迁移 M013c：Kline 缠论结构持久快照
+        """
+        CREATE TABLE IF NOT EXISTS chan_structure_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            freq TEXT NOT NULL,
+            cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+            kline_source TEXT NOT NULL DEFAULT '',
+            adjustflag TEXT NOT NULL DEFAULT '2',
+            end_date TEXT NOT NULL DEFAULT '',
+            max_compute_bars INTEGER NOT NULL DEFAULT 0,
+            compute_bars INTEGER NOT NULL DEFAULT 0,
+            last_kline_time TEXT NOT NULL,
+            kline_count INTEGER NOT NULL,
+            data_signature TEXT NOT NULL,
+            structure_fingerprint TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, freq, cchan_preset, kline_source, adjustflag, end_date, max_compute_bars, data_signature)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_chan_structure_snapshots_lookup ON chan_structure_snapshots(symbol, freq, cchan_preset, kline_source, adjustflag, data_signature)",
+        "CREATE INDEX IF NOT EXISTS idx_chan_structure_snapshots_updated ON chan_structure_snapshots(updated_at DESC)",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN structure_key_hash TEXT DEFAULT ''",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN compute_profile TEXT DEFAULT ''",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN engine_version TEXT DEFAULT ''",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN adapter_version TEXT DEFAULT ''",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN payload_kind TEXT DEFAULT 'full_geometry'",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN payload_uri TEXT DEFAULT ''",
+        "ALTER TABLE chan_structure_snapshots ADD COLUMN compressed_size_bytes INTEGER DEFAULT 0",
+        "CREATE INDEX IF NOT EXISTS idx_chan_structure_snapshots_key_hash ON chan_structure_snapshots(structure_key_hash)",
+        # 迁移 M013d：结构计算任务队列
+        """
+        CREATE TABLE IF NOT EXISTS structure_compute_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            structure_key TEXT NOT NULL,
+            structure_key_hash TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            freq TEXT NOT NULL,
+            cchan_preset TEXT NOT NULL DEFAULT 'live_tolerant',
+            compute_profile TEXT NOT NULL DEFAULT 'chart_standard_v1',
+            kline_source TEXT NOT NULL DEFAULT 'baostock',
+            adjustflag TEXT NOT NULL DEFAULT '2',
+            data_signature TEXT NOT NULL,
+            source_role TEXT NOT NULL DEFAULT 'formal_structure',
+            priority INTEGER NOT NULL DEFAULT 50,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            reason TEXT NOT NULL DEFAULT '',
+            requested_by_user_id INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 3,
+            next_run_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            locked_by TEXT NOT NULL DEFAULT '',
+            locked_at TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            result_fingerprint TEXT NOT NULL DEFAULT '',
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(structure_key_hash)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_structure_jobs_pick ON structure_compute_jobs(status, next_run_at, priority DESC, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_structure_jobs_symbol ON structure_compute_jobs(symbol, freq, status, updated_at DESC)",
         # 迁移 M014：AI Stop/Reduce Shadow Training V1
         """
         CREATE TABLE IF NOT EXISTS ai_rebalance_runs (
@@ -1084,8 +1358,112 @@ def run_migrations(conn: sqlite3.Connection):
             else:
                 logger.warning("[迁移] 忽略异常: %s — %s", sql[:60], e)
     conn.commit()
+    migrate_trade_source_check(conn)
+    conn.commit()
     migrate_alert_type_check(conn)
     conn.commit()
+
+
+def migrate_trade_source_check(conn: sqlite3.Connection):
+    """修复 trades.source CHECK 约束漂移。
+
+    SQLite 不能直接修改 CHECK；截图导入新增 source 时必须重建 trades 表。
+    """
+    table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table:
+        return
+
+    desired_columns = {
+        "broker": "TEXT",
+        "is_aggregated": "INTEGER DEFAULT 0",
+        "import_batch_id": "TEXT",
+        "import_draft_id": "INTEGER",
+    }
+    existing_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    for column_name, column_type in desired_columns.items():
+        if column_name not in existing_columns:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {column_name} {column_type}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    create_sql = row["sql"] if row else ""
+    if all(source in create_sql for source in TRADE_SOURCES):
+        return
+
+    logger.info("[迁移] trades.source CHECK 约束需要重建")
+    allowed = ", ".join(f"'{source}'" for source in TRADE_SOURCES)
+
+    columns = [
+        ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"),
+        ("user_id", "INTEGER NOT NULL REFERENCES users(id)"),
+        ("symbol", "TEXT NOT NULL"),
+        ("name", "TEXT"),
+        ("direction", "TEXT NOT NULL CHECK(direction IN ('BUY', 'SELL'))"),
+        ("price", "REAL NOT NULL"),
+        ("quantity", "INTEGER NOT NULL"),
+        ("amount", "REAL NOT NULL"),
+        ("stop_loss_price", "REAL"),
+        ("reason_text", "TEXT"),
+        ("reason_category", "TEXT CHECK(reason_category IN ('CHAN_SIGNAL', 'FRIEND_TIP', 'FEELING', 'OTHER'))"),
+        ("trend_direction", "TEXT"),
+        ("source", f"TEXT DEFAULT 'MANUAL' CHECK(source IN ({allowed}))"),
+        ("broker", "TEXT"),
+        ("is_aggregated", "INTEGER DEFAULT 0"),
+        ("import_batch_id", "TEXT"),
+        ("import_draft_id", "INTEGER"),
+        ("playbook_item_id", "INTEGER"),
+        ("plan_relationship", "TEXT DEFAULT 'UNKNOWN'"),
+        ("discipline_tag", "TEXT"),
+        ("coach_event_id", "TEXT"),
+        ("traded_at", "DATETIME NOT NULL"),
+        ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+    ]
+
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE trades RENAME TO trades_old")
+        conn.execute(
+            "CREATE TABLE trades ("
+            + ", ".join(f"{name} {definition}" for name, definition in columns)
+            + ")"
+        )
+        old_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trades_old)").fetchall()
+        }
+        copy_columns = [name for name, _ in columns if name in old_columns]
+        conn.execute(
+            f"""
+            INSERT INTO trades ({", ".join(copy_columns)})
+            SELECT {", ".join(copy_columns)}
+            FROM trades_old
+            """
+        )
+        conn.execute("DROP TABLE trades_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, traded_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_import_batch ON trades(user_id, import_batch_id)")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_import_draft_unique
+            ON trades(user_id, import_draft_id)
+            WHERE import_draft_id IS NOT NULL
+            """
+        )
+        conn.commit()
+        logger.info("[迁移] trades.source CHECK 约束重建完成")
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def migrate_alert_type_check(conn: sqlite3.Connection):

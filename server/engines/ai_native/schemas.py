@@ -215,6 +215,7 @@ class StructureTranscript(BaseModel):
     position_context: Optional[PositionContext] = None
     market_context: Optional[str] = None
     reasoning_evidence_pack: dict = Field(default_factory=dict)
+    signal_v2: dict = Field(default_factory=dict)
     allowed_prices: list[AllowedPrice] = Field(default_factory=list)
     stale: bool = False
     disclaimer: str = DISCLAIMER
@@ -267,7 +268,7 @@ class AIReasoningOutput(BaseModel):
 class GateViolation(BaseModel):
     code: str
     message: str
-    severity: Literal["REWRITE", "FALLBACK"]
+    severity: Literal["WARN", "REWRITE", "FALLBACK"]
     evidence: list[str] = Field(default_factory=list)
 
 

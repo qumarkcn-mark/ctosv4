@@ -22,6 +22,35 @@ Market data lakes are shared market facts.
 
 User facts and product state must live in `ctos.db`.
 
+## Local Lake Layout
+
+The active K-line cache is physically split by source. Do not reintroduce a single
+mixed `kline_lake.db` as an active source.
+
+| Lake | Active | Contents | Reader contract |
+|---|---:|---|---|
+| `data/tdx_lake.db` | Yes | Full-market daily bars, `freq=day`, `adjustflag=3` | Scanner, broad market filters, AI Native candidate discovery |
+| `data/baostock_lake.db` | Yes | BaoStock `week/day/60/30/15/5`, usually `adjustflag=2` | Chan, Radar, AI Native structure reasoning |
+| `data/qmt_lake.db` | Yes | QMT closed realtime bars, unadjusted | Intraday preview/private workstation context |
+| `data/kline_lake.db` | No | Legacy mixed lake from the old architecture | Cleanup candidate after split verification |
+| `data/corrupt-backups/*` | No | Malformed or quarantined historical DB files | Delete/archive only, never read in production |
+
+Operational status endpoint:
+
+```text
+GET /api/data/lake/status
+```
+
+The endpoint is read-only. It reports each active lake path, disk size, row count,
+symbol count, date range, frequency distribution, legacy lake presence, and any
+files still left in `data/corrupt-backups`.
+
+Cleanup rule:
+
+- Delete `data/corrupt-backups/*` after confirming it is not in the active code path.
+- Keep `data/kline_lake.db` only during the migration window; remove it once frontend K-line display, scanner, Radar, and AI Native checks all pass against split lakes.
+- Never write new data into `data/kline_lake.db`.
+
 ## Symbol Format
 
 Internal canonical symbol:
@@ -174,6 +203,43 @@ Radar response should expose:
   }
 }
 ```
+
+## Watchlist Data Lifecycle
+
+Adding a symbol to watchlist is also a market-data subscription intent.
+
+Write path:
+
+```text
+POST /api/watchlist/groups/{group_name}/stocks
+  -> write watchlist_items
+  -> queue BaoStock background backfill for that symbol
+  -> return immediately with data_sync.status = queued
+```
+
+Backfill order:
+
+```text
+1. quick day
+2. quick 5m
+3. full day / 60 / 30 / 15 / 5
+```
+
+The quick stage exists only to make the frontend responsive. The full stage writes
+`kline_sync_meta`, which puts the symbol into the long-term incremental sync set.
+
+Worker tracking set:
+
+```text
+kline_sync_meta symbols
++ open positions
++ watchlist_items
+```
+
+This means a watchlist symbol stays fresh even if the user has no position yet.
+After 17:30 the worker refreshes daily bars; after 20:30 it refreshes all BaoStock
+levels. BaoStock failures must surface as freshness/error state, not as a fake
+successful formal structure.
 
 ## Real-Time Preview Contract
 

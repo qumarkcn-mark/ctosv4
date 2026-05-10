@@ -4,11 +4,17 @@ import json
 import os
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.services.chan_scanner import ScanResult
-from server.workers.scanner import notify_scanner_top_candidates, upsert_scan_result
+from server.workers import scanner
+from server.workers.scanner import (
+    enqueue_structure_jobs_for_scan_candidates,
+    notify_scanner_top_candidates,
+    upsert_scan_result,
+)
 
 
 def make_scanner_push_conn():
@@ -118,6 +124,7 @@ def test_notify_scanner_top_candidates_creates_alert_and_event_once():
     assert alert["alert_type"] == "SCANNER_TOP_CANDIDATE"
     assert alert["strategy_id"] == "war2_trend_step"
     assert "仅供参考" in alert["message"]
+    assert "d1_zs_above_breakout_medium" in alert["message"]
 
     contract = json.loads(alert["strategy_contract"])
     assert contract["strategy_id"] == "war2_trend_step"
@@ -127,6 +134,38 @@ def test_notify_scanner_top_candidates_creates_alert_and_event_once():
     assert event["event_type"] == "ALERT_CANDIDATE_CREATED"
     assert event["source"] == "scanner_worker"
     assert delivery["delivery_status"] == "CREATED"
+    evidence = json.loads(event["evidence_json"])
+    assert evidence["signal_code"] == "d1_zs_above_breakout_medium"
+    assert evidence["signal_context"]["risk_reward_ratio"] == 2.1
+
+
+def test_enqueue_structure_jobs_for_scan_candidates_low_priority(monkeypatch):
+    built = []
+    enqueued = []
+
+    def fake_build_formal_structure_key(symbol, freq, **kwargs):
+        built.append((symbol, freq))
+        return SimpleNamespace(symbol=f"bs.{symbol}", freq=freq, hash=f"hash-{symbol}-{freq}"), {}
+
+    def fake_enqueue_structure_job(structure_key, **kwargs):
+        enqueued.append((structure_key.symbol, structure_key.freq, kwargs))
+        return {
+            "status": "PENDING",
+            "job_id": f"job-{structure_key.freq}",
+            "enqueued": True,
+            "bumped": False,
+        }
+
+    monkeypatch.setattr(scanner, "build_formal_structure_key", fake_build_formal_structure_key)
+    monkeypatch.setattr(scanner, "enqueue_structure_job", fake_enqueue_structure_job)
+
+    result = enqueue_structure_jobs_for_scan_candidates(["sz000001", "sz000001"], priority=25)
+
+    assert result["count"] == 3
+    assert built == [("sz000001", "day"), ("sz000001", "30"), ("sz000001", "5")]
+    assert [item[1] for item in enqueued] == ["day", "30", "5"]
+    assert all(item[2]["priority"] == 25 for item in enqueued)
+    assert all(item[2]["reason"] == "scanner_candidate" for item in enqueued)
 
 
 def test_upsert_scan_result_preserves_ready_status_without_force():

@@ -6,23 +6,28 @@ const POLL_INTERVAL_MS = 120_000
 const REQUEST_TIMEOUT_MS = 75_000
 const radarRequests = new Map()
 
-async function loadRadar(symbol, refreshToken = 0) {
-  const requestKey = `${symbol}:${refreshToken}`
+async function loadRadar(symbol, refreshToken = 0, profile = 'auto') {
+  const safeProfile = ['auto', 'fast', 'full'].includes(profile) ? profile : 'auto'
+  const requestKey = `${symbol}:${refreshToken}:${safeProfile}`
   const cached = radarRequests.get(requestKey)
   if (cached) return cached
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  const request = fetch(`${API_BASE}/radar/${symbol}?user_id=1`, {
+  const request = fetch(`${API_BASE}/radar/${symbol}?user_id=1&profile=${safeProfile}`, {
     signal: controller.signal,
   })
     .then(async (res) => {
-      const json = await res.json()
-      if (!res.ok || json.status !== 'success') {
-        const message = json?.data?.error?.message || `Radar 请求失败 ${res.status}`
+      const json = await readJsonResponse(res)
+      const message = json?.data?.error?.message || json?.detail || json?.message || `Radar 请求失败 ${res.status}`
+      if (!res.ok || (json.status !== 'success' && !json.data)) {
         throw new Error(message)
       }
-      return adaptRadarContract(json.data)
+      const adapted = adaptRadarContract(json.data)
+      if (json.status !== 'success') {
+        adapted.loadWarning = message
+      }
+      return adapted
     })
     .finally(() => {
       clearTimeout(timeout)
@@ -33,13 +38,28 @@ async function loadRadar(symbol, refreshToken = 0) {
   return request
 }
 
+async function readJsonResponse(res) {
+  const text = await res.text()
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch {
+    return {
+      status: 'error',
+      message: text.slice(0, 160) || `请求失败 ${res.status}`,
+    }
+  }
+}
+
 export function useRadarData(symbol, refreshToken = 0) {
   const [radar, setRadar] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [profile, setProfile] = useState('auto')
   const pollRef = useRef(null)
   const mountedRef = useRef(true)
   const requestSeqRef = useRef(0)
+  const baseKeyRef = useRef('')
 
   const fetchRadar = useCallback(async ({ silent = false } = {}) => {
     if (!symbol) return
@@ -48,9 +68,10 @@ export function useRadarData(symbol, refreshToken = 0) {
     if (!silent) setLoading(true)
     setError('')
     try {
-      const nextRadar = await loadRadar(symbol, refreshToken)
+      const nextRadar = await loadRadar(symbol, refreshToken, profile)
       if (mountedRef.current && requestSeqRef.current === requestSeq) {
         setRadar(nextRadar)
+        setError(nextRadar.loadWarning || '')
       }
     } catch (err) {
       const message = err?.name === 'AbortError'
@@ -64,11 +85,15 @@ export function useRadarData(symbol, refreshToken = 0) {
         setLoading(false)
       }
     }
-  }, [symbol, refreshToken])
+  }, [symbol, refreshToken, profile])
 
   useEffect(() => {
     mountedRef.current = true
-    setRadar(null)
+    const nextBaseKey = `${symbol || ''}:${refreshToken}`
+    if (baseKeyRef.current !== nextBaseKey) {
+      baseKeyRef.current = nextBaseKey
+      setRadar(null)
+    }
     setError('')
     fetchRadar({ silent: false })
     pollRef.current = setInterval(() => {
@@ -84,6 +109,8 @@ export function useRadarData(symbol, refreshToken = 0) {
     radar,
     loading,
     error,
+    profile,
+    setProfile,
     refresh: () => fetchRadar({ silent: false }),
   }
 }

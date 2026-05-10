@@ -134,3 +134,40 @@ def test_concurrent_upserts_to_same_lake_are_serialized(monkeypatch, tmp_path):
     conn = kline_lake.get_lake_connection("baostock")
     count = conn.execute("SELECT COUNT(*) FROM klines WHERE freq='30'").fetchone()[0]
     assert count == 16
+
+
+def test_lake_status_reports_split_lakes_and_cleanup_candidates(monkeypatch, tmp_path):
+    reset_lake_paths(monkeypatch, tmp_path)
+
+    legacy = tmp_path / "kline_lake.db"
+    legacy.write_bytes(b"legacy")
+    corrupt_dir = tmp_path / "corrupt-backups"
+    corrupt_dir.mkdir()
+    (corrupt_dir / "bad.db").write_bytes(b"bad")
+
+    kline_lake.upsert_klines(
+        "sh.600519",
+        "day",
+        [{"date": "2026-04-30", "open": 10, "high": 11, "low": 9, "close": 10.5}],
+        adjustflag="3",
+        source="tdx",
+    )
+    kline_lake.upsert_klines(
+        "sh.600519",
+        "5",
+        [{"date": "2026-04-30 09:35:00", "open": 10, "high": 11, "low": 9, "close": 10.5}],
+        adjustflag="2",
+        source="baostock",
+    )
+
+    status = kline_lake.lake_status()
+    sources = {item["source"]: item for item in status["sources"]}
+
+    assert status["status"] == "ok"
+    assert sources["tdx"]["rows"] == 1
+    assert sources["tdx"]["role"] == "full_market_daily_fact"
+    assert sources["baostock"]["freqs"][0]["freq"] == "5"
+    assert sources["qmt"]["health"] == "ok"
+    assert status["legacy"]["exists"] is True
+    assert status["legacy"]["active"] is False
+    assert status["corrupt_backups"]["size_bytes"] == 3

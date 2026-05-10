@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from server.engines.decision.strategy_definitions import build_strategy_contract
+from server.engines.signal.models import SignalCode
+from server.engines.signal.translator import translate_signal
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,8 @@ class PushAlertCandidate:
     dedupe_node: str = ""
     cooldown_hours: int = 24
     extra: dict = field(default_factory=dict)
+    signal_code: str = ""
+    signal_context: dict = field(default_factory=dict)
 
 
 def build_alert_strategy_contract(alert_type: str, strategy_type: str = "") -> Optional[dict]:
@@ -123,12 +127,66 @@ def evaluate_scanner_candidate_alert(result: dict, min_score: float = 80.0) -> O
         return None
 
     strategy = result.get("strategy_code") or result.get("strategy") or "war1"
+    signal_payload = build_scanner_signal_payload(result)
     return PushAlertCandidate(
         alert_type="SCANNER_TOP_CANDIDATE",
         trigger_price=float(result.get("close") or 0),
         dedupe_node=f"scanner:{result.get('symbol', '')}:{strategy}:{score:.1f}",
         extra={"score": score, "strategy": strategy},
+        signal_code=signal_payload.get("primary", {}).get("code", ""),
+        signal_context=signal_payload.get("context", {}),
     )
+
+
+def build_scanner_signal_payload(result: dict) -> dict:
+    """Build a lightweight semantic signal for scanner candidates.
+
+    scanner 阶段不重新跑结构雷达，只用扫描器已经确认的策略/赔率字段生成候选语义。
+    正式交易复核仍以 Radar 的 signals_v2 为准。
+    """
+    strategy = str(result.get("strategy_code") or result.get("strategy") or "war1")
+    status = str(result.get("status") or "").lower()
+    score = _safe_float(result.get("score"))
+    strength = "strong" if score >= 90 else "medium" if score >= 80 else "weak"
+    if strategy in {"war2", "战法二", "war2_trend_step"}:
+        parts = SignalCode(level="d1", position="zs_above", pattern="breakout", strength=strength)
+    else:
+        parts = SignalCode(level="d1", position="zs_above", pattern="bs3", strength=strength)
+    translated = translate_signal(parts)
+    close = _safe_float(result.get("close"))
+    stop_loss = _safe_float(result.get("stop_loss"))
+    rr_ratio = _safe_float(result.get("rr_ratio"))
+    action = _scanner_signal_action(translated["action_bias"], stop_loss, rr_ratio)
+    return {
+        "version": "semantic_signal.v2.scanner",
+        "state": "success" if status == "ready" and score >= 80 else "partial" if score >= 80 else "empty",
+        "primary": {
+            "code": parts.code,
+            "label_expert": translated["label_expert"],
+            "label_plain": translated["label_plain"],
+            "action": action,
+            "level": parts.level,
+            "pattern": parts.pattern,
+            "strength": parts.strength,
+        },
+        "context": {
+            "signal_code": parts.code,
+            "symbol": result.get("symbol", ""),
+            "label_plain": translated["label_plain"],
+            "label_expert": translated["label_expert"],
+            "action": action,
+            "key_price": close,
+            "stop_loss_price": stop_loss,
+            "risk_reward_ratio": rr_ratio,
+            "strategy": strategy,
+            "score": score,
+            "chan_desc": result.get("chan_desc", ""),
+            "disclaimer": "仅供参考，不构成投资建议",
+        },
+        "resonance": [],
+        "classification": [],
+        "disclaimer": "仅供参考，不构成投资建议",
+    }
 
 
 def build_alert_message(
@@ -142,6 +200,9 @@ def build_alert_message(
     trailing_stop: float = 0.0,
     m5_entry_zg: float = 0.0,
     score: float = 0.0,
+    signal_code: str = "",
+    signal_label: str = "",
+    signal_action: str = "",
 ) -> str:
     """生成符合交易教练语气的提醒文案。"""
     if alert_type == "STOP_LOSS_BROKEN":
@@ -189,8 +250,27 @@ def build_alert_message(
         msg = f"{name} 日线顶背驰确认{stop_str}，请检查退出预案和风险暴露。"
     elif alert_type == "SCANNER_TOP_CANDIDATE":
         score_str = f"评分 {score:.0f}" if score else "重点候选"
-        msg = f"{name} 进入扫描器重点候选（{score_str}），请打开雷达复核结构、止损和赔率。"
+        if signal_label or signal_action:
+            code_str = f"（{signal_code}）" if signal_code else ""
+            action_str = f" → {signal_action}" if signal_action else ""
+            msg = f"{name} 出现 {signal_label}{code_str}{action_str}。扫描器{score_str}，请打开雷达复核结构、止损和赔率。"
+        else:
+            msg = f"{name} 进入扫描器重点候选（{score_str}），请打开雷达复核结构、止损和赔率。"
     else:
         msg = f"{name} 触发 {alert_type} 提醒，请检查交易计划。"
 
     return append_risk_disclaimer(msg)
+
+
+def _scanner_signal_action(action_bias: str, stop_loss: float, rr_ratio: float) -> str:
+    if rr_ratio and rr_ratio < 1.5:
+        return "赔率不足，建议观望"
+    stop = f"，止损 {stop_loss:.2f}" if stop_loss > 0 else ""
+    return f"建议{action_bias}{stop}"
+
+
+def _safe_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0

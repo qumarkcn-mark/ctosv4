@@ -51,6 +51,7 @@ def compile_structure_transcript(
     )
     algorithm = radar_contract.get("algorithm_v2") or {}
     freshness = radar_contract.get("freshness") or {}
+    signal_v2 = _signal_v2_context(radar_contract.get("signals_v2") or {}, algorithm)
 
     levels = [
         _level_transcript("L0", reasoning_levels.get("day") or {}, algorithm),
@@ -61,6 +62,23 @@ def compile_structure_transcript(
     boundaries = _reasoning_boundaries(algorithm, radar_contract)
     divergence_context = build_divergence_context(reasoning_contract)
     reasoning_evidence_pack = build_reasoning_evidence_pack(radar_contract, divergence_context)
+    if signal_v2:
+        reasoning_evidence_pack = {
+            **reasoning_evidence_pack,
+            "semantic_signal": signal_v2,
+        }
+    structure_kernel = radar_contract.get("structure_kernel") or {}
+    if structure_kernel:
+        reasoning_evidence_pack = {
+            **reasoning_evidence_pack,
+            "structure_kernel": {
+                "version": structure_kernel.get("version"),
+                "profile": structure_kernel.get("profile"),
+                "structure_fingerprint": structure_kernel.get("structure_fingerprint"),
+                "facts_digest": structure_kernel.get("facts_digest") or {},
+                "data_quality": structure_kernel.get("data_quality") or {},
+            },
+        }
     allowed_prices = _dedupe_prices(
         _prices_from_levels(raw_levels)
         + _prices_from_levels(tactical_levels)
@@ -88,6 +106,7 @@ def compile_structure_transcript(
         position_context=position_context,
         divergence_context=divergence_context,
         chart_alignment=chart_alignment,
+        signal_v2=signal_v2,
     )
     transcript = StructureTranscript(
         symbol=symbol,
@@ -102,6 +121,7 @@ def compile_structure_transcript(
         position_context=position_context,
         market_context=market_context,
         reasoning_evidence_pack=reasoning_evidence_pack,
+        signal_v2=signal_v2,
         allowed_prices=allowed_prices,
         stale=bool(freshness.get("is_stale")),
     )
@@ -312,6 +332,7 @@ def build_structure_fingerprint(
     position_context: PositionContext | None,
     divergence_context: DivergenceContext | None = None,
     chart_alignment: ChartOverlayAlignment | None = None,
+    signal_v2: dict | None = None,
 ) -> str:
     """Build stable v1 fingerprint for simple SQLite memory lookup."""
     by_role = {level.role: level for level in levels}
@@ -340,8 +361,97 @@ def build_structure_fingerprint(
         "STALE" if freshness.get("is_stale") else "FRESH",
         _holding_bucket(position_context),
         _pnl_bucket(position_context),
+        _signal_bucket(signal_v2),
     ]
     return "|".join(parts)
+
+
+def _signal_v2_context(signal: dict, algorithm: dict | None = None) -> dict:
+    if not isinstance(signal, dict):
+        return {}
+    primary = signal.get("primary") if isinstance(signal.get("primary"), dict) else {}
+    context = signal.get("context") if isinstance(signal.get("context"), dict) else {}
+    if not primary.get("code") and not context.get("signal_code"):
+        return {}
+    deterministic_scenarios = _deterministic_scenarios_from_algorithm(algorithm or {})
+    ai_classification = []
+    for item in signal.get("classification") or []:
+        if isinstance(item, dict):
+            ai_classification.append(item)
+    return {
+        "version": signal.get("version") or "semantic_signal.v2",
+        "state": signal.get("state") or "",
+        "primary": {
+            "code": primary.get("code") or context.get("signal_code") or "",
+            "label_plain": primary.get("label_plain") or context.get("label_plain") or "",
+            "label_expert": primary.get("label_expert") or context.get("label_expert") or "",
+            "action": primary.get("action") or context.get("action") or "",
+            "level": primary.get("level") or context.get("level") or "",
+            "pattern": primary.get("pattern") or "",
+            "strength": primary.get("strength") or "",
+        },
+        "context": {
+            "key_price": context.get("key_price"),
+            "boundary_state": context.get("boundary_state"),
+            "stop_loss_price": context.get("stop_loss_price"),
+            "risk_reward_ratio": context.get("risk_reward_ratio"),
+            "action_rule": context.get("action_rule"),
+        },
+        "resonance": signal.get("resonance") or [],
+        "deterministic_scenarios": deterministic_scenarios,
+        "ai_classification": ai_classification,
+        "disclaimer": signal.get("disclaimer") or context.get("disclaimer") or "",
+    }
+
+
+def _deterministic_scenarios_from_algorithm(algorithm: dict) -> list[dict]:
+    if not isinstance(algorithm, dict):
+        return []
+    result = []
+    for item in algorithm.get("scenarios") or []:
+        if not isinstance(item, dict):
+            continue
+        result.append(
+            {
+                "id": item.get("id") or item.get("scenario_id") or "",
+                "name": item.get("name") or item.get("title") or "",
+                "type": item.get("type") or item.get("kind") or "",
+                "status": item.get("status") or "",
+                "triggers": item.get("triggers") or item.get("conditions") or [],
+                "meaning": item.get("meaning") or item.get("summary") or "",
+                "boundaries": item.get("boundaries") or [],
+            }
+        )
+    if result:
+        return result[:3]
+    boundaries = algorithm.get("boundaries") if isinstance(algorithm.get("boundaries"), dict) else {}
+    scenario_specs = [
+        ("A", "confirm", "确认路径", boundaries.get("confirm") or []),
+        ("B", "maintain", "维持路径", boundaries.get("maintain") or []),
+        ("C", "invalidate", "失效路径", boundaries.get("invalidate") or []),
+    ]
+    for scenario_id, scenario_type, name, items in scenario_specs:
+        result.append(
+            {
+                "id": scenario_id,
+                "name": name,
+                "type": scenario_type,
+                "status": "CURRENT" if scenario_id == str(algorithm.get("current_scenario_id") or "") else "",
+                "triggers": [],
+                "meaning": "",
+                "boundaries": items,
+            }
+        )
+    return result
+
+
+def _signal_bucket(signal_v2: dict | None) -> str:
+    if not isinstance(signal_v2, dict):
+        return "SIGNAL_NONE"
+    primary = signal_v2.get("primary") if isinstance(signal_v2.get("primary"), dict) else {}
+    code = str(primary.get("code") or "").strip()
+    state = str(signal_v2.get("state") or "").strip()
+    return f"SIGNAL_{state or 'UNKNOWN'}_{code or 'NONE'}"
 
 
 def _level_transcript(role: str, level: dict, algorithm: dict) -> LevelTranscript:
@@ -394,7 +504,7 @@ def _reasoning_boundaries(algorithm: dict, radar_contract: dict) -> ReasoningBou
     boundaries = ReasoningBoundaries(
         confirm=_boundary_group(raw, "confirm") + _boundary_group(raw, "pressure"),
         observe=_boundary_group(raw, "maintain"),
-        invalidate=_boundary_group(raw, "invalidate"),
+        invalidate=_boundary_group(raw, "invalidate", exclude_triggers={"risk_event", "watch"}),
         support=_boundary_group(raw, "support"),
     )
     deduction = radar_contract.get("deduction") or {}
@@ -412,9 +522,12 @@ def _reasoning_boundaries(algorithm: dict, radar_contract: dict) -> ReasoningBou
     return boundaries
 
 
-def _boundary_group(raw: dict, key: str) -> list[AllowedPrice]:
+def _boundary_group(raw: dict, key: str, *, exclude_triggers: set[str] | None = None) -> list[AllowedPrice]:
     prices = []
     for item in raw.get(key) or []:
+        trigger = str(item.get("trigger") or "").strip().lower()
+        if exclude_triggers and trigger in exclude_triggers:
+            continue
         value = _num(item.get("value") or item.get("price"))
         if value <= 0:
             continue

@@ -21,12 +21,14 @@ from server.engines.structure.chan_config_presets import (
     get_chan_config_meta,
 )
 from server.engines.structure.derived_facts import check_interval_nesting, enrich_level
+from server.engines.structure.structure_key import resolve_compute_bars
 from server.services.baostock_service import fetch_klines_quick, fetch_klines_sync
 from server.services.chan_detail_service import (
     PERIOD_MAP,
     _LEVEL_ORDER,
     _extract_level_relations,
     _serialize_one_level,
+    resolve_chan_compute_bars,
 )
 
 _VENDOR_ROOT = os.path.abspath(
@@ -85,6 +87,7 @@ _FREQ_ALIASES = {
 class LevelInput:
     level: str
     raw_freq: str
+    compute_bars: int
     kl_type: object
     rows: list
     units: list
@@ -96,6 +99,7 @@ def analyze_structure_sync(
     levels: Optional[list[str]] = None,
     count: int = 800,
     cchan_preset: str = "live_tolerant",
+    compute_profile: Optional[str] = None,
 ) -> dict:
     """Analyze formal Chan structure through chan.py in sync context."""
     canonical_symbol = normalize_symbol(symbol)
@@ -112,11 +116,16 @@ def analyze_structure_sync(
     level_inputs = []
     for level in requested_levels:
         raw_freq = normalize_level(level)
-        level_input = _load_level_input(canonical_symbol, raw_freq, count)
+        level_input = _load_level_input(canonical_symbol, raw_freq, count, compute_profile=compute_profile)
         if level_input is not None:
             level_inputs.append(level_input)
 
-    level_inputs = _refresh_lagging_level_inputs(canonical_symbol, level_inputs, count)
+    level_inputs = _refresh_lagging_level_inputs(
+        canonical_symbol,
+        level_inputs,
+        count,
+        compute_profile=compute_profile,
+    )
 
     if not level_inputs:
         return _error_result(
@@ -182,6 +191,8 @@ def analyze_structure_sync(
             "structure": _source_meta(),
         },
         "structure_config": get_chan_config_meta(cchan_preset),
+        "compute_profile": compute_profile or "legacy_default",
+        "compute_bars_by_level": {item.raw_freq: item.compute_bars for item in level_inputs},
         "freshness": {
             "source": STRUCTURE_SOURCE,
             "adjustflag": STRUCTURE_ADJUSTFLAG,
@@ -201,6 +212,7 @@ async def analyze_structure(
     levels: Optional[list[str]] = None,
     count: int = 800,
     cchan_preset: str = "live_tolerant",
+    compute_profile: Optional[str] = None,
 ) -> dict:
     """Async wrapper for FastAPI and workers."""
     return await run_in_threadpool(
@@ -209,6 +221,7 @@ async def analyze_structure(
         levels,
         count,
         cchan_preset,
+        compute_profile,
     )
 
 
@@ -239,12 +252,22 @@ def _interval_nesting(levels: dict) -> dict:
     }
 
 
-def _load_level_input(symbol: str, raw_freq: str, count: int) -> Optional[LevelInput]:
-    rows = query_klines(symbol, raw_freq, limit=max(count, 5000))
+def _load_level_input(
+    symbol: str,
+    raw_freq: str,
+    count: int,
+    *,
+    compute_profile: Optional[str] = None,
+) -> Optional[LevelInput]:
+    if compute_profile:
+        compute_bars = resolve_compute_bars(compute_profile, raw_freq, fallback=count)
+    else:
+        compute_bars = resolve_chan_compute_bars(raw_freq, count)
+    rows = query_klines(symbol, raw_freq, limit=compute_bars)
     if len(rows) < _MIN_KLINES:
         try:
             fetch_klines_quick(symbol, raw_freq)
-            rows = query_klines(symbol, raw_freq, limit=max(count, 5000))
+            rows = query_klines(symbol, raw_freq, limit=compute_bars)
         except Exception as exc:
             logger.warning("BaoStock 拉取失败 %s/%s: %s", symbol, raw_freq, exc)
 
@@ -255,6 +278,7 @@ def _load_level_input(symbol: str, raw_freq: str, count: int) -> Optional[LevelI
     return LevelInput(
         level=public_level_name(raw_freq),
         raw_freq=raw_freq,
+        compute_bars=compute_bars,
         kl_type=PERIOD_MAP.get(raw_freq, KL_TYPE.K_DAY),
         rows=rows,
         units=units,
@@ -262,7 +286,13 @@ def _load_level_input(symbol: str, raw_freq: str, count: int) -> Optional[LevelI
     )
 
 
-def _refresh_lagging_level_inputs(symbol: str, level_inputs: list[LevelInput], count: int) -> list[LevelInput]:
+def _refresh_lagging_level_inputs(
+    symbol: str,
+    level_inputs: list[LevelInput],
+    count: int,
+    *,
+    compute_profile: Optional[str] = None,
+) -> list[LevelInput]:
     if len(level_inputs) < 2:
         return level_inputs
 
@@ -289,7 +319,7 @@ def _refresh_lagging_level_inputs(symbol: str, level_inputs: list[LevelInput], c
                 latest_day,
             )
             fetch_klines_sync(symbol, item.raw_freq, start_date=last_day)
-            reloaded = _load_level_input(symbol, item.raw_freq, count)
+            reloaded = _load_level_input(symbol, item.raw_freq, count, compute_profile=compute_profile)
             refreshed.append(reloaded or item)
         except Exception as exc:
             logger.warning(
@@ -461,6 +491,202 @@ def _level_lag_days(value: str, latest_value: str) -> int:
 def _max_lag_days_for_level(raw_freq: str) -> int:
     # 周线天然以最近一周收盘日为时间戳；其他正式结构级别必须跟上最新交易日。
     return _WEEK_LEVEL_MAX_LAG_DAYS if raw_freq == "week" else _MAX_LEVEL_LAG_DAYS
+
+
+def export_raw_bi_context_sync(
+    symbol: str,
+    levels: Optional[list[str]] = None,
+    count: int = 1200,
+    cchan_preset: str = "live_tolerant",
+    *,
+    recent_bi_count: int = 20,
+    compute_profile: str = "radar_tactical_v1",
+) -> dict:
+    """P4: 导出多级别原始笔序列——去标签化，只保留几何事实。
+
+    输出是给 AI Chan Reasoner 的"原始素材"，不含任何硬编码结论。
+    AI 自行从笔序列识别中枢、判断位置、确定防守位。
+
+    每笔包含：direction, begin_price, end_price, begin_time, end_time,
+    bar_count, is_sure, high, low（笔内最高/最低价）。
+    """
+    canonical_symbol = normalize_symbol(symbol)
+    requested_levels = levels or ["day", "30", "5"]
+
+    if not _CHAN_AVAILABLE:
+        return {
+            "symbol": canonical_symbol,
+            "version": "raw_bi_context.v1",
+            "levels": {},
+            "error": "chan_engine_unavailable",
+        }
+
+    level_inputs = []
+    for level in requested_levels:
+        raw_freq = normalize_level(level)
+        level_input = _load_level_input(canonical_symbol, raw_freq, count, compute_profile=compute_profile)
+        if level_input is not None:
+            level_inputs.append(level_input)
+
+    level_inputs = _refresh_lagging_level_inputs(
+        canonical_symbol,
+        level_inputs,
+        count,
+        compute_profile=compute_profile,
+    )
+
+    if not level_inputs:
+        return {
+            "symbol": canonical_symbol,
+            "version": "raw_bi_context.v1",
+            "levels": {},
+            "error": "no_data",
+        }
+
+    try:
+        kl_data_by_type = _run_chan_py(canonical_symbol, level_inputs, cchan_preset)
+    except Exception as exc:
+        logger.exception("export_raw_bi_context failed for %s", canonical_symbol)
+        return {
+            "symbol": canonical_symbol,
+            "version": "raw_bi_context.v1",
+            "levels": {},
+            "error": str(exc)[:200],
+        }
+
+    result_levels = {}
+    for item in level_inputs:
+        if item.kl_type not in kl_data_by_type:
+            continue
+        kl_data = kl_data_by_type[item.kl_type]
+        bi_list = kl_data.bi_list
+        # 只取最近 N 笔，避免 context 过长
+        recent_bis = bi_list[-recent_bi_count:] if len(bi_list) > recent_bi_count else bi_list
+
+        serialized_bis = []
+        for bi in recent_bis:
+            is_up = str(bi.dir).endswith("UP")
+            begin_klu = bi.get_begin_klu()
+            end_klu = bi.get_end_klu()
+            begin_time = _format_time_for_bi(begin_klu.time, item.ctime_to_date_str)
+            end_time = _format_time_for_bi(end_klu.time, item.ctime_to_date_str)
+            begin_price = bi.get_begin_val()
+            end_price = bi.get_end_val()
+
+            # 笔内最高/最低（用于精确计算重叠区间）
+            bi_high = max(begin_price, end_price)
+            bi_low = min(begin_price, end_price)
+            # 尝试从笔内 K 线获取更精确的 high/low
+            try:
+                if hasattr(bi, 'klc_list'):
+                    for klc in bi.klc_list:
+                        if hasattr(klc, 'klu_list'):
+                            for klu in klc.klu_list:
+                                bi_high = max(bi_high, klu.high)
+                                bi_low = min(bi_low, klu.low)
+                        elif hasattr(klc, 'high') and hasattr(klc, 'low'):
+                            bi_high = max(bi_high, klc.high)
+                            bi_low = min(bi_low, klc.low)
+            except Exception:
+                pass
+
+            # 计算笔内 K 线数（估算力度）
+            bar_count = 0
+            try:
+                if hasattr(bi, 'klc_list'):
+                    bar_count = len(bi.klc_list)
+                elif begin_klu.idx >= 0 and end_klu.idx >= 0:
+                    bar_count = abs(end_klu.idx - begin_klu.idx) + 1
+            except Exception:
+                pass
+
+            serialized_bis.append({
+                "direction": "UP" if is_up else "DOWN",
+                "begin_price": round(begin_price, 4),
+                "end_price": round(end_price, 4),
+                "high": round(bi_high, 4),
+                "low": round(bi_low, 4),
+                "begin_time": begin_time,
+                "end_time": end_time,
+                "bar_count": bar_count,
+                "is_sure": bi.is_sure if hasattr(bi, "is_sure") else True,
+            })
+
+        # 同时导出算法建议的中枢（降级为参考）
+        algo_zhongshus = []
+        for zs in kl_data.zs_list[-5:]:
+            try:
+                algo_zhongshus.append({
+                    "zg": round(float(zs.zg), 4),
+                    "zd": round(float(zs.zd), 4),
+                    "gg": round(float(zs.gg), 4),
+                    "dd": round(float(zs.dd), 4),
+                    "begin_time": _format_time_for_bi(zs.begin.time, item.ctime_to_date_str),
+                    "end_time": _format_time_for_bi(zs.end.time, item.ctime_to_date_str),
+                    "bi_count": len(zs.bi_list) if hasattr(zs, "bi_list") else 0,
+                    "source": "algorithm_suggestion",
+                })
+            except Exception:
+                continue
+
+        # 最新收盘价
+        last_close = None
+        if item.rows:
+            try:
+                last_close = float(_row_get(item.rows[-1], "close", 0))
+            except (TypeError, ValueError):
+                pass
+
+        result_levels[item.raw_freq] = {
+            "level": public_level_name(item.raw_freq),
+            "bi_count_total": len(bi_list),
+            "bi_sequence": serialized_bis,
+            "last_close": last_close,
+            "last_bar_time": str(_row_get(item.rows[-1], "date", "")) if item.rows else "",
+            "algorithm_zhongshus": algo_zhongshus,
+            "note": "bi_sequence 是原始几何事实；algorithm_zhongshus 仅供参考，AI 应自行从笔序列验证中枢。",
+        }
+
+    return {
+        "symbol": canonical_symbol,
+        "version": "raw_bi_context.v1",
+        "levels": result_levels,
+        "requested_levels": requested_levels,
+        "compute_profile": compute_profile,
+        "compute_bars_by_level": {item.raw_freq: item.compute_bars for item in level_inputs},
+        "source": _source_meta(),
+        "instruction": "你收到的是多级别原始笔序列。请自行识别中枢（连续≥3笔的重叠区间）、判断当前位置（中枢内/离开/回拉）、确定防守位。algorithm_zhongshus 是硬编码算法的建议，可能有错，你需要验证。",
+    }
+
+
+async def export_raw_bi_context(
+    symbol: str,
+    levels: Optional[list[str]] = None,
+    count: int = 1200,
+    cchan_preset: str = "live_tolerant",
+    *,
+    recent_bi_count: int = 20,
+    compute_profile: str = "radar_tactical_v1",
+) -> dict:
+    """Async wrapper for export_raw_bi_context_sync."""
+    return await run_in_threadpool(
+        export_raw_bi_context_sync,
+        symbol,
+        levels,
+        count,
+        cchan_preset,
+        recent_bi_count=recent_bi_count,
+        compute_profile=compute_profile,
+    )
+
+
+def _format_time_for_bi(ctime, ctime_to_date_str: dict) -> str:
+    """CTime → date_str for bi export."""
+    try:
+        key = f"{ctime.year}-{ctime.month}-{ctime.day}-{ctime.hour}-{ctime.minute}"
+        return ctime_to_date_str.get(key, f"{ctime.year}-{ctime.month:02d}-{ctime.day:02d}")
+    except Exception:
+        return ""
 
 
 def _error_result(symbol: str, requested_levels: list[str], code: str, message: str) -> dict:

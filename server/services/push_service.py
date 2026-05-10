@@ -16,6 +16,18 @@ TMPL_STOP_LOSS = os.getenv("TMPL_STOP_LOSS", "mock_tmpl_id_stop_loss")
 _ACCESS_TOKEN: Optional[str] = None
 _ACCESS_TOKEN_EXPIRES: float = 0.0
 
+
+def build_push_preview_message(message: str, signal_context: Optional[dict] = None) -> str:
+    """Build the compact text shown in subscription-message fields."""
+    signal_context = signal_context or {}
+    label = str(signal_context.get("label_plain") or "").strip()
+    action = str(signal_context.get("action") or "").strip()
+    if label and action:
+        return f"{label} → {action}"
+    if label:
+        return label
+    return message
+
 async def _get_access_token() -> str:
     from time import time
     global _ACCESS_TOKEN, _ACCESS_TOKEN_EXPIRES
@@ -49,7 +61,7 @@ async def _get_access_token() -> str:
         logger.error("Wechat token request failed: %s", e)
         return ""
 
-async def send_stop_loss_alert(user_id: int, message: str):
+async def send_stop_loss_alert(user_id: int, message: str, signal_context: Optional[dict] = None):
     """
     发送止损预警推送给小程序用户。
     实际使用中，需要查出 user_id 对应的 openid。
@@ -89,7 +101,7 @@ async def send_stop_loss_alert(user_id: int, message: str):
         "data": {
             # 按微信的要求填写, 这里只写一个占位示意
             "thing1": {"value": "止损预警"},
-            "thing2": {"value": message[:20]}
+            "thing2": {"value": build_push_preview_message(message, signal_context)[:20]}
         }
     }
 
