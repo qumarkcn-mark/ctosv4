@@ -61,6 +61,32 @@ def good_output(markdown=None):
     }
 
 
+def test_verifier_passes_new_two_section_script_format():
+    text = """**1. 【当前定位】**
+日线离开后，30 分钟回踩验证中。
+
+**2. 【三种剧本】**
+剧本A：重新站回 12.80，延续路径权重提高。
+- 成立条件：站回 12.80。
+- 失效条件：跌回 11.90。
+- 操作含义：等待确认，不追高。
+
+剧本B：维持 11.90 到 12.80 震荡。
+- 成立条件：不破 11.90。
+- 失效条件：跌破 11.90。
+- 操作含义：观察。
+
+剧本C：跌破 11.90，结构转弱。
+- 成立条件：跌破 11.90。
+- 失效条件：重新站回 12.80。
+- 操作含义：降低风险暴露。仅供参考，不构成投资建议。"""
+
+    output, gate = verify_ai_reasoning(good_output(text), transcript())
+
+    assert output is not None
+    assert gate.status == "PASS"
+
+
 def test_verifier_passes_filtered_markdown():
     output, gate = verify_ai_reasoning(good_output(), transcript())
 
@@ -94,34 +120,33 @@ def test_verifier_allows_coach_execution_terms():
     assert gate.status == "PASS"
 
 
-def test_verifier_rewrites_a_share_short_terms():
+def test_verifier_does_not_scan_a_share_short_terms():
     text = good_markdown() + "\n跌破 11.90 后做空，空头目标看 10.80。"
 
     _, gate = verify_ai_reasoning(good_output(text), transcript())
 
-    assert gate.status == "REWRITE"
-    violation = next(item for item in gate.violations if item.code == "A_SHARE_SHORT_SELLING")
-    assert "做空" in violation.evidence
-    assert "空头目标" in violation.evidence
+    assert gate.status == "PASS"
+    assert not any(item.code == "A_SHARE_SHORT_SELLING" for item in gate.violations)
 
 
-def test_verifier_fallbacks_extreme_certainty_terms():
+def test_verifier_does_not_scan_extreme_certainty_terms():
     text = good_markdown() + "\n这里必涨，稳赚。"
 
     _, gate = verify_ai_reasoning(good_output(text), transcript())
 
-    assert gate.status == "FALLBACK"
-    assert any(item.code == "HARD_FORBIDDEN_TERMS" for item in gate.violations)
+    assert gate.status == "PASS"
+    assert not any(item.code == "HARD_FORBIDDEN_TERMS" for item in gate.violations)
 
 
-def test_verifier_rewrites_unknown_prices():
+def test_verifier_does_not_scan_unknown_prices():
     text = good_markdown() + "\n额外观察 13.27。"
 
-    _, gate = verify_ai_reasoning(good_output(text), transcript())
+    output, gate = verify_ai_reasoning(good_output(text), transcript())
 
-    assert gate.status == "REWRITE"
-    violation = next(item for item in gate.violations if item.code == "UNKNOWN_PRICE_REFERENCE")
-    assert "13.27" in violation.evidence
+    assert output is not None
+    assert gate.status == "PASS"
+    assert gate.score == 100
+    assert not any(item.code == "UNKNOWN_PRICE_REFERENCE" for item in gate.violations)
 
 
 def test_verifier_allows_current_price_and_allowed_prices():

@@ -40,11 +40,12 @@ def test_normalize_level_accepts_public_aliases():
 
 def test_analyze_structure_sync_returns_adapter_contract(monkeypatch):
     rows = make_rows()
+    limits = {}
 
     def fake_query(symbol, freq, limit):
         assert symbol == "sh.600519"
         assert freq in ("day", "30")
-        assert limit >= 5000
+        limits[freq] = limit
         return rows
 
     def fake_run(symbol, level_inputs, cchan_preset="live_tolerant"):
@@ -78,11 +79,56 @@ def test_analyze_structure_sync_returns_adapter_contract(monkeypatch):
     assert result["data_source"]["structure"]["adjustflag"] == "2"
     assert result["data_source"]["structure"]["engine"] == "chan.py"
     assert result["structure_config"]["preset"] == "live_tolerant"
+    assert limits == {"day": 2500, "30": 3000}
     assert result["freshness"]["is_stale"] is False
     assert result["freshness"]["stale_reason"] == ""
     assert set(result["levels"]) == {"day", "30"}
     assert result["levels"]["day"]["source"]["adapter"] == "server.engines.structure.chan_adapter"
     assert result["level_relations"] == {"ok": True}
+
+
+def test_analyze_structure_sync_can_use_profile_compute_window(monkeypatch):
+    rows = make_rows(1300)
+    limits = {}
+
+    def fake_query(symbol, freq, limit):
+        limits[freq] = limit
+        return rows[-limit:]
+
+    monkeypatch.setattr(chan_adapter, "query_klines", fake_query)
+    monkeypatch.setattr(chan_adapter, "fetch_klines_quick", lambda symbol, freq: None)
+    monkeypatch.setattr(
+        chan_adapter,
+        "_run_chan_py",
+        lambda symbol, level_inputs, cchan_preset="live_tolerant": {item.kl_type: object() for item in level_inputs},
+    )
+    monkeypatch.setattr(
+        chan_adapter,
+        "_serialize_one_level",
+        lambda kl_data, ctime, rows, raw_freq, count: {
+            "freq": raw_freq,
+            "klines": [{"time": rows[-1]["date"], "close": rows[-1]["close"]}],
+            "bis": [],
+            "segs": [],
+            "bi_zhongshus": [],
+            "seg_zhongshus": [],
+            "zhongshus": [],
+            "bsps": [],
+            "stats": {"kline_count": len(rows)},
+        },
+    )
+    monkeypatch.setattr(chan_adapter, "_extract_level_relations", lambda levels: {})
+
+    result = chan_adapter.analyze_structure_sync(
+        "sh600519",
+        levels=["day", "30", "5"],
+        count=50,
+        compute_profile="radar_tactical_v1",
+    )
+
+    assert limits == {"day": 2500, "30": 3000, "5": 2000}
+    assert result["compute_profile"] == "radar_tactical_v1"
+    assert result["compute_bars_by_level"] == {"day": 2500, "30": 3000, "5": 2000}
 
 
 def test_analyze_structure_sync_fetches_when_lake_has_too_few_rows(monkeypatch):

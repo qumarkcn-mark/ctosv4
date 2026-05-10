@@ -122,6 +122,7 @@ export function adaptRadarContract(contract) {
     return {
       status: 'empty',
       symbol: contract?.symbol || '',
+      mode: contract?.mode || 'EMPTY',
       summary: '等待雷达算法输出',
       nextWatch: [],
       triggerPlaybook: [],
@@ -129,9 +130,17 @@ export function adaptRadarContract(contract) {
       boundaries: emptyBoundaries(),
       boundaryGroups: [],
       atoms: [],
+      signal: adaptSignalV2(contract?.signals_v2 || {}),
       labels: {},
-      dataNotes: {},
-      dataHealth: [],
+      raw: { currentScenarioId: 'B' },
+      positionContext: adaptPositionContext(contract?.position_context || {}),
+      coachAction: adaptCoachAction(contract?.coach_action || {}),
+      dataNotes: contract?.freshness || {},
+      dataHealth: adaptDataHealth((contract?.freshness || {}).levels || {}),
+      freshness: contract?.freshness || {},
+      structureConfig: contract?.structure_config || {},
+      structureKernel: contract?.structure_kernel || {},
+      diagnostics: contract?.diagnostics || {},
       disclaimer: contract?.disclaimer || '仅供参考，不构成投资建议',
     }
   }
@@ -150,6 +159,7 @@ export function adaptRadarContract(contract) {
     boundaries: adaptBoundaries(algorithm.boundaries || {}),
     boundaryGroups: adaptBoundaryGroups(algorithm.boundary_groups || []),
     atoms: adaptAtoms(algorithm.atoms || {}),
+    signal: adaptSignalV2(contract.signals_v2 || {}),
     patterns: (algorithm.patterns || []).map(adaptPattern),
     transition: adaptTransition(algorithm.transition || {}),
     confirmation,
@@ -177,8 +187,99 @@ export function adaptRadarContract(contract) {
     dataHealth: adaptDataHealth((algorithm.data_notes || {}).levels || contract?.freshness?.levels || {}),
     freshness: contract?.freshness || {},
     structureConfig: contract?.structure_config || {},
+    structureKernel: contract?.structure_kernel || {},
+    diagnostics: contract?.diagnostics || {},
     disclaimer: algorithm.disclaimer || contract?.disclaimer || '仅供参考，不构成投资建议',
   }
+}
+
+function adaptSignalV2(signal) {
+  const primary = signal?.primary || {}
+  const context = signal?.context || {}
+  const kronosTimeline = adaptKronosTimeline(context.kronos_timeline)
+  const kronosEnvelope = adaptKronosEnvelope(context.kronos_envelope)
+  return {
+    version: signal?.version || '',
+    state: signal?.state || 'empty',
+    code: primary.code || '',
+    labelExpert: primary.label_expert || '',
+    labelPlain: primary.label_plain || '结构未给出优势信号，继续观察边界',
+    action: primary.action || '继续观察',
+    level: primary.level || context.level || '',
+    pattern: primary.pattern || '',
+    strength: primary.strength || '',
+    keyPrice: Number(context.key_price || 0),
+    stopLossPrice: Number(context.stop_loss_price || 0),
+    riskRewardRatio: Number(context.risk_reward_ratio || 0),
+    boundaryState: context.boundary_state || '',
+    macdAreaRatio: Number(context.macd_area_ratio || 0),
+    resonance: (signal?.resonance || []).map(item => ({
+      level: item.level || '',
+      code: item.code || '',
+      labelPlain: item.label_plain || '',
+      labelExpert: item.label_expert || '',
+    })),
+    kronosTimeline,
+    kronosEnvelope,
+    error: signal?.error || '',
+    disclaimer: signal?.disclaimer || context.disclaimer || '仅供参考，不构成投资建议',
+  }
+}
+
+function adaptKronosTimeline(timeline) {
+  if (!timeline || typeof timeline !== 'object') return null
+  const bars = Number(timeline.estimated_confirmation_bars)
+  const fenxing = timeline.predicted_fenxing && typeof timeline.predicted_fenxing === 'object'
+    ? timeline.predicted_fenxing
+    : null
+  const fenxingPrice = Number(fenxing?.price || 0)
+  const hasBars = Number.isFinite(bars) && bars > 0
+  const hasFenxing = Boolean(fenxing?.type || (Number.isFinite(fenxingPrice) && fenxingPrice > 0))
+  if (!hasBars && !hasFenxing) return null
+
+  return {
+    level: timeline.level || '',
+    estimatedConfirmationBars: hasBars ? bars : null,
+    estimatedConfirmationDate: timeline.estimated_confirmation_date || '',
+    predictedFenxing: hasFenxing
+      ? {
+          type: fenxing?.type || '',
+          step: Number(fenxing?.step || 0),
+          price: Number.isFinite(fenxingPrice) && fenxingPrice > 0 ? fenxingPrice : null,
+          confidenceNote: fenxing?.confidence_note || '',
+        }
+      : null,
+    predictedTrendSummary: timeline.predicted_trend_summary || '',
+  }
+}
+
+function adaptKronosEnvelope(envelope) {
+  if (!envelope || typeof envelope !== 'object') return null
+  const low = Number(envelope.envelope_low || 0)
+  const high = Number(envelope.envelope_high || 0)
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high <= 0) return null
+
+  const validation = envelope.validation ? String(envelope.validation) : ''
+  return {
+    targetDay: envelope.target_day || '',
+    low,
+    high,
+    barDirection: envelope.bar_direction || '',
+    aiBuyPoint: envelope.ai_buy_point === null || envelope.ai_buy_point === undefined ? null : Number(envelope.ai_buy_point),
+    validation,
+    validationTone: kronosValidationTone(validation),
+    parentLevel: envelope.parent_level || '',
+    childLevel: envelope.child_level || '',
+    alignment: envelope.alignment || '',
+    confidenceNote: envelope.confidence_note || '',
+  }
+}
+
+function kronosValidationTone(validation) {
+  if (!validation) return 'neutral'
+  if (validation.startsWith('CONFLICT')) return 'danger'
+  if (validation.startsWith('WARNING')) return 'warning'
+  return 'neutral'
 }
 
 function adaptPositionContext(context) {

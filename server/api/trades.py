@@ -341,10 +341,10 @@ def list_trades(
 # 注意: /from-text 必须在 /{trade_id} 之前注册，否则会被路径参数捕获
 @router.post("/from-text")
 async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
-    """从自然语言/语音文本提取交易信息（调用 DeepSeek V3 解析）"""
+    """从自然语言/语音文本提取交易信息（调用 Qwen 做事实抽取）"""
     from server.services.llm_service import LLMService
     svc = LLMService()
-    result = await svc.parse_trade_from_text(req.text)
+    result = await svc.parse_trade_from_text(req.text, user_id=user_id)
     return {
         "status": "ok",
         "parsed": result,

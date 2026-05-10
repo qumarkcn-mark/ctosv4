@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import AINativeFusionCard from './AINativeFusionCard.jsx'
 import AINativeRadarCard from './AINativeRadarCard.jsx'
 import { formatPrice } from './radarAdapter.js'
 import { useRadarData } from './useRadarData.js'
@@ -10,9 +11,36 @@ const SCENARIO_TONE = {
   C: 'invalidate',
 }
 
+const EXPERT_MODE_STORAGE_KEY = 'ctos.expert_mode'
+
 export default function RadarPanel({ symbol, refreshToken = 0 }) {
-  const { radar, loading, error, refresh } = useRadarData(symbol, refreshToken)
+  const { radar, loading, error, profile, setProfile, refresh } = useRadarData(symbol, refreshToken)
   const [activeTab, setActiveTab] = useState('ai')
+  const [expertMode, setExpertMode] = useState(() => readExpertModePreference())
+  const [aiDeductionReport, setAiDeductionReport] = useState(null)
+  const signalCode = radar?.signal?.code || ''
+  const structureFingerprint = radar ? getStructureFingerprint(radar) : ''
+  const structureBlocker = radar ? getStructureBlocker(radar, error) : null
+
+  useEffect(() => {
+    const syncExpertMode = (event) => {
+      if (typeof event?.detail?.expertMode === 'boolean') {
+        setExpertMode(event.detail.expertMode)
+        return
+      }
+      setExpertMode(readExpertModePreference())
+    }
+    window.addEventListener('storage', syncExpertMode)
+    window.addEventListener('ctos:expert-mode-change', syncExpertMode)
+    return () => {
+      window.removeEventListener('storage', syncExpertMode)
+      window.removeEventListener('ctos:expert-mode-change', syncExpertMode)
+    }
+  }, [])
+
+  useEffect(() => {
+    setAiDeductionReport(null)
+  }, [symbol, radar?.mode, signalCode])
 
   if (loading && !radar) return <RadarShell><RadarSkeleton /></RadarShell>
   if (error && !radar) {
@@ -36,9 +64,21 @@ export default function RadarPanel({ symbol, refreshToken = 0 }) {
 
   return (
     <RadarShell>
-      <RadarHeader radar={radar} onRefresh={refresh} />
+      <RadarHeader
+        radar={radar}
+        loading={loading}
+        onRefresh={refresh}
+      />
+      <StructureRuntimeStrip
+        radar={radar}
+        loading={loading}
+        profile={profile}
+        onProfileChange={setProfile}
+      />
       <DataHealthStrip items={radar.dataHealth} />
-      {error && <div className="radar-inline-warning">{error}</div>}
+      {(structureBlocker || error) && (
+        <RadarInlineWarning warning={structureBlocker} fallback={error} />
+      )}
       <div className="radar-tabs" role="tablist" aria-label="雷达视图">
         <button
           type="button"
@@ -47,7 +87,7 @@ export default function RadarPanel({ symbol, refreshToken = 0 }) {
           className={activeTab === 'ai' ? 'is-active' : ''}
           onClick={() => setActiveTab('ai')}
         >
-          AI 推演
+          生成教练判断
         </button>
         <button
           type="button"
@@ -56,14 +96,35 @@ export default function RadarPanel({ symbol, refreshToken = 0 }) {
           className={activeTab === 'structure' ? 'is-active' : ''}
           onClick={() => setActiveTab('structure')}
         >
-          结构雷达
+          结构详情
         </button>
       </div>
       {activeTab === 'ai' ? (
-        <AINativeRadarCard symbol={symbol} mode={radar.mode} />
+        <>
+          <AINativeRadarCard
+            symbol={symbol}
+            mode={radar.mode}
+            signalCode={signalCode}
+            structureFingerprint={structureFingerprint}
+            disabled={Boolean(structureBlocker)}
+            disabledReason={structureBlocker?.action || ''}
+            onReportChange={setAiDeductionReport}
+          />
+          {aiDeductionReport && !structureBlocker ? (
+            <AINativeFusionCard
+              symbol={symbol}
+              mode={radar.mode}
+              signalCode={signalCode}
+              structureFingerprint={structureFingerprint}
+            />
+          ) : (
+            <FusionLockedHint disabledReason={structureBlocker?.action || ''} />
+          )}
+        </>
       ) : (
         <>
           <PositionCoachCard coach={radar.coachAction} context={radar.positionContext} />
+          <SignalCard signal={radar.signal} loading={loading} expertMode={expertMode} />
           <RadarSummary radar={radar} />
           <ScenarioGrid scenarios={radar.scenarios} currentId={radar.raw.currentScenarioId} />
           <ConfirmationPanel confirmation={radar.confirmation} />
@@ -76,6 +137,60 @@ export default function RadarPanel({ symbol, refreshToken = 0 }) {
         </>
       )}
     </RadarShell>
+  )
+}
+
+function RadarInlineWarning({ warning, fallback }) {
+  if (!warning) {
+    return <div className="radar-inline-warning">{fallback}</div>
+  }
+  return (
+    <div className="radar-inline-warning">
+      <strong>{warning.title}</strong>
+      <span>{warning.body}</span>
+    </div>
+  )
+}
+
+function FusionLockedHint({ disabledReason = '' }) {
+  const blocked = Boolean(disabledReason)
+  return (
+    <section className="radar-fusion-locked">
+      <div>
+        <span>综合判断</span>
+        <strong>{blocked ? '等待正式结构数据' : '先完成 AI 推演'}</strong>
+      </div>
+      <p>
+        {blocked
+          ? disabledReason
+          : 'AI 推演生成当前定位和路径分类后，再在这里做持仓、结构和预测参考的综合判断。'}
+      </p>
+    </section>
+  )
+}
+
+function getStructureBlocker(radar, warningText) {
+  const staleReason = String(radar?.freshness?.stale_reason || radar?.dataNotes?.stale_reason || '').toUpperCase()
+  const rawWarning = String(radar?.loadWarning || warningText || '')
+  const lowerWarning = rawWarning.toLowerCase()
+  const noData = staleReason === 'NO_DATA'
+    || lowerWarning.includes('no usable kline data')
+    || lowerWarning.includes('usable kline')
+  const emptyStructure = radar?.status === 'empty' && !radar?.structureKernel?.levels?.length
+  if (!noData && !emptyStructure) return null
+  return {
+    title: '正式结构数据暂不可用',
+    body: '当前没有可用于雷达推演的 BaoStock 正式 K 线。K 线图仍可查看预览数据；请先同步数据，或稍后刷新雷达。仅供参考，不构成投资建议。',
+    action: '正式结构数据暂不可用，先同步数据或刷新雷达后再生成推演。',
+  }
+}
+
+function getStructureFingerprint(radar) {
+  return String(
+    radar?.diagnostics?.structure_fingerprint
+    || radar?.structureKernel?.structure_fingerprint
+    || radar?.raw?.structure_fingerprint
+    || ''
   )
 }
 
@@ -110,6 +225,58 @@ function RadarHeader({ radar, onRefresh }) {
   )
 }
 
+function StructureRuntimeStrip({ radar, loading, profile, onProfileChange }) {
+  const diagnostics = radar?.diagnostics || {}
+  const kernel = radar?.structureKernel || {}
+  const requestedProfile = String(diagnostics.requested_profile || profile || 'auto').toLowerCase()
+  const resolvedProfile = String(diagnostics.resolved_profile || diagnostics.structure_profile || kernel.profile || 'fast').toLowerCase()
+  const profileLabel = resolvedProfile.toUpperCase()
+  const levels = diagnostics.structure_levels?.length
+    ? diagnostics.structure_levels
+    : (kernel.levels || [])
+  const source = diagnostics.structure_persistent_cache_hit
+    ? '持久缓存'
+    : diagnostics.structure_cache_hit
+      ? '内存缓存'
+      : '实时计算'
+  const ms = formatMs(diagnostics.structure_ms)
+  const fingerprint = String(diagnostics.structure_fingerprint || kernel.structure_fingerprint || '')
+  const date = radar?.dataNotes?.last_bar_at || radar?.freshness?.last_bar_at || ''
+  const upgradeReason = diagnostics.upgrade_reason
+
+  return (
+    <details className={`radar-runtime-details ${loading ? 'is-loading' : ''}`}>
+      <summary>
+        <span>{loading ? '刷新中' : profileLabel}</span>
+        <span>{levels.length ? levels.join('/') : 'levels --'}</span>
+        {date && <span>数据 {formatCompactDate(date)}</span>}
+        <span>{ms}</span>
+        {upgradeReason && <em>{upgradeReasonLabel(upgradeReason)}</em>}
+      </summary>
+      <div className="radar-runtime-strip">
+        <div className="radar-profile-toggle" aria-label="结构计算档位">
+          {['auto', 'fast', 'full'].map((item) => (
+            <button
+              key={item}
+              type="button"
+              className={requestedProfile === item ? 'is-active' : ''}
+              onClick={() => onProfileChange(item)}
+              disabled={loading && requestedProfile !== item}
+              title={profileTitle(item)}
+            >
+              {item.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <span>请求 {requestedProfile.toUpperCase()}</span>
+        <span>实际 {profileLabel}</span>
+        <span>{source}</span>
+        {fingerprint && <em title={fingerprint}>fp {fingerprint.slice(0, 8)}</em>}
+      </div>
+    </details>
+  )
+}
+
 function PositionCoachCard({ coach, context }) {
   if (!coach?.summary) return null
   const pnl = context?.pnlPct
@@ -136,6 +303,135 @@ function PositionCoachCard({ coach, context }) {
   )
 }
 
+function SignalCard({ signal, loading, expertMode = false }) {
+  const state = loading && (!signal || signal.state === 'empty') ? 'loading' : (signal?.state || 'empty')
+  const isStale = state === 'stale'
+  const isError = state === 'error'
+  const isPartial = state === 'partial' || (signal?.code && !signal?.action)
+
+  if (state === 'loading') {
+    return (
+      <section className="radar-signal-card radar-signal-card--loading" aria-label="语义信号">
+        <div className="radar-signal-skeleton is-wide" />
+        <div className="radar-signal-skeleton" />
+      </section>
+    )
+  }
+
+  const displayAction = isStale
+    ? '等待刷新确认'
+    : isPartial
+      ? '信号已识别，操作规则待确认'
+      : signal?.action || '继续观察'
+  const resonance = signal?.resonance || []
+  const visibleResonance = resonance.slice(0, 3)
+  const hiddenCount = Math.max(0, resonance.length - visibleResonance.length)
+  const signalLabel = expertMode && signal?.labelExpert
+    ? signal.labelExpert
+    : signal?.labelPlain
+  const showKronosHint = !['empty', 'stale', 'error', 'loading'].includes(state)
+    && Boolean(signal?.kronosTimeline || signal?.kronosEnvelope)
+
+  return (
+    <section className={`radar-signal-card radar-signal-card--${state}`} aria-label="语义信号">
+      <div className="radar-signal-head">
+        <span>Signal V2</span>
+        <em>{signal?.boundaryState || state}</em>
+      </div>
+      <strong className="radar-signal-action">{displayAction}</strong>
+      <p>{isError ? (signal?.labelPlain || '语义层不可用，保留结构雷达判断') : signalLabel}</p>
+      {signal?.code && (
+        <button
+          type="button"
+          className="radar-signal-code"
+          title={signal.labelExpert || signal.code}
+          onClick={() => copySignalCode(signal.code)}
+        >
+          {signal.code}
+        </button>
+      )}
+      <div className="radar-signal-metrics">
+        <SignalMetric label="Key" value={formatPrice(signal?.keyPrice)} />
+        <SignalMetric label="Stop" value={formatPrice(signal?.stopLossPrice)} tone="danger" />
+        <SignalMetric label="R:R" value={formatRatio(signal?.riskRewardRatio)} tone="gold" />
+      </div>
+      {(visibleResonance.length > 0 || hiddenCount > 0) && (
+        <div className="radar-signal-resonance" aria-label="多级别共振">
+          {visibleResonance.map((item) => (
+            <span key={item.code} title={item.labelExpert || item.labelPlain || item.code}>
+              {item.code}
+            </span>
+          ))}
+          {hiddenCount > 0 && <span>+{hiddenCount}</span>}
+        </div>
+      )}
+      {showKronosHint && <KronosSignalHint timeline={signal.kronosTimeline} envelope={signal.kronosEnvelope} />}
+      <small>{signal?.disclaimer || '仅供参考，不构成投资建议'}</small>
+    </section>
+  )
+}
+
+function KronosSignalHint({ timeline, envelope }) {
+  if (!timeline && !envelope) return null
+  const validationText = kronosValidationText(envelope?.validation)
+  const validationTone = envelope?.validationTone || 'neutral'
+
+  return (
+    <div className={`radar-signal-kronos radar-signal-kronos--${validationTone}`} aria-label="Kronos 预测参考">
+      {timeline && (
+        <div className="radar-signal-kronos-row">
+          <span>时间线</span>
+          <strong>{kronosTimelineText(timeline)}</strong>
+        </div>
+      )}
+      {timeline?.predictedFenxing?.price && (
+        <div className="radar-signal-kronos-row">
+          <span>分型候选</span>
+          <strong>{kronosFenxingText(timeline.predictedFenxing)}</strong>
+        </div>
+      )}
+      {envelope && (
+        <div className="radar-signal-kronos-row">
+          <span>信封</span>
+          <strong>今日预测执行区间参考 {formatPrice(envelope.low)}-{formatPrice(envelope.high)}</strong>
+        </div>
+      )}
+      {validationText && (
+        <div className="radar-signal-kronos-note">{validationText}</div>
+      )}
+    </div>
+  )
+}
+
+function kronosTimelineText(timeline) {
+  const bars = timeline?.estimatedConfirmationBars
+  if (Number.isFinite(Number(bars)) && Number(bars) > 0) {
+    return `预测确认约 ${Number(bars)} 根`
+  }
+  return '预测确认窗口待补足'
+}
+
+function kronosFenxingText(fenxing) {
+  const type = fenxing?.type ? `${fenxing.type} ` : ''
+  return `${type}${formatPrice(fenxing?.price)}`
+}
+
+function kronosValidationText(validation) {
+  if (!validation) return ''
+  if (validation.startsWith('CONFLICT')) return '预测区间与执行点存在偏差，需降低参考权重'
+  if (validation.startsWith('WARNING')) return '执行点接近预测区间边缘，需谨慎参考'
+  return ''
+}
+
+function SignalMetric({ label, value, tone = 'neutral' }) {
+  return (
+    <div className={`radar-signal-metric radar-signal-metric--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
 function NearestRiskLine({ line }) {
   if (!line?.value) return null
   const distance = Number(line.distance_pct)
@@ -147,6 +443,26 @@ function NearestRiskLine({ line }) {
       <em>距离 {distanceText}</em>
     </div>
   )
+}
+
+function copySignalCode(code) {
+  if (!code || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+  navigator.clipboard.writeText(code).catch(() => {})
+}
+
+function readExpertModePreference() {
+  if (typeof localStorage === 'undefined') return false
+  try {
+    return localStorage.getItem(EXPERT_MODE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function formatRatio(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return '--'
+  return num.toFixed(2)
 }
 
 function PositionPriceNote({ context }) {
@@ -497,7 +813,7 @@ function RadarSkeleton() {
     <div className="radar-skeleton-stack">
       <div className="radar-loading-note">
         <strong>结构计算中</strong>
-        <span>正在读取 CChan 多级别结构，首次加载可能需要几十秒。</span>
+        <span>默认读取 FAST 结构；如需周线/60/15 分完整链路，可切到 FULL。</span>
       </div>
       <div className="radar-skeleton radar-skeleton--h32" />
       <div className="radar-skeleton radar-skeleton--h96" />
@@ -531,6 +847,38 @@ function compactTime(value) {
   const text = String(value)
   if (text.includes(' ')) return text.slice(5, 16)
   return text.slice(5)
+}
+
+function formatMs(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '--'
+  if (num >= 1000) return `${(num / 1000).toFixed(num >= 10000 ? 0 : 1)}s`
+  return `${Math.round(num)}ms`
+}
+
+function formatCompactDate(value) {
+  if (!value) return ''
+  const text = String(value)
+  if (text.includes('T')) return text.slice(5, 16).replace('T', ' ')
+  if (text.includes(' ')) return text.slice(5, 16)
+  return text.slice(5)
+}
+
+function profileTitle(profile) {
+  if (profile === 'auto') return '自动结构：先跑 day / 30 / 5，必要时升级完整链路'
+  if (profile === 'full') return '深度结构：周线 / 日线 / 60 / 30 / 15 / 5'
+  return '快速结构：日线 / 30分 / 5分'
+}
+
+function upgradeReasonLabel(reason) {
+  const text = String(reason || '')
+  if (text.includes('FULL_FAILED')) return '深度雷达不可用'
+  const labels = {
+    FAST_CONFLICT: '已升级：结构冲突',
+    LOW_CONFIDENCE: '已升级：证据不足',
+    RISK_LINE_NEAR: '已升级：接近风险线',
+  }
+  return labels[text] || '已升级深度雷达'
 }
 
 function momentumText(momentum) {

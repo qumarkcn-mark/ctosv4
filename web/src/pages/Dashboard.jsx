@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import TradeForm from '../components/TradeForm.jsx'
+import TradeLedgerInbox from '../components/TradeLedgerInbox.jsx'
 import PositionList from '../components/PositionList.jsx'
+import { API_BASE } from '../config.js'
 import './Dashboard.css'
-
-const API = ''  // Vite proxy 会转发到后端
 
 export default function Dashboard({ onViewInChan, onOpenRotation }) {
   const [positions, setPositions] = useState([])
@@ -11,6 +11,7 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
   const [trades, setTrades] = useState([])
   const [t1Locked, setT1Locked] = useState([])   // 今日买入 T+1 锁定列表
   const [showTradeForm, setShowTradeForm] = useState(false)
+  const [showLedgerInbox, setShowLedgerInbox] = useState(false)
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({})
@@ -24,8 +25,8 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
   const fetchData = async () => {
     try {
       const [posRes, tradeRes] = await Promise.all([
-        fetch(`${API}/api/positions/overview`),
-        fetch(`${API}/api/trades?limit=10`),
+        fetch(`${API_BASE}/positions/overview`),
+        fetch(`${API_BASE}/trades?limit=10`),
       ])
       const posData = await posRes.json()
       const tradeData = await tradeRes.json()
@@ -47,6 +48,10 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
 
   const handleTradeSubmitted = () => {
     setShowTradeForm(false)
+    fetchData()
+  }
+
+  const handleImportConfirmed = () => {
     fetchData()
   }
 
@@ -72,7 +77,7 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
       if (editForm.reason_text !== undefined) body.reason_text = editForm.reason_text
       if (editForm.traded_at) body.traded_at = editForm.traded_at + 'T09:30:00'
 
-      await fetch(`${API}/api/trades/${tradeId}`, {
+      await fetch(`${API_BASE}/trades/${tradeId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -88,7 +93,7 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
   const handleDelete = async (tradeId) => {
     if (!confirm('确定要删除这笔交易记录吗？删除后持仓将自动重算。')) return
     try {
-      await fetch(`${API}/api/trades/${tradeId}`, { method: 'DELETE' })
+      await fetch(`${API_BASE}/trades/${tradeId}`, { method: 'DELETE' })
       fetchData()
     } catch (err) {
       console.error('删除失败:', err)
@@ -120,7 +125,19 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
             )}
             <button
               className="btn btn-primary"
-              onClick={() => setShowTradeForm(!showTradeForm)}
+              onClick={() => {
+                setShowLedgerInbox(!showLedgerInbox)
+                if (!showLedgerInbox) setShowTradeForm(false)
+              }}
+            >
+              {showLedgerInbox ? '关闭导入' : '截图导入'}
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setShowTradeForm(!showTradeForm)
+                if (!showTradeForm) setShowLedgerInbox(false)
+              }}
             >
               {showTradeForm ? '关闭' : '录入交易'}
             </button>
@@ -190,6 +207,12 @@ export default function Dashboard({ onViewInChan, onOpenRotation }) {
       {showTradeForm && (
         <section className="trade-form-section animate-fade-in">
           <TradeForm onSubmitted={handleTradeSubmitted} />
+        </section>
+      )}
+
+      {showLedgerInbox && (
+        <section className="trade-form-section animate-fade-in">
+          <TradeLedgerInbox onConfirmed={handleImportConfirmed} />
         </section>
       )}
 

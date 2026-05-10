@@ -43,10 +43,32 @@ def make_radar_contract():
                 "support": [{"label": "大级别防线", "value": 10.8}],
             },
         },
+        "signals_v2": {
+            "version": "semantic_signal.v2",
+            "state": "success",
+            "primary": {
+                "code": "d1_zs_above_bs3_strong",
+                "label_plain": "日线级别回踩支撑位不破，信号较强",
+                "label_expert": "日线 · 中枢上 · 三买 · 强",
+                "action": "建议观察确认，止损 11.90",
+            },
+            "context": {
+                "signal_code": "d1_zs_above_bs3_strong",
+                "key_price": 12.3,
+                "boundary_state": "observe",
+                "stop_loss_price": 11.9,
+                "risk_reward_ratio": 2.0,
+                "action_rule": "由于出现信号 d1_zs_above_bs3_strong，根据三买规则，等待确认。",
+            },
+            "classification": [],
+        },
     }
 
 
 class BrokenLLM:
+    async def infer_ai_native_radar(self, *_args, **_kwargs):
+        raise RuntimeError("offline")
+
     async def infer_ai_native_markdown(self, *_args, **_kwargs):
         raise RuntimeError("offline")
 
@@ -75,14 +97,90 @@ class UserAwareLLM:
 **3. 【推演与应对沙盘】**
 当前先承认分类没有结束，空仓只等待结构给出确认，持仓只按边界管理风险。仅供参考，不构成投资建议。"""
 
+    async def infer_ai_native_radar(self, *_args, **kwargs):
+        self.user_ids.append(kwargs.get("user_id"))
+        self.model_routes.append(kwargs.get("model_route"))
+        if len(_args) >= 2:
+            self.contexts.append(json.loads(_args[1]))
+        self.calls += 1
+        return {
+            "symbol": "sh.600519",
+            "current_position": "结构处在确认后的观察段。",
+            "structure_confidence": 0.72,
+            "main_deduction": "结构处在确认后的观察段。",
+            "primary_path_id": "B",
+            "paths": [
+                {
+                    "id": "B",
+                    "name": "震荡等待",
+                    "description": "当前先承认分类没有结束。",
+                    "status": "CURRENT",
+                    "entry_condition": "站稳 12.80 后再确认。",
+                    "invalidation": "跌破 10.80 则失效。",
+                    "chan_basis": "按结构边界管理风险。",
+                    "confidence": 0.72,
+                }
+            ],
+            "discipline": "空仓只等待结构给出确认，持仓只按边界管理风险。仅供参考，不构成投资建议。",
+            "disclaimer": "仅供参考，不构成投资建议",
+        }
+
 
 class GateBypassLLM(UserAwareLLM):
+    async def infer_ai_native_radar(self, *_args, **kwargs):
+        await super().infer_ai_native_radar(*_args, **kwargs)
+        return {
+            "symbol": "sh.600519",
+            "current_position": "A路径继续。",
+            "structure_confidence": 0.8,
+            "main_deduction": "突破 13.27 就买入，A路径继续。",
+            "primary_path_id": "A",
+            "paths": [
+                {
+                    "id": "A",
+                    "name": "A路径继续",
+                    "description": "突破 13.27 就买入。",
+                    "status": "CURRENT",
+                    "entry_condition": "突破 13.27。",
+                    "invalidation": "跌破 10.80。",
+                    "chan_basis": "测试门禁关闭时保留原文。",
+                    "confidence": 0.8,
+                }
+            ],
+            "discipline": "A路径继续。仅供参考，不构成投资建议。",
+            "disclaimer": "仅供参考，不构成投资建议",
+        }
+
     async def infer_ai_native_markdown(self, *_args, **kwargs):
         await super().infer_ai_native_markdown(*_args, **kwargs)
         return "突破 13.27 就买入，A路径继续。仅供参考，不构成投资建议"
 
 
-class RewriteLLM(UserAwareLLM):
+class ContractOnlyLLM(UserAwareLLM):
+    async def infer_ai_native_radar(self, *_args, **kwargs):
+        await super().infer_ai_native_radar(*_args, **kwargs)
+        return {
+            "symbol": "sh.600519",
+            "current_position": "结构处在确认后的观察段。",
+            "structure_confidence": 0.7,
+            "main_deduction": "这里引用 13.27 作为 AI 自己推演出的观察价，门禁应提示但不能触发保护模式。",
+            "primary_path_id": "B",
+            "paths": [
+                {
+                    "id": "B",
+                    "name": "震荡观察",
+                    "description": "这里引用 13.27 作为 AI 自己推演出的观察价。",
+                    "status": "CURRENT",
+                    "entry_condition": "观察 13.27。",
+                    "invalidation": "跌破 10.80。",
+                    "chan_basis": "测试合同输出。",
+                    "confidence": 0.7,
+                }
+            ],
+            "discipline": "仅供参考，不构成投资建议。",
+            "disclaimer": "仅供参考，不构成投资建议",
+        }
+
     async def infer_ai_native_markdown(self, *_args, **kwargs):
         await super().infer_ai_native_markdown(*_args, **kwargs)
         return """**1. 【全局语境定性】**
@@ -92,7 +190,7 @@ class RewriteLLM(UserAwareLLM):
 只在 12.80、11.90、10.80 这些结构价内有效。
 
 **3. 【推演与应对沙盘】**
-这里出现做空表述，门禁应提示但不能触发二次 LLM 调用。仅供参考，不构成投资建议。"""
+这里引用 13.27 作为 AI 自己推演出的观察价，门禁应提示但不能触发保护模式。仅供参考，不构成投资建议。"""
 
 
 def test_ai_native_failure_writes_only_new_table(monkeypatch, tmp_path):
@@ -114,7 +212,8 @@ def test_ai_native_failure_writes_only_new_table(monkeypatch, tmp_path):
         )
     )
 
-    assert response.gate_status == "FALLBACK"
+    assert response.gate_status == "PASS"
+    assert "本轮不展示自由推演文本" not in response.coach_filtered_md
 
     conn = sqlite3.connect(database.DB_PATH)
     ai_count = conn.execute("SELECT COUNT(*) FROM ai_reasoning_runs").fetchone()[0]
@@ -122,6 +221,32 @@ def test_ai_native_failure_writes_only_new_table(monkeypatch, tmp_path):
     conn.close()
     assert ai_count == 1
     assert old_count == 0
+
+
+def test_ai_native_reasoning_rejects_expected_signal_when_current_signal_missing(monkeypatch):
+    contract = make_radar_contract()
+    contract.pop("signals_v2", None)
+
+    async def fake_get_radar(symbol, user_id=1, include_structure=False):
+        assert include_structure is True
+        return {"status": "success", "data": contract}
+
+    monkeypatch.setattr(reasoning_orchestrator.radar_api, "get_radar", fake_get_radar)
+    monkeypatch.setattr(reasoning_orchestrator.config, "AI_NATIVE_RADAR_WRITE_SNAPSHOTS", False)
+
+    try:
+        asyncio.run(
+            reasoning_orchestrator.build_ai_native_reasoning(
+                symbol="sh600519",
+                user_id=1,
+                llm_service=BrokenLLM(),
+                expected_signal_code="d1_zs_above_bs3_strong",
+            )
+        )
+    except ValueError as exc:
+        assert "actual=NONE" in str(exc)
+    else:
+        raise AssertionError("missing current signal should be rejected when expected_signal_code is present")
 
 
 def test_ai_native_fallback_uses_structure_gap_not_old_radar_path(monkeypatch, tmp_path):
@@ -146,8 +271,8 @@ def test_ai_native_fallback_uses_structure_gap_not_old_radar_path(monkeypatch, t
         )
     )
 
-    assert response.gate_status == "FALLBACK"
-    assert "近端分钟结构缺失" in response.coach_filtered_md
+    assert response.gate_status == "PASS"
+    assert "本轮不展示自由推演文本" not in response.coach_filtered_md
     assert "A 路径" not in response.coach_talk
 
 
@@ -203,16 +328,19 @@ def test_ai_native_passes_request_user_id_to_llm(monkeypatch, tmp_path):
     assert response.gate_status == "PASS"
     assert llm.user_ids == [42]
     assert llm.model_routes[0] is not None
-    payload = llm.contexts[0]["evidence_pack"]
-    assert "levels" in payload
-    assert "operative_context" in payload
-    assert "semantic_assertions" in payload
-    assert "basic_anchors" in payload
+    payload = llm.contexts[0]
+    assert "raw_bi_context" in payload
+    assert payload["semantic_signal"]["primary"]["code"] == "d1_zs_above_bs3_strong"
+    assert [item["id"] for item in payload["semantic_signal"]["deterministic_scenarios"]] == ["A", "B", "C"]
+    assert "algorithm_reference" in payload
+    assert "rules" in payload
     assert "divergence_context" not in payload
     assert "agent_observations" not in payload
     assert "structure_snapshot" not in payload
     assert "rule_engine_observations" not in payload
-    assert "state" not in payload["levels"]["30"]
+    raw_levels = payload.get("raw_bi_context", {}).get("levels", {})
+    if raw_levels.get("30"):
+        assert "state" not in raw_levels["30"]
     assert response.model_route.tier in {"simple", "hard", "calibration"}
     assert response.model_route.model_name
 
@@ -254,7 +382,7 @@ def test_simple_route_ignores_user_thinking_override(monkeypatch, tmp_path):
     assert route.timeout_seconds == 45
 
 
-def test_rewrite_gate_uses_fallback_for_user_visible_response():
+def test_verifier_keeps_user_visible_reasoning_without_price_audit():
     transcript = compile_structure_transcript(make_radar_contract())
     output = {
         "raw_reasoning_md": "内部文本",
@@ -265,26 +393,27 @@ def test_rewrite_gate_uses_fallback_for_user_visible_response():
 只在 12.80、11.90、10.80 这些结构价内有效。
 
 **3. 【推演与应对沙盘】**
-当前做空会破坏 A 股普通股票纪律。仅供参考，不构成投资建议。""",
+这里引用 13.27 作为 AI 自己推演出的观察价。仅供参考，不构成投资建议。""",
     }
     gate_output, gate = verify_ai_reasoning(output, transcript)
 
-    assert gate.status == "REWRITE"
-    response = reasoning_orchestrator._fallback_response(
-        make_radar_contract(),
+    assert gate.status == "PASS"
+    response = reasoning_orchestrator._response_from_output(
+        gate_output,
         transcript,
         gate,
         ModelRoute(model_name="deepseek-test"),
     )
 
     assert gate_output is not None
-    assert response.gate_status == "FALLBACK"
-    assert "做空" not in response.coach_filtered_md
-    assert response.raw_reasoning_md == ""
-    assert response.fallback_reason.startswith("A 股普通股票场景不允许做空执行建议")
+    assert response.gate_status == "PASS"
+    assert "13.27" in response.coach_filtered_md
+    assert response.raw_reasoning_md == "内部文本"
+    assert response.fallback_reason is None
+    assert response.semantic_filter_violations == []
 
 
-def test_rewrite_gate_falls_back_without_calling_llm_twice(monkeypatch, tmp_path):
+def test_verifier_keeps_output_without_calling_llm_twice(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
     database.init_db()
 
@@ -292,7 +421,7 @@ def test_rewrite_gate_falls_back_without_calling_llm_twice(monkeypatch, tmp_path
         assert include_structure is True
         return {"status": "success", "data": make_radar_contract()}
 
-    llm = RewriteLLM()
+    llm = ContractOnlyLLM()
     monkeypatch.setattr(reasoning_orchestrator.radar_api, "get_radar", fake_get_radar)
     monkeypatch.setattr(reasoning_orchestrator.config, "AI_NATIVE_RADAR_WRITE_SNAPSHOTS", False)
 
@@ -304,10 +433,11 @@ def test_rewrite_gate_falls_back_without_calling_llm_twice(monkeypatch, tmp_path
         )
     )
 
-    assert response.gate_status == "FALLBACK"
+    assert response.gate_status == "PASS"
     assert llm.calls == 1
-    assert "做空" not in response.coach_filtered_md
-    assert response.raw_reasoning_md == ""
+    assert "13.27" in response.coach_filtered_md
+    assert response.raw_reasoning_md
+    assert response.semantic_filter_violations == []
 
 
 def test_new_route_success_does_not_call_old_radar_deduce(monkeypatch, tmp_path):
@@ -330,7 +460,7 @@ def test_new_route_success_does_not_call_old_radar_deduce(monkeypatch, tmp_path)
     )
 
     assert response["status"] == "success"
-    assert response["data"]["gate_status"] == "FALLBACK"
+    assert response["data"]["gate_status"] == "PASS"
     assert response["data"]["generated_at"]
     assert "coach_filtered_md" in response["data"]
     assert {item["agent_id"] for item in response["data"]["agent_observations"]} == {

@@ -6,6 +6,7 @@ import RotationCompass from './pages/RotationCompass.jsx'
 import Scanner from './pages/Scanner.jsx'
 import DailyPlaybook from './pages/DailyPlaybook.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
+import { normalizeSymbolInput, readLastViewedSymbol } from './utils/symbolStorage.js'
 import './App.css'
 
 const PAGE_ALIASES = {
@@ -14,8 +15,11 @@ const PAGE_ALIASES = {
   rotation: 'playbook',
 }
 
+const VALID_PAGES = new Set(['dashboard', 'playbook', 'scanner', 'chan', 'rotation', 'review'])
+
 function normalizePage(page) {
-  return PAGE_ALIASES[page] || page || 'playbook'
+  const nextPage = PAGE_ALIASES[page] || page || 'playbook'
+  return VALID_PAGES.has(nextPage) ? nextPage : 'playbook'
 }
 
 function App() {
@@ -26,17 +30,18 @@ function App() {
 
   // ─── 全局活跃股票 (各板块共享) ───────────────────────────
   const [activeSymbol, setActiveSymbol] = useState(
-    () => localStorage.getItem('lastViewedSymbol') || 'sh600519'
+    () => readLastViewedSymbol().symbol
   )
   const [activeSymbolName, setActiveSymbolName] = useState(
-    () => localStorage.getItem('lastViewedSymbolName') || '贵州茅台'
+    () => readLastViewedSymbol().name
   )
 
   const setGlobalSymbol = (symbol, name) => {
-    setActiveSymbol(symbol)
-    setActiveSymbolName(name || symbol)
-    localStorage.setItem('lastViewedSymbol', symbol)
-    localStorage.setItem('lastViewedSymbolName', name || symbol)
+    const next = normalizeSymbolInput(symbol, name)
+    setActiveSymbol(next.symbol)
+    setActiveSymbolName(next.name)
+    localStorage.setItem('lastViewedSymbol', next.symbol)
+    localStorage.setItem('lastViewedSymbolName', next.name)
   }
 
   // ─── 跨板块「去看盘」跳转 ───────────────────────────────

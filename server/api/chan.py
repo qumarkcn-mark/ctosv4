@@ -1,10 +1,13 @@
 import time
 import logging
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from server.domain.symbols import normalize_symbol, symbol_aliases
 from server.engines.structure.chan_config_presets import allowed_preset_names
+from server.engines.structure.snapshot_query import get_structure_snapshot_or_enqueue
 from server.services.chan_service import analyze_matrix_state
-from server.services.chan_detail_service import get_chan_detail
+from server.services.chan_detail_service import prewarm_chan_details
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -12,6 +15,14 @@ logger = logging.getLogger(__name__)
 # ─── V2 结果级缓存（15 秒 TTL，防止前端轮询压垮计算资源）───
 _v2_cache: dict = {}   # key: "{symbol}_{cost}_{qty}"  value: {"ts": float, "data": dict}
 _V2_CACHE_TTL = 15.0   # 秒
+
+
+class ChanPrewarmRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list, max_length=30)
+    freqs: list[str] = Field(default_factory=lambda: ["day", "30", "5"], max_length=6)
+    count: int = Field(default=500, ge=50, le=5000)
+    cchan_preset: str = "live_tolerant"
+    concurrency: int = Field(default=2, ge=1, le=4)
 
 
 def _v2_cache_get(key: str):
@@ -654,12 +665,47 @@ async def get_chan_matrix_v2(
     return {"status": "success", "data": response_data}
 
 
+@router.post("/detail/prewarm")
+async def prewarm_chan_detail_snapshots(request: ChanPrewarmRequest):
+    """
+    预生成 Kline 缠论结构快照。
+
+    只接受小批量请求，供自选股/持仓空闲预热；不用于全市场扫描。
+    """
+    if request.cchan_preset not in allowed_preset_names():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_CCHAN_PRESET",
+                "message": f"未知 CChan 预设: {request.cchan_preset}",
+                "allowed_presets": allowed_preset_names(),
+            },
+        )
+    symbols = [normalize_symbol(symbol) for symbol in request.symbols if symbol]
+    freqs = [freq for freq in request.freqs if freq in {"week", "day", "60", "30", "15", "5"}]
+    if not symbols or not freqs:
+        raise HTTPException(status_code=400, detail="symbols/freqs 不能为空")
+
+    result = await prewarm_chan_details(
+        symbols=symbols,
+        freqs=freqs,
+        count=request.count,
+        cchan_preset=request.cchan_preset,
+        concurrency=request.concurrency,
+    )
+    return {"status": result["status"], "data": result}
+
+
 @router.get("/detail/{symbol}")
 async def get_chan_detail_api(
     symbol: str,
     freq: str = Query(default="day", description="K线级别: day/60/30/15/5"),
     count: int = Query(default=500, ge=50, le=5000, description="K线条数"),
+    display_count: Optional[int] = Query(default=None, ge=50, le=5000, description="展示裁剪条数；不参与结构key"),
     cchan_preset: str = Query(default="live_tolerant", description="CChan配置预设"),
+    compute_profile: str = Query(default="chart_standard_v1", description="结构计算窗口配置"),
+    snapshot_mode: str = Query(default="prefer_stale", description="prefer_stale/fresh_only/enqueue_only"),
+    sync_if_missing: Optional[bool] = Query(default=None, description="缺快照时是否同步计算（生产默认关闭）"),
 ):
     """
     获取指定股票的完整缠论几何解析数据，供 KlineChart 前端渲染。
@@ -675,12 +721,17 @@ async def get_chan_detail_api(
     symbol_bs = normalize_symbol(symbol)
 
     try:
-        result = await get_chan_detail(
-            symbol_bs,
+        result = await get_structure_snapshot_or_enqueue(
+            symbol=symbol_bs,
             freq=freq,
-            count=count,
+            display_count=display_count or count,
             cchan_preset=cchan_preset,
+            compute_profile=compute_profile,
+            snapshot_mode=snapshot_mode,
+            sync_if_missing=bool(sync_if_missing) if sync_if_missing is not None else False,
+            priority=90,
         )
+        return {"status": "success", "data": result}
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

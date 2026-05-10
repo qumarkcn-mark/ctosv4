@@ -310,6 +310,241 @@ def test_record_item_response_updates_item_and_logs_event(monkeypatch):
     assert "PLAYBOOK_EXECUTED" in event["evidence_json"]
 
 
+def test_import_rebalance_contract_upserts_playbook_items(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+    contract = {
+        "contract_version": "ai_native.rebalance.v1",
+        "generated_at": "2026-05-05T15:00:00+08:00",
+        "valid_until": "2026-05-06T09:30:00+08:00",
+        "intents": [
+            {
+                "intent_id": "rb_sz002138_20260505",
+                "intent_type": "REDUCE_OR_EXIT",
+                "urgency": "IMMEDIATE",
+                "source": {
+                    "symbol": "sz002138",
+                    "name": "顺络电子",
+                    "is_holding": True,
+                    "quantity": 3000,
+                    "weight_pct": 2.62,
+                },
+                "recommended_action": {
+                    "action": "REDUCE",
+                    "action_label": "降低风险暴露",
+                    "reason": "结构修复失败。仅供参考，不构成投资建议",
+                },
+                "conditions": {
+                    "execute_if": ["不能重新站回 34.94"],
+                    "delay_if": ["AI Fusion 推演超时 45s", "站回 35.47 后复核"],
+                    "invalidate_if": ["AI Fusion 恢复 AI_READY 后再评估是否导入调仓动作。", "Fusion 改判为 HOLD"],
+                    "recheck_at": "NEXT_5M_CLOSE",
+                },
+                "risk": {
+                    "defense_line": 34.94,
+                    "risk_level": "HIGH",
+                    "failure_mode": "继续持有可能扩大回撤。仅供参考，不构成投资建议",
+                    "disclaimer": "仅供参考，不构成投资建议",
+                },
+                "evidence": {
+                    "ai_fusion": {"primary_path": "C"},
+                    "fusion_status": {"state": "FALLBACK", "fallback_reason": "AI Fusion 推演超时 45s"},
+                },
+                "memory": {"previous_intent_count": 2},
+            },
+            {
+                "intent_id": "rb_sz000988_20260505",
+                "intent_type": "WATCH_REPLACEMENT",
+                "urgency": "WATCH_ONLY",
+                "source": {"symbol": "sz000988", "name": "华工科技", "is_holding": False},
+                "recommended_action": {
+                    "action": "OBSERVE",
+                    "action_label": "观察等待确认",
+                    "reason": "等待结构确认。仅供参考，不构成投资建议",
+                },
+                "conditions": {
+                    "execute_if": [],
+                    "delay_if": ["站回 120.82"],
+                    "invalidate_if": ["跌破结构线"],
+                    "recheck_at": "NEXT_30M_CLOSE",
+                },
+                "risk": {"risk_level": "MEDIUM", "disclaimer": "仅供参考，不构成投资建议"},
+                "evidence": {},
+                "memory": {},
+            },
+        ],
+    }
+
+    request = playbook.ImportRebalanceRequest(user_id=1, contract=contract)
+    first = playbook.import_rebalance_to_playbook(request)["data"]
+    second = playbook.import_rebalance_to_playbook(request)["data"]
+
+    assert first["imported_count"] == 2
+    assert first["fusion_status_summary"] == {"AI_READY": 1, "FALLBACK": 1}
+    assert second["imported_count"] == 2
+    assert conn.execute("SELECT COUNT(*) FROM daily_playbook_items").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM coach_events").fetchone()[0] == 2
+    payload = second["playbook"]
+    items = payload["items"]
+    assert [item["source"] for item in items] == ["rebalance", "rebalance"]
+    assert items[0]["status"] == "WATCHING"
+    assert items[0]["mode"] == "HOLDING"
+    assert items[0]["trigger"]["plan_title"] == "AI 结构兜底复核"
+    assert items[0]["trigger"]["rebalance"]["intent_type"] == "NO_ACTION"
+    assert items[0]["trigger"]["rebalance"]["urgency"] == "WATCH_ONLY"
+    assert items[0]["trigger"]["rebalance"]["action"]["action"] == "NO_ACTION"
+    assert items[0]["trigger"]["rebalance"]["action"]["position_delta"] == "NO_POSITION_CHANGE"
+    assert items[0]["source_json"]["rebalance"]["recommended_action"]["action"] == "NO_ACTION"
+    assert items[0]["source_json"]["rebalance"]["original_recommended_action"]["action"] == "REDUCE"
+    assert items[0]["source_json"]["rebalance"]["conditions"]["execute_if"] == []
+    assert items[0]["source_json"]["rebalance"]["original_conditions"]["execute_if"] == ["不能重新站回 34.94"]
+    assert items[0]["trigger"]["rebalance"]["conditions"]["recheck_at"] == "NEXT_5M_CLOSE"
+    assert items[0]["invalidation"]["rebalance"]["recheck_at"] == "NEXT_5M_CLOSE"
+    assert items[0]["trigger"]["rebalance"]["fusion_status"]["state"] == "FALLBACK"
+    assert items[0]["trigger"]["conditions"][0]["label"] == "等待"
+    assert items[0]["trigger"]["conditions"][0]["description"] == "AI Fusion 推演超时 45s"
+    assert items[0]["source_json"]["rebalance"]["conditions"]["delay_if"] == [
+        "AI Fusion 推演超时 45s",
+        "站回 35.47 后复核",
+    ]
+    assert items[0]["source_json"]["rebalance"]["conditions"]["invalidate_if"] == [
+        "AI Fusion 恢复 AI_READY 后再评估是否导入调仓动作。",
+        "Fusion 改判为 HOLD",
+    ]
+    event = playbook._loads(
+        conn.execute("SELECT evidence_json FROM coach_events WHERE symbol = 'sz002138'").fetchone()["evidence_json"],
+        {},
+    )
+    assert event["action"] == "NO_ACTION"
+    assert event["original_action"] == "REDUCE"
+    assert items[1]["status"] == "WATCHING"
+    assert items[1]["mode"] == "EMPTY"
+
+
+def test_import_rebalance_contract_derives_missing_intent_id_for_idempotency(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+    contract = {
+        "contract_version": "ai_native.rebalance.v1",
+        "intents": [
+            {
+                "intent_type": "WATCH_REPLACEMENT",
+                "urgency": "WATCH_ONLY",
+                "source": {"symbol": "sz000988", "name": "华工科技", "is_holding": False},
+                "recommended_action": {"action": "OBSERVE", "action_label": "观察等待确认"},
+                "conditions": {"delay_if": ["站回 120.82"], "recheck_at": "NEXT_30M_CLOSE"},
+                "risk": {"risk_level": "MEDIUM", "disclaimer": "仅供参考，不构成投资建议"},
+                "evidence": {},
+            },
+            "ignore-me",
+        ],
+    }
+
+    request = playbook.ImportRebalanceRequest(user_id=1, contract=contract)
+    first = playbook.import_rebalance_to_playbook(request)["data"]
+    second = playbook.import_rebalance_to_playbook(request)["data"]
+
+    assert first["imported_count"] == 1
+    assert second["imported_count"] == 1
+    assert first["fusion_status_summary"] == {"AI_READY": 1, "FALLBACK": 0}
+    assert conn.execute("SELECT COUNT(*) FROM daily_playbook_items").fetchone()[0] == 1
+    row = conn.execute("SELECT plan_id, trigger_json FROM daily_playbook_items").fetchone()
+    assert row["plan_id"] == "rb:sz000988:WATCH_REPLACEMENT:OBSERVE"
+    assert playbook._loads(row["trigger_json"], {})["rebalance"]["intent_id"] == row["plan_id"]
+
+
+def test_import_rebalance_contract_accepts_wrapped_agent_response(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+    wrapped = {
+        "status": "success",
+        "data": {
+            "contract_version": "ai_native.rebalance.v1",
+            "intents": [
+                {
+                    "intent_id": "rb_wrapped_1",
+                    "intent_type": "WATCH_REPLACEMENT",
+                    "urgency": "WATCH_ONLY",
+                    "source": {"symbol": "sz000988", "name": "华工科技", "is_holding": False},
+                    "recommended_action": {"action": "OBSERVE", "action_label": "观察等待确认"},
+                    "conditions": {"delay_if": ["站回 120.82"], "recheck_at": "NEXT_30M_CLOSE"},
+                    "risk": {"risk_level": "MEDIUM", "disclaimer": "仅供参考，不构成投资建议"},
+                    "evidence": {},
+                }
+            ],
+        },
+    }
+
+    response = playbook.import_rebalance_to_playbook(
+        playbook.ImportRebalanceRequest(user_id=1, contract=wrapped)
+    )["data"]
+
+    assert response["imported_count"] == 1
+    assert conn.execute("SELECT plan_id FROM daily_playbook_items").fetchone()["plan_id"] == "rb_wrapped_1"
+
+
+def test_import_rebalance_contract_preserves_responded_item_context(monkeypatch):
+    conn = make_conn()
+    monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))
+    conn.execute("INSERT INTO daily_playbooks (id, user_id, trade_date) VALUES (1, 1, ?)", (playbook._today(),))
+    conn.execute(
+        """
+        INSERT INTO daily_playbook_items (
+            id, playbook_id, user_id, symbol, name, source, source_json, mode, plan_id, strategy_id,
+            status, trigger_json, invalidation_json, radar_snapshot_json, response_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            8,
+            1,
+            1,
+            "sz002138",
+            "顺络电子",
+            "rebalance",
+            "{}",
+            "HOLDING",
+            "rb_sz002138_20260505",
+            "ai_native_rebalance",
+            "EXECUTED",
+            playbook._json({"plan_title": "用户已执行的旧条件", "rebalance": {"action": {"action": "REDUCE"}}}),
+            "{}",
+            "{}",
+            playbook._json({"response": "EXECUTED", "note": "已处理"}),
+        ),
+    )
+    conn.commit()
+    contract = {
+        "contract_version": "ai_native.rebalance.v1",
+        "intents": [
+            {
+                "intent_id": "rb_sz002138_20260505",
+                "intent_type": "NO_ACTION",
+                "urgency": "WATCH_ONLY",
+                "source": {"symbol": "sz002138", "name": "顺络电子", "is_holding": True},
+                "recommended_action": {"action": "NO_ACTION", "action_label": "无动作"},
+                "conditions": {"delay_if": ["新的复核条件"]},
+                "risk": {"risk_level": "UNKNOWN", "disclaimer": "仅供参考，不构成投资建议"},
+                "evidence": {"fusion_status": {"state": "FALLBACK"}},
+            }
+        ],
+    }
+
+    response = playbook.import_rebalance_to_playbook(
+        playbook.ImportRebalanceRequest(user_id=1, contract=contract)
+    )["data"]
+    row = conn.execute("SELECT status, trigger_json, response_json FROM daily_playbook_items WHERE id = 8").fetchone()
+    trigger = playbook._loads(row["trigger_json"], {})
+
+    assert response["imported_count"] == 0
+    assert response["item_ids"] == []
+    assert conn.execute("SELECT COUNT(*) FROM daily_playbook_items").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM coach_events").fetchone()[0] == 0
+    assert row["status"] == "EXECUTED"
+    assert trigger["plan_title"] == "用户已执行的旧条件"
+    assert playbook._loads(row["response_json"], {})["response"] == "EXECUTED"
+
+
 def test_generate_today_report_persists_summary(monkeypatch):
     conn = make_conn()
     monkeypatch.setattr(playbook, "get_connection", lambda: ConnWrapper(conn))

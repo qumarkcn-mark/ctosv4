@@ -7,6 +7,7 @@
 import asyncio
 import copy
 import datetime as dt
+import inspect
 import json
 import logging
 import time
@@ -22,7 +23,10 @@ from server.engines.decision.level_chain_deduction import build_level_chain_dedu
 from server.engines.decision.position_coach import build_coach_action, build_position_context
 from server.engines.decision.radar_algorithm_v2 import build_radar_algorithm_v2
 from server.engines.decision.radar_planner import build_radar_decision
+from server.engines.signal import build_signal_v2
 from server.engines.structure.chan_adapter import analyze_structure
+from server.engines.structure.kernel import build_structure_data_signature, build_structure_kernel
+from server.engines.structure.kernel_cache import load_structure_kernel_cache, save_structure_kernel_cache
 from server.services.price_service import get_current_price
 
 router = APIRouter()
@@ -33,6 +37,16 @@ RADAR_API_VERSION = "radar.v1"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 STRUCTURE_CACHE_TTL_SECONDS = 120
 STRUCTURE_CACHE_MAX_ITEMS = 64
+RADAR_PROFILE_LEVELS = {
+    "auto": ["day", "30", "5"],
+    "fast": ["day", "30", "5"],
+    "full": ["week", "day", "60", "30", "15", "5"],
+}
+RADAR_PROFILE_COMPUTE_PROFILE = {
+    "auto": "radar_tactical_v1",
+    "fast": "radar_tactical_v1",
+    "full": "chart_standard_v1",
+}
 
 _structure_cache: dict[tuple, dict] = {}
 _structure_cache_locks: dict[tuple, asyncio.Lock] = {}
@@ -90,6 +104,21 @@ def _query_bool(value, default: bool = False) -> bool:
     if query_default is not None and query_default is not value:
         return _query_bool(query_default, default)
     return bool(value)
+
+
+def _query_profile(value, default: str = "fast") -> str:
+    text = str(value or "").strip().lower()
+    if text in RADAR_PROFILE_LEVELS:
+        return text
+    query_default = getattr(value, "default", None)
+    if query_default is not None and query_default is not value:
+        return _query_profile(query_default, default)
+    return default
+
+
+def _adapter_profile_for_request(profile: str) -> str:
+    """auto 先复用 fast 结构，必要时在 get_radar 中升级到 full。"""
+    return "fast" if profile == "auto" else profile
 
 
 def _mode_from_holding(holding: Optional[dict]) -> str:
@@ -395,11 +424,13 @@ def _legacy_level_key(public_level: str) -> str:
 
 def _build_data_source_from_adapter(adapter_result: dict) -> dict:
     structure = (adapter_result.get("data_source") or {}).get("structure") or {}
+    levels = list((adapter_result.get("levels") or {}).keys()) or RADAR_PROFILE_LEVELS["fast"]
     return {
         "structure": {
             "provider": structure.get("provider", "baostock"),
             "adjustflag": structure.get("adjustflag", "2"),
-            "levels": ["week", "day", "60", "30", "15", "5"],
+            "levels": levels,
+            "profile": adapter_result.get("_profile") or "fast",
             "engine": structure.get("engine", "chan.py"),
             "adapter": structure.get("adapter", "server.engines.structure.chan_adapter"),
             "compatibility_mode": False,
@@ -649,30 +680,35 @@ def _scenarios_with_intraday_state(scenarios: list[dict], current_id: str) -> li
     return adjusted
 
 
-async def _load_adapter_structure(symbol: str) -> dict:
+async def _load_adapter_structure(symbol: str, *, profile: str = "full") -> dict:
     """Load formal structure through chan_adapter.
 
     Kept as a small wrapper so tests and later feature flags can isolate this
     migration point.
     """
+    levels = RADAR_PROFILE_LEVELS.get(profile, RADAR_PROFILE_LEVELS["fast"])
+    compute_profile = RADAR_PROFILE_COMPUTE_PROFILE.get(profile, "radar_tactical_v1")
     return await analyze_structure(
         symbol,
-        levels=["week", "day", "60", "30", "15", "5"],
-        count=800,
+        levels=levels,
+        count=1200,
+        compute_profile=compute_profile,
     )
 
 
 def _structure_cache_key(
     symbol: str,
     levels: Optional[list[str]] = None,
-    count: int = 800,
+    count: int = 1200,
     cchan_preset: str = "live_tolerant",
+    compute_profile: str = "radar_tactical_v1",
 ) -> tuple:
     return (
         symbol,
         tuple(levels or ["week", "day", "60", "30", "15", "5"]),
         count,
         cchan_preset,
+        compute_profile,
     )
 
 
@@ -680,6 +716,13 @@ def _clear_structure_cache() -> None:
     """测试和运维用：清空 Radar 结构短缓存。"""
     _structure_cache.clear()
     _structure_cache_locks.clear()
+
+
+def _profiled_structure_data_signature(symbol: str, levels: list[str], compute_profile: str) -> str:
+    signature = build_structure_data_signature(symbol, levels)
+    if not signature:
+        return ""
+    return f"{signature}:compute_profile={compute_profile}"
 
 
 def _trim_structure_cache(now: float) -> None:
@@ -699,29 +742,148 @@ def _trim_structure_cache(now: float) -> None:
 
 
 async def _load_cached_adapter_structure(symbol: str) -> dict:
-    key = _structure_cache_key(symbol)
+    return await _load_cached_adapter_structure_for_profile(symbol, profile="full")
+
+
+async def _load_cached_adapter_structure_for_profile(symbol: str, *, profile: str = "fast") -> dict:
+    levels = RADAR_PROFILE_LEVELS.get(profile, RADAR_PROFILE_LEVELS["fast"])
+    cchan_preset = "live_tolerant"
+    compute_profile = RADAR_PROFILE_COMPUTE_PROFILE.get(profile, "radar_tactical_v1")
+    key = _structure_cache_key(symbol, levels=levels, compute_profile=compute_profile)
+    started = time.perf_counter()
     now = time.monotonic()
     cached = _structure_cache.get(key)
     if cached and now - cached["cached_at"] < STRUCTURE_CACHE_TTL_SECONDS:
-        logger.info("Radar structure cache hit: symbol=%s", symbol)
-        return copy.deepcopy(cached["result"])
+        logger.info("Radar structure cache hit: symbol=%s profile=%s", symbol, profile)
+        result = copy.deepcopy(cached["result"])
+        result["_cache_hit"] = True
+        result["_profile"] = profile
+        result["_structure_ms"] = round((time.perf_counter() - started) * 1000)
+        return result
 
     lock = _structure_cache_locks.setdefault(key, asyncio.Lock())
     async with lock:
         now = time.monotonic()
         cached = _structure_cache.get(key)
         if cached and now - cached["cached_at"] < STRUCTURE_CACHE_TTL_SECONDS:
-            logger.info("Radar structure cache hit-after-wait: symbol=%s", symbol)
-            return copy.deepcopy(cached["result"])
+            logger.info("Radar structure cache hit-after-wait: symbol=%s profile=%s", symbol, profile)
+            result = copy.deepcopy(cached["result"])
+            result["_cache_hit"] = True
+            result["_profile"] = profile
+            result["_structure_ms"] = round((time.perf_counter() - started) * 1000)
+            return result
 
-        result = await _load_adapter_structure(symbol)
+        data_signature = _profiled_structure_data_signature(symbol, levels, compute_profile)
+        use_persistent_cache = _adapter_loader_is_native()
+        if use_persistent_cache:
+            persisted = load_structure_kernel_cache(
+                symbol=symbol,
+                profile=profile,
+                cchan_preset=cchan_preset,
+                data_signature=data_signature,
+            )
+            if persisted:
+                result = copy.deepcopy(persisted)
+                result["_cache_hit"] = True
+                result["_persistent_cache_hit"] = True
+                result["_profile"] = profile
+                result["_structure_ms"] = round((time.perf_counter() - started) * 1000)
+                _structure_cache[key] = {
+                    "cached_at": time.monotonic(),
+                    "result": copy.deepcopy(result),
+                }
+                _trim_structure_cache(time.monotonic())
+                logger.info("Radar structure persistent cache hit: symbol=%s profile=%s", symbol, profile)
+                return result
+
+        result = await _call_load_adapter_structure(symbol, profile=profile)
+        if not data_signature:
+            data_signature = _profiled_structure_data_signature(symbol, levels, compute_profile)
+        kernel = build_structure_kernel(
+            symbol=symbol,
+            profile=profile,
+            levels=levels,
+            adapter_result=result,
+            data_signature=data_signature,
+        )
+        result["structure_kernel"] = kernel
         _structure_cache[key] = {
             "cached_at": time.monotonic(),
             "result": copy.deepcopy(result),
         }
+        if use_persistent_cache:
+            save_structure_kernel_cache(
+                symbol=symbol,
+                profile=profile,
+                cchan_preset=cchan_preset,
+                data_signature=data_signature,
+                structure_fingerprint=kernel["structure_fingerprint"],
+                result=result,
+            )
         _trim_structure_cache(time.monotonic())
-        logger.info("Radar structure cache miss: symbol=%s", symbol)
+        logger.info("Radar structure cache miss: symbol=%s profile=%s", symbol, profile)
+        result["_cache_hit"] = False
+        result["_persistent_cache_hit"] = False
+        result["_profile"] = profile
+        result["_structure_ms"] = round((time.perf_counter() - started) * 1000)
         return result
+
+
+def _adapter_loader_is_native() -> bool:
+    """Avoid persistent cache when tests or callers monkeypatch the loader."""
+    return getattr(_load_adapter_structure, "__module__", __name__) == __name__
+
+
+async def _call_load_adapter_structure(symbol: str, *, profile: str) -> dict:
+    """Call the adapter wrapper while preserving old test monkeypatch signatures."""
+    try:
+        signature = inspect.signature(_load_adapter_structure)
+        accepts_profile = (
+            "profile" in signature.parameters
+            or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        )
+    except (TypeError, ValueError):
+        accepts_profile = True
+
+    if accepts_profile:
+        return await _load_adapter_structure(symbol, profile=profile)
+    return await _load_adapter_structure(symbol)
+
+
+def _auto_profile_upgrade_reason(
+    *,
+    algorithm_v2: dict,
+    freshness: dict,
+    coach_action: dict,
+) -> Optional[str]:
+    """Decide whether auto should pay for full multi-level structure.
+
+    结构雷达默认只算 day/30/5。只有当 fast 无法给用户一个清楚门禁，
+    或持仓已接近风险线时，才升级到 full。
+    """
+    if not algorithm_v2:
+        return "LOW_CONFIDENCE"
+    if freshness.get("is_stale"):
+        return "LOW_CONFIDENCE"
+
+    confidence = str(algorithm_v2.get("confidence") or "").upper()
+    path = str(algorithm_v2.get("path") or "").upper()
+    relation = str(algorithm_v2.get("relation") or "").upper()
+    if confidence in {"LOW", "STALE", "UNKNOWN"} or path == "NO_EDGE":
+        return "LOW_CONFIDENCE"
+    if relation == "CONFLICT_OR_UNKNOWN":
+        return "FAST_CONFLICT"
+
+    nearest = coach_action.get("nearest_risk_line") or {}
+    distance_pct = nearest.get("distance_pct")
+    try:
+        distance = abs(float(distance_pct))
+    except (TypeError, ValueError):
+        distance = None
+    if distance is not None and distance <= 2:
+        return "RISK_LINE_NEAR"
+
+    return None
 
 
 @router.get("/health/watchlist")
@@ -754,6 +916,7 @@ async def get_radar(
     risk_pct: float = Query(default=0.01, description="单笔最大风险比例"),
     atr: float = Query(default=0.0, description="ATR，用于空仓止损合理性校验"),
     include_structure: bool = Query(default=False, description="调试用：返回完整多级别结构大对象"),
+    profile: str = Query(default="auto", description="结构计算档位: auto=必要时升级, fast=day/30/5, full=六级别"),
 ):
     """获取 Radar contract 形态的单票缠论分析。"""
     symbol_bs = _normalize_symbol(symbol)
@@ -764,6 +927,9 @@ async def get_radar(
     risk_pct = _query_float(risk_pct, 0.01)
     atr = _query_float(atr, 0.0)
     include_structure = _query_bool(include_structure, False)
+    requested_profile = _query_profile(profile, "auto")
+    resolved_profile = _adapter_profile_for_request(requested_profile)
+    upgrade_reason = None
     holding = _load_holding_from_position(user_id, symbol_bs)
     if holding is None and cost > 0 and qty > 0:
         holding = {"cost": cost, "qty": qty, "strategy_type": "未知", "entry_thesis": {}}
@@ -771,7 +937,7 @@ async def get_radar(
 
     adapter_result = {}
     try:
-        adapter_result = await _load_cached_adapter_structure(symbol_bs)
+        adapter_result = await _load_cached_adapter_structure_for_profile(symbol_bs, profile=resolved_profile)
     except Exception as exc:
         logger.error("Radar chan_adapter failed: symbol=%s error=%s", symbol_bs, exc, exc_info=True)
         adapter_result = _adapter_exception_result(symbol_bs, str(exc))
@@ -815,6 +981,75 @@ async def get_radar(
         quote=quote,
     )
     coach_action = build_coach_action(position_context, algorithm_v2, disclaimer=DISCLAIMER)
+    signals_v2 = build_signal_v2(
+        algorithm_v2,
+        symbol=symbol_bs,
+        quote=quote,
+        position_context=position_context,
+        disclaimer=DISCLAIMER,
+    )
+
+    if requested_profile == "auto" and resolved_profile == "fast":
+        upgrade_reason = _auto_profile_upgrade_reason(
+            algorithm_v2=algorithm_v2,
+            freshness=freshness,
+            coach_action=coach_action,
+        )
+        if upgrade_reason:
+            try:
+                full_adapter_result = await _load_cached_adapter_structure_for_profile(symbol_bs, profile="full")
+            except Exception as exc:
+                logger.warning(
+                    "Radar auto full upgrade failed: symbol=%s reason=%s error=%s",
+                    symbol_bs,
+                    upgrade_reason,
+                    exc,
+                    exc_info=True,
+                )
+                upgrade_reason = f"{upgrade_reason}_FULL_FAILED"
+            else:
+                if _adapter_structure_ready(full_adapter_result):
+                    resolved_profile = "full"
+                    adapter_result = full_adapter_result
+                    structure = _build_structure_from_adapter(adapter_result)
+                    freshness = _build_freshness_from_adapter(adapter_result)
+                    data_source = _build_data_source_from_adapter(adapter_result)
+                    levels = _decision_levels_from_adapter_only(adapter_result)
+                    strategy, entry_plan, holding_plan, plans = build_radar_decision(
+                        matrix_data,
+                        levels,
+                        holding,
+                        DISCLAIMER,
+                        account_value=account_value,
+                        risk_pct=risk_pct,
+                        atr=atr,
+                    )
+                    deduction = build_level_chain_deduction(
+                        levels,
+                        freshness=freshness,
+                        mode=mode,
+                        disclaimer=DISCLAIMER,
+                    )
+                    algorithm_v2 = build_radar_algorithm_v2(
+                        levels,
+                        freshness=freshness,
+                        disclaimer=DISCLAIMER,
+                    )
+                    algorithm_v2 = _apply_intraday_quote_overlay(algorithm_v2, quote)
+                    position_context = build_position_context(
+                        holding,
+                        algorithm_v2,
+                        account_value=account_value,
+                        quote=quote,
+                    )
+                    coach_action = build_coach_action(position_context, algorithm_v2, disclaimer=DISCLAIMER)
+                    signals_v2 = build_signal_v2(
+                        algorithm_v2,
+                        symbol=symbol_bs,
+                        quote=quote,
+                        position_context=position_context,
+                        disclaimer=DISCLAIMER,
+                    )
 
     data = {
         "api_version": RADAR_API_VERSION,
@@ -825,6 +1060,7 @@ async def get_radar(
         "data_source": data_source,
         "quote": quote,
         "structure_config": _structure_config_from_adapter(adapter_result),
+        "structure_kernel": adapter_result.get("structure_kernel") or {},
         "freshness": freshness,
         "strategy": strategy,
         "entry_plan": entry_plan,
@@ -833,10 +1069,22 @@ async def get_radar(
         "coach_action": coach_action,
         "deduction": deduction,
         "algorithm_v2": algorithm_v2 if include_structure else _compact_algorithm_for_display(algorithm_v2),
+        "signals_v2": signals_v2,
         "plans": plans,
         "alerts": [],
         "narrative": None,
         "legacy_refs": legacy_refs,
+        "diagnostics": {
+            "requested_profile": requested_profile,
+            "resolved_profile": resolved_profile,
+            "upgrade_reason": upgrade_reason,
+            "structure_profile": resolved_profile,
+            "structure_levels": list((adapter_result.get("levels") or {}).keys()),
+            "structure_ms": adapter_result.get("_structure_ms"),
+            "structure_cache_hit": bool(adapter_result.get("_cache_hit")),
+            "structure_persistent_cache_hit": bool(adapter_result.get("_persistent_cache_hit")),
+            "structure_fingerprint": ((adapter_result.get("structure_kernel") or {}).get("structure_fingerprint")),
+        },
         "disclaimer": DISCLAIMER,
     }
     if include_structure:

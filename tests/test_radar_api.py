@@ -239,6 +239,10 @@ def test_empty_mode_returns_entry_plan_and_no_holding_plan(monkeypatch):
     assert data["deduction"]["chain"] == ["day", "30", "5"]
     assert data["algorithm_v2"]["version"] == "radar_algorithm.v2.phase1"
     assert data["algorithm_v2"]["level_chain"] == {"L0": "day", "L1": "30", "L2": "5"}
+    assert data["signals_v2"]["version"] == "semantic_signal.v2"
+    assert data["signals_v2"]["state"] in {"success", "stale"}
+    assert data["signals_v2"]["primary"]["code"]
+    assert data["signals_v2"]["context"]["signal_code"] == data["signals_v2"]["primary"]["code"]
     assert data["position_context"]["state"] == "EMPTY"
     assert data["coach_action"]["position_state"] == "EMPTY"
     assert data["coach_action"]["disclaimer"] == radar.DISCLAIMER
@@ -257,6 +261,7 @@ def test_success_uses_chan_adapter_structure_when_available(monkeypatch):
     assert response["status"] == "success"
     assert data["data_source"]["structure"]["adapter"] == "server.engines.structure.chan_adapter"
     assert data["data_source"]["structure"]["compatibility_mode"] is False
+    assert data["diagnostics"]["structure_profile"] == "fast"
     assert data["freshness"]["last_bar_at"] == "2026-04-24 15:00:00"
     assert data["structure"]["levels"]["day"]["bis"][0]["is_up"] is True
     assert data["structure"]["levels"]["day"]["active_zhongshu"]["zg"] == 19.5

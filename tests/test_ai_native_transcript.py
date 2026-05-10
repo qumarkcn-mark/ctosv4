@@ -11,6 +11,13 @@ def radar_contract():
         "symbol": "sh.600519",
         "mode": "EMPTY",
         "freshness": {"is_stale": False},
+        "structure_kernel": {
+            "version": "structure_kernel.v1",
+            "profile": "fast",
+            "structure_fingerprint": "kernel:sh.600519:fast:abc123",
+            "facts_digest": {"path": "UPWARD_MAJOR_WAVE"},
+            "data_quality": {"is_stale": False},
+        },
         "structure": {
             "levels": {
                 "day": {
@@ -101,6 +108,8 @@ def test_compile_structure_transcript_collects_allowed_prices_and_fingerprint():
     assert transcript.agent_observations[0].verdict == "结构事实可用于推演"
     assert transcript.reasoning_evidence_pack["version"] == "reasoning_evidence_pack.v1"
     assert transcript.reasoning_evidence_pack["levels"]["30"]["price_vs_center"]["position"] == "above_zg"
+    assert transcript.reasoning_evidence_pack["structure_kernel"]["structure_fingerprint"] == "kernel:sh.600519:fast:abc123"
+    assert transcript.reasoning_evidence_pack["structure_kernel"]["facts_digest"]["path"] == "UPWARD_MAJOR_WAVE"
 
 
 def test_reasoning_evidence_pack_marks_high_extension_not_standard_third_sell():

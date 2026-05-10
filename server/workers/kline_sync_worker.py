@@ -20,8 +20,8 @@ from server.domain.symbols import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
-# 同步的频率列表
-ALL_FREQS = ["day", "60", "30", "15", "5"]
+# 同步的频率列表。周线是 AI 推演和全量 Radar 的宏观背景，不能只在展示层支持。
+ALL_FREQS = ["week", "day", "60", "30", "15", "5"]
 
 # 检查间隔（秒）：30 分钟
 CHECK_INTERVAL = 30 * 60
@@ -36,6 +36,7 @@ def _get_all_tracked_symbols() -> list[str]:
     来源：
     1. kline_sync_meta 表中所有已有记录的 symbol
     2. positions 表中的持仓 symbol（转换为 baostock 格式）
+    3. watchlist_items 表中的自选 symbol（自选即进入长期数据维护队列）
     """
     symbols = set()
 
@@ -67,7 +68,83 @@ def _get_all_tracked_symbols() -> list[str]:
     except Exception as e:
         logger.warning("读取 positions 失败: %s", e)
 
+    # 来源 3: 自选股表中的 symbol
+    try:
+        from server.db.database import get_connection
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT wi.symbol
+                  FROM watchlist_items wi
+                  JOIN watchlist_groups wg ON wg.id = wi.group_id
+                """
+            ).fetchall()
+            for row in rows:
+                raw = row["symbol"]
+                symbols.add(normalize_symbol(raw))
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("读取 watchlist_items 失败: %s", e)
+
     return sorted(symbols)
+
+
+def sync_new_watchlist_symbol(symbol: str) -> dict:
+    """
+    新增自选后的单股数据闭环。
+
+    先快速拉 day/5 让前台尽快可显示，再补齐 BaoStock 全级别历史。
+    这是后台任务，不阻塞自选添加接口。
+    """
+    from server.services.baostock_service import fetch_klines_quick, fetch_klines_sync
+
+    canonical_symbol = normalize_symbol(symbol)
+    result = {
+        "symbol": canonical_symbol,
+        "quick": [],
+        "full": [],
+        "errors": [],
+    }
+
+    for freq in ("day", "5"):
+        try:
+            written = fetch_klines_quick(canonical_symbol, freq)
+            result["quick"].append({"freq": freq, "written": written, "status": "ok"})
+        except Exception as exc:
+            logger.warning("自选快速拉取失败 %s/%s: %s", canonical_symbol, freq, exc)
+            result["quick"].append({"freq": freq, "written": 0, "status": "error"})
+            result["errors"].append({"stage": "quick", "freq": freq, "error": str(exc)})
+
+    for freq in ALL_FREQS:
+        try:
+            written = fetch_klines_sync(canonical_symbol, freq)
+            result["full"].append({"freq": freq, "written": written, "status": "ok"})
+        except Exception as exc:
+            logger.warning("自选全量补齐失败 %s/%s: %s", canonical_symbol, freq, exc)
+            result["full"].append({"freq": freq, "written": 0, "status": "error"})
+            result["errors"].append({"stage": "full", "freq": freq, "error": str(exc)})
+
+    changed = [
+        {"symbol": canonical_symbol, "freq": item["freq"], "written": item["written"]}
+        for item in result["full"]
+        if item.get("written", 0) > 0
+    ]
+    result["structure_jobs"] = enqueue_structure_jobs_for_changes(
+        changed,
+        priority=80,
+        reason="watchlist_backfill",
+    )
+
+    logger.info(
+        "自选数据闭环完成 %s: quick=%d full=%d errors=%d",
+        canonical_symbol,
+        sum(item["written"] for item in result["quick"]),
+        sum(item["written"] for item in result["full"]),
+        len(result["errors"]),
+    )
+    return result
 
 
 def _is_trading_day(dt: datetime) -> bool:
@@ -88,6 +165,7 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
     total_written = 0
     updated_symbols = 0
     errors = 0
+    changed: list[dict] = []
 
     for symbol in symbols:
         symbol_updated = False
@@ -102,6 +180,7 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
                 total_written += written
                 if written > 0:
                     symbol_updated = True
+                    changed.append({"symbol": symbol, "freq": freq, "written": written})
             except Exception as e:
                 logger.error("同步失败 %s/%s: %s", symbol, freq, e)
                 errors += 1
@@ -114,7 +193,70 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
         "updated_symbols": updated_symbols,
         "total_written": total_written,
         "errors": errors,
+        "changed": changed,
     }
+
+
+def enqueue_structure_jobs_for_changes(
+    changes: list[dict],
+    *,
+    priority: int = 80,
+    holding_priority: int = 95,
+    reason: str = "kline_sync",
+) -> dict:
+    """Enqueue structure jobs for formal BaoStock bars that actually changed."""
+    from server.engines.structure.snapshot_query import build_formal_structure_key
+    from server.engines.structure.structure_jobs import enqueue_structure_job
+
+    items = []
+    holding_symbols = _get_holding_symbol_set()
+    for change in changes or []:
+        symbol = change.get("symbol")
+        freq = change.get("freq")
+        if not symbol or freq not in {"week", "day", "60", "30", "15", "5"}:
+            continue
+        try:
+            structure_key, context = build_formal_structure_key(symbol=symbol, freq=freq)
+            if structure_key is None:
+                items.append({"symbol": symbol, "freq": freq, "status": "skipped", "reason": "NO_DATA"})
+                continue
+            job_priority = holding_priority if structure_key.symbol in holding_symbols else priority
+            job = enqueue_structure_job(
+                structure_key,
+                priority=job_priority,
+                reason=reason,
+                retry_terminal=True,
+            )
+            items.append({
+                "symbol": structure_key.symbol,
+                "freq": structure_key.freq,
+                "status": job.get("status"),
+                "priority": job_priority,
+                "job_id": job.get("job_id"),
+                "enqueued": job.get("enqueued"),
+                "bumped": job.get("bumped"),
+            })
+        except Exception as exc:
+            logger.warning("结构任务入队失败 %s/%s: %s", symbol, freq, exc)
+            items.append({"symbol": symbol, "freq": freq, "status": "error", "error": str(exc)})
+    return {"count": len(items), "items": items}
+
+
+def _get_holding_symbol_set() -> set[str]:
+    try:
+        from server.db.database import get_connection
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM positions WHERE quantity > 0"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {normalize_symbol(row["symbol"]) for row in rows}
+    except Exception as exc:
+        logger.warning("读取持仓优先级列表失败: %s", exc)
+        return set()
 
 
 class KlineSyncWorker:
@@ -204,6 +346,12 @@ class KlineSyncWorker:
             )
 
             result = await run_in_threadpool(_sync_all_symbols, symbols, freqs)
+            structure_jobs = await run_in_threadpool(
+                enqueue_structure_jobs_for_changes,
+                result.get("changed", []),
+                priority=80,
+                reason="kline_sync",
+            )
 
             self._last_sync_time = datetime.now()
 
@@ -215,6 +363,8 @@ class KlineSyncWorker:
                 result["total_written"],
                 result["errors"],
             )
+            if structure_jobs["count"]:
+                logger.info("📊 [%s] 结构任务入队: %d", trigger, structure_jobs["count"])
 
             # 同步完成后执行 WAL checkpoint，防止 WAL 文件无限积累
             # 用 run_in_threadpool 包裹，避免同步 I/O 阻塞事件循环
@@ -239,6 +389,12 @@ class KlineSyncWorker:
             return {"message": "没有需要同步的股票", "total_written": 0}
 
         result = await run_in_threadpool(_sync_all_symbols, symbols, ALL_FREQS)
+        result["structure_jobs"] = await run_in_threadpool(
+            enqueue_structure_jobs_for_changes,
+            result.get("changed", []),
+            priority=80,
+            reason="force_sync",
+        )
         self._last_sync_time = datetime.now()
         return result
 

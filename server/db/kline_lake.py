@@ -8,6 +8,8 @@
 import logging
 import sqlite3
 import threading
+import hashlib
+import json
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -40,6 +42,24 @@ QMT_LAKE_PATH = str(Path(DB_PATH).parent / "qmt_lake.db")
 
 # 兼容旧导入：历史代码里的 LAKE_PATH 代表 BaoStock 多级别缓存。
 LAKE_PATH = BAOSTOCK_LAKE_PATH
+
+LAKE_SOURCE_ROLES = {
+    "tdx": {
+        "role": "full_market_daily_fact",
+        "description": "TDX 全市场日线事实源，供 scanner / 初筛 / AI Native 候选发现使用。",
+        "formal_structure": False,
+    },
+    "baostock": {
+        "role": "multi_level_structure_cache",
+        "description": "BaoStock 多级别前复权缓存，供 Chan / Radar / AI Native 结构推理使用。",
+        "formal_structure": True,
+    },
+    "qmt": {
+        "role": "realtime_closed_bar_preview",
+        "description": "QMT 只读实时 CLOSED K 线缓存，供盘中预览和私有工作站上下文使用。",
+        "formal_structure": False,
+    },
+}
 
 LAKE_SCHEMA = """
 -- K 线主表：全品种、全级别合并存储，按 (symbol, freq, date) 唯一
@@ -248,6 +268,125 @@ def _lake_row_count(source: LakeSource) -> int:
         conn.close()
 
 
+def _path_size_bytes(path: Path) -> int:
+    """统计主库及 WAL/SHM 文件占用，避免只看 .db 低估磁盘使用。"""
+    total = 0
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        if candidate.exists():
+            total += candidate.stat().st_size
+    return total
+
+
+def _readonly_connection(path: Path) -> sqlite3.Connection:
+    """打开只读连接；状态接口不能意外创建空库。"""
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _summarize_lake(source: LakeSource) -> dict:
+    path = Path(get_lake_path(source))
+    info = {
+        "source": source,
+        "path": str(path),
+        "exists": path.exists(),
+        "size_bytes": _path_size_bytes(path),
+        "size_mb": round(_path_size_bytes(path) / 1024 / 1024, 1),
+        "health": "missing",
+        **LAKE_SOURCE_ROLES[source],
+    }
+    if not path.exists():
+        return info
+
+    try:
+        conn = _readonly_connection(path)
+        try:
+            total = conn.execute(
+                """
+                SELECT COUNT(*) AS rows,
+                       COUNT(DISTINCT symbol) AS symbols,
+                       MIN(date) AS first_date,
+                       MAX(date) AS last_date
+                  FROM klines
+                """
+            ).fetchone()
+            freqs = conn.execute(
+                """
+                SELECT freq,
+                       COUNT(*) AS rows,
+                       COUNT(DISTINCT symbol) AS symbols,
+                       MIN(date) AS first_date,
+                       MAX(date) AS last_date
+                  FROM klines
+                 GROUP BY freq
+                 ORDER BY rows DESC
+                """
+            ).fetchall()
+            info.update(
+                {
+                    "health": "ok",
+                    "rows": int(total["rows"] or 0),
+                    "symbols": int(total["symbols"] or 0),
+                    "first_date": total["first_date"],
+                    "last_date": total["last_date"],
+                    "freqs": [dict(row) for row in freqs],
+                }
+            )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        info.update({"health": "malformed", "error": str(exc)})
+    except Exception as exc:
+        info.update({"health": "error", "error": str(exc)})
+    return info
+
+
+def lake_status() -> dict:
+    """
+    汇总当前 K 线数据链路状态。
+
+    这是只读观测接口，给前台调试页、运维检查和 AI Native 预检使用。
+    """
+    sources = [_summarize_lake(source) for source in ("tdx", "baostock", "qmt")]
+    data_dir = Path(DB_PATH).parent
+    legacy_path = data_dir / "kline_lake.db"
+    corrupt_dir = data_dir / "corrupt-backups"
+    corrupt_files = []
+    if corrupt_dir.exists():
+        corrupt_files = [
+            {
+                "path": str(path),
+                "size_bytes": path.stat().st_size,
+                "size_mb": round(path.stat().st_size / 1024 / 1024, 1),
+            }
+            for path in sorted(corrupt_dir.iterdir())
+            if path.is_file()
+        ]
+
+    return {
+        "status": "ok" if all(item["health"] in {"ok", "missing"} for item in sources) else "degraded",
+        "data_dir": str(data_dir),
+        "total_size_bytes": sum(item["size_bytes"] for item in sources),
+        "total_size_mb": round(sum(item["size_bytes"] for item in sources) / 1024 / 1024, 1),
+        "sources": sources,
+        "legacy": {
+            "path": str(legacy_path),
+            "exists": legacy_path.exists(),
+            "size_bytes": _path_size_bytes(legacy_path),
+            "size_mb": round(_path_size_bytes(legacy_path) / 1024 / 1024, 1),
+            "active": False,
+            "cleanup_safe_after_split_verified": legacy_path.exists(),
+        },
+        "corrupt_backups": {
+            "path": str(corrupt_dir),
+            "exists": corrupt_dir.exists(),
+            "files": corrupt_files,
+            "size_bytes": sum(item["size_bytes"] for item in corrupt_files),
+            "size_mb": round(sum(item["size_bytes"] for item in corrupt_files) / 1024 / 1024, 1),
+        },
+    }
+
+
 def query_klines(
     symbol: str,
     freq: str,
@@ -382,6 +521,84 @@ def count_klines(symbol: str, freq: str, source: LakeSource = "baostock") -> int
         (symbol, freq),
     )
     return cursor.fetchone()["cnt"]
+
+
+def get_kline_window_signature(
+    symbol: str,
+    freq: str,
+    *,
+    end_date: Optional[str] = None,
+    limit: int = 2000,
+    adjustflag: str = "2",
+    source: Optional[LakeSource] = None,
+) -> dict:
+    """
+    返回最近一个计算窗口的轻量数据签名。
+
+    结构快照不能只看 last_date；历史补数据、复权修正、OHLC 修订都可能在
+    last_date 不变时改变结构。这里对最新 limit 根做聚合 fingerprint，
+    作为 P0 持久快照的命中条件。
+    """
+    safe_limit = max(1, int(limit or 1))
+    read_source = _infer_read_source(freq, adjustflag, source)
+    conn = get_lake_connection(read_source)
+    conditions = ["symbol = ?", "freq = ?", "adjustflag = ?"]
+    params: list = [symbol, freq, adjustflag]
+    if end_date:
+        conditions.append("date <= ?")
+        params.append(end_date)
+    where_clause = " AND ".join(conditions)
+    rows = conn.execute(
+        f"""
+        SELECT date, open, high, low, close, volume, amount
+          FROM klines
+         WHERE {where_clause}
+         ORDER BY date DESC
+         LIMIT ?
+        """,
+        [*params, safe_limit],
+    ).fetchall()
+    if not rows:
+        return {
+            "source": read_source,
+            "row_count": 0,
+            "first_date": "",
+            "last_date": "",
+            "signature": "",
+        }
+
+    ordered = list(reversed(rows))
+    compact = [
+        [
+            row["date"],
+            round(float(row["open"] or 0), 6),
+            round(float(row["high"] or 0), 6),
+            round(float(row["low"] or 0), 6),
+            round(float(row["close"] or 0), 6),
+            round(float(row["volume"] or 0), 4),
+            round(float(row["amount"] or 0), 4),
+        ]
+        for row in ordered
+    ]
+    payload = {
+        "symbol": symbol,
+        "freq": freq,
+        "source": read_source,
+        "adjustflag": adjustflag,
+        "end_date": end_date or "",
+        "limit": safe_limit,
+        "rows": compact,
+    }
+    signature = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "source": read_source,
+        "row_count": len(ordered),
+        "first_date": str(ordered[0]["date"]),
+        "last_date": str(ordered[-1]["date"]),
+        "signature": signature,
+    }
 
 
 if __name__ == "__main__":

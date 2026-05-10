@@ -175,6 +175,10 @@
   background: rgba(255,255,255,0.03);
 }
 
+.settings-inline-url {
+  margin-top: var(--space-4);
+}
+
 .settings-switch {
   display: inline-flex;
   align-items: center;
@@ -184,9 +188,15 @@
   font-weight: 500;
 }
 
+.settings-switch-block {
+  align-items: flex-start;
+  line-height: 1.45;
+}
+
 .settings-switch input {
   width: 16px;
   height: 16px;
+  margin-top: 1px;
   accent-color: var(--action-gold);
 }
 

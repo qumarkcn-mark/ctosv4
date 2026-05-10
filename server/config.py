@@ -28,6 +28,21 @@ WX_APP_SECRET = os.getenv("WX_APP_SECRET", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-v4-flash")
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+QWEN_ALLOWED_BASE_URLS = tuple(
+    url.strip().rstrip("/")
+    for url in os.getenv(
+        "QWEN_ALLOWED_BASE_URLS",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1,"
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1,"
+        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+    ).split(",")
+    if url.strip()
+)
+QWEN_DEFAULT_MODEL = os.getenv("QWEN_DEFAULT_MODEL", "qwen-plus")
+QWEN_TRADE_PARSE_MODEL = os.getenv("QWEN_TRADE_PARSE_MODEL", "qwen-flash")
+QWEN_SCREENSHOT_OCR_MODEL = os.getenv("QWEN_SCREENSHOT_OCR_MODEL", "qwen-vl-ocr-latest")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
@@ -43,8 +58,27 @@ AI_NATIVE_RADAR_THINKING_ENABLED = os.getenv("AI_NATIVE_RADAR_THINKING_ENABLED",
 AI_NATIVE_RADAR_REASONING_EFFORT = os.getenv("AI_NATIVE_RADAR_REASONING_EFFORT", "high")
 AI_NATIVE_RADAR_MAX_TOKENS = int(os.getenv("AI_NATIVE_RADAR_MAX_TOKENS", "4096"))
 AI_NATIVE_RADAR_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_RADAR_LLM_TIMEOUT", "90"))
-AI_NATIVE_RADAR_PROMPT_VERSION = os.getenv("AI_NATIVE_RADAR_PROMPT_VERSION", "ai_native_radar.v1")
+AI_NATIVE_RADAR_PROMPT_VERSION = os.getenv("AI_NATIVE_RADAR_PROMPT_VERSION", "ai_native_radar.v71_signal_v2")
 AI_NATIVE_RADAR_FINGERPRINT_VERSION = os.getenv("AI_NATIVE_RADAR_FINGERPRINT_VERSION", "fingerprint.v2")
+AI_NATIVE_FUSION_MODEL = os.getenv("AI_NATIVE_FUSION_MODEL", AI_NATIVE_RADAR_MODEL)
+AI_NATIVE_FUSION_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_FUSION_LLM_TIMEOUT", "45"))
+AI_NATIVE_FUSION_MAX_TOKENS = int(os.getenv("AI_NATIVE_FUSION_MAX_TOKENS", str(AI_NATIVE_RADAR_MAX_TOKENS)))
+AI_NATIVE_FUSION_THINKING_ENABLED = os.getenv("AI_NATIVE_FUSION_THINKING_ENABLED", "false").lower() == "true"
+
+# AI Native 自动调度。默认关闭，避免开发环境意外触发 LLM/Kronos 调用。
+AI_NATIVE_SCHEDULER_ENABLED = os.getenv("AI_NATIVE_SCHEDULER_ENABLED", "false").lower() == "true"
+AI_NATIVE_SCHEDULER_INTERVAL = int(os.getenv("AI_NATIVE_SCHEDULER_INTERVAL", "30"))
+AI_NATIVE_SCHEDULER_USER_ID = int(os.getenv("AI_NATIVE_SCHEDULER_USER_ID", "1"))
+AI_NATIVE_REBALANCE_MAX_ITEMS = int(os.getenv("AI_NATIVE_REBALANCE_MAX_ITEMS", "8"))
+AI_NATIVE_TRADING_CALENDAR_PATH = os.getenv("AI_NATIVE_TRADING_CALENDAR_PATH", str(DATA_DIR / "trading_calendar.json"))
+
+# Structure snapshot job queue. Snapshot-first is now the default structure path;
+# old get_chan_detail() is retained only as the worker's compatibility calculator.
+STRUCTURE_SNAPSHOT_FIRST_ENABLED = os.getenv("STRUCTURE_SNAPSHOT_FIRST_ENABLED", "true").lower() == "true"
+STRUCTURE_WORKER_ENABLED = os.getenv("STRUCTURE_WORKER_ENABLED", "false").lower() == "true"
+STRUCTURE_SYNC_IF_MISSING = os.getenv("STRUCTURE_SYNC_IF_MISSING", "false").lower() == "true"
+STRUCTURE_WORKER_INTERVAL = float(os.getenv("STRUCTURE_WORKER_INTERVAL", "2"))
+STRUCTURE_JOB_TIMEOUT_SECONDS = int(os.getenv("STRUCTURE_JOB_TIMEOUT_SECONDS", "600"))
 
 # AI Stop/Reduce shadow training daily loop. Coach-only: creates plans/intents/scores, never sends orders.
 AI_STOP_REDUCE_DAILY_ENABLED = os.getenv("AI_STOP_REDUCE_DAILY_ENABLED", "true").lower() == "true"

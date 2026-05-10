@@ -5,11 +5,12 @@ import logging
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Header, HTTPException, Depends
 from pydantic import BaseModel
 import jwt
 from fastapi.concurrency import run_in_threadpool
 
+from server import config
 from server.db.database import get_connection
 # from server.config import WECHAT_APP_ID, WECHAT_APP_SECRET, JWT_SECRET
 
@@ -99,17 +100,57 @@ async def wechat_login(req: LoginRequest):
 
 # ── 设置持久化 ──
 
+def _redact_secret_settings(settings: dict) -> dict:
+    safe_settings = dict(settings or {})
+    for key in ("deepseek_api_key", "gemini_api_key", "qwen_api_key"):
+        if safe_settings.get(key):
+            safe_settings[f"{key}_configured"] = True
+            safe_settings.pop(key, None)
+    return safe_settings
+
+
+def _clean_settings_update(settings: dict) -> dict:
+    """移除只属于 settings 响应的派生字段，避免写回持久配置。"""
+    cleaned = dict(settings or {})
+    for key in ("deepseek_api_key_configured", "gemini_api_key_configured", "qwen_api_key_configured"):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _settings_current_user_id(authorization: Optional[str] = Header(None)) -> Optional[int]:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(401, "Invalid authorization header")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+        return int(payload.get("sub"))
+    except Exception as exc:
+        raise HTTPException(401, "Invalid token") from exc
+
+
+def _authorize_settings_user(user_id: int, current_user_id: Optional[int]) -> None:
+    if current_user_id is None:
+        if config.DEBUG and user_id == 1:
+            return
+        raise HTTPException(401, "Settings update requires authentication")
+    if current_user_id != user_id:
+        raise HTTPException(403, "Cannot access another user's settings")
+
+
 @router.get("/user/{user_id}/settings")
-async def get_user_settings(user_id: int):
+def get_user_settings(user_id: int, current_user_id: Optional[int] = Depends(_settings_current_user_id)):
     """获取用户全局配置，例如 DeepSeek API Key"""
     import json
+    _authorize_settings_user(user_id, current_user_id)
     conn = get_connection()
     try:
         row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
         if not row:
             raise HTTPException(404, "User not found")
         settings = json.loads(row["settings_json"] or "{}")
-        return {"settings": settings}
+        return {"settings": _redact_secret_settings(settings)}
     finally:
         conn.close()
 
@@ -117,9 +158,14 @@ class SettingsUpdate(BaseModel):
     settings: dict
 
 @router.post("/user/{user_id}/settings")
-async def update_user_settings(user_id: int, req: SettingsUpdate):
+def update_user_settings(
+    user_id: int,
+    req: SettingsUpdate,
+    current_user_id: Optional[int] = Depends(_settings_current_user_id),
+):
     """全量/增量保存用户全局配置"""
     import json
+    _authorize_settings_user(user_id, current_user_id)
     conn = get_connection()
     try:
         row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -127,12 +173,12 @@ async def update_user_settings(user_id: int, req: SettingsUpdate):
             raise HTTPException(404, "User not found")
         
         current_settings = json.loads(row["settings_json"] or "{}")
-        current_settings.update(req.settings)
+        current_settings.update(_clean_settings_update(req.settings))
         new_json_str = json.dumps(current_settings, ensure_ascii=False)
         
         conn.execute("UPDATE users SET settings_json = ? WHERE id = ?", (new_json_str, user_id))
         conn.commit()
-        return {"status": "ok", "settings": current_settings}
+        return {"status": "ok", "settings": _redact_secret_settings(current_settings)}
     finally:
         conn.close()
 

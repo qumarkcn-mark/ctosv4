@@ -30,7 +30,7 @@ _STALE_DAYS = 2
 
 def _is_data_stale(rows: list, stale_days: int = _STALE_DAYS) -> bool:
     """检查缓存数据的最后一条是否过期。
-    
+
     如果最后一条数据的日期距今超过 stale_days 个日历日，则视为过期。
     这防止了矩阵状态机使用数年前的陈旧数据计算中枢。
     """
@@ -87,7 +87,11 @@ async def get_current_price(symbol: str) -> Optional[dict]:
         return None
 
 
-async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
+async def get_daily_klines(
+    symbol: str,
+    count: int = 500,
+    allow_short_fresh_cache: bool = False,
+) -> list[dict]:
     """
     获取日线前复权数据。
     优先级：本地 SQLite 数据湖 → BaoStock 拉取 → 腾讯 API fallback
@@ -103,10 +107,11 @@ async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
 
     # 1️⃣ 尝试从本地数据湖读取
     cached = query_klines(bs_symbol, "day", limit=count)
-    if len(cached) >= min(count, _MIN_CACHE_ROWS) and not _is_data_stale(cached):
+    has_enough_cache = len(cached) >= min(count, _MIN_CACHE_ROWS)
+    if cached and not _is_data_stale(cached) and (has_enough_cache or allow_short_fresh_cache):
         logger.debug("本地数据湖命中: %s/day (%d 条)", bs_symbol, len(cached))
         return cached
-    
+
     if _is_data_stale(cached):
         logger.info("本地缓存过期 %s/day，最后日期: %s，触发增量拉取", bs_symbol, cached[-1]["date"] if cached else "N/A")
 
@@ -148,11 +153,73 @@ async def get_daily_klines(symbol: str, count: int = 500) -> list[dict]:
         logger.warning("腾讯 API 日线失败 %s: %s", symbol, e)
         return []
 
+
+async def get_weekly_klines(
+    symbol: str,
+    count: int = 200,
+    allow_short_fresh_cache: bool = False,
+) -> list[dict]:
+    """
+    获取周线前复权数据。
+    优先级：本地 SQLite 数据湖 → BaoStock 拉取 → 腾讯 API fallback
+    """
+    bs_symbol = _tencent_to_baostock_symbol(symbol)
+
+    # 1️⃣ 尝试从本地数据湖读取
+    cached = query_klines(bs_symbol, "week", limit=count)
+    has_enough_cache = len(cached) >= min(count, 50)
+    if cached and not _is_data_stale(cached, stale_days=10) and (has_enough_cache or allow_short_fresh_cache):
+        logger.debug("本地数据湖命中: %s/week (%d 条)", bs_symbol, len(cached))
+        return cached
+
+    # 2️⃣ 本地不足，触发 BaoStock 快速拉取
+    logger.info("本地缓存不足 %s/week，触发 BaoStock 快速拉取...", bs_symbol)
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(bs_executor, fetch_klines_quick, bs_symbol, "week")
+        cached = query_klines(bs_symbol, "week", limit=count)
+        if cached:
+            return cached
+    except Exception as e:
+        logger.warning("BaoStock 拉取失败 %s/week: %s, 降级到腾讯 API", bs_symbol, e)
+
+    # 3️⃣ 最后降级：腾讯行情 API
+    logger.warning("降级到腾讯 API: %s/week", symbol)
+    qt_symbol = _baostock_to_tencent_symbol(bs_symbol)
+    url = f"{_QT_KLINE_BASE}{qt_symbol},week,,,{count},qfq"
+    try:
+        async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != 0 or not data.get("data"):
+                return []
+            stock_data = data["data"].get(qt_symbol, {})
+            klinesraw = stock_data.get("qfqweek", stock_data.get("week", []))
+            klines = []
+            for item in klinesraw:
+                if len(item) >= 6:
+                    klines.append({
+                        "date": item[0], "open": float(item[1]),
+                        "close": float(item[2]), "high": float(item[3]),
+                        "low": float(item[4]), "volume": float(item[5])
+                    })
+            return klines
+    except Exception as e:
+        logger.warning("腾讯 API 周线失败 %s: %s", symbol, e)
+        return []
+
 # 腾讯分钟线 interval -> baostock freq 映射
 _TENCENT_INTERVAL_MAP = {"m60": "60", "m30": "30", "m15": "15", "m5": "5"}
 
 
-async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 1000) -> list[dict]:
+async def get_minute_klines(
+    symbol: str,
+    interval: str = "m30",
+    count: int = 1000,
+    allow_short_fresh_cache: bool = False,
+) -> list[dict]:
     """
     获取分钟级别 K 线数据，用于多级别状态机推演。
     优先级：本地 SQLite 数据湖 → BaoStock 拉取 → 腾讯 API fallback
@@ -167,7 +234,8 @@ async def get_minute_klines(symbol: str, interval: str = "m30", count: int = 100
 
     # 1️⃣ 本地数据湖（含新鲜度检查）
     cached = query_klines(bs_symbol, bs_freq, limit=count)
-    if len(cached) >= min(count, _MIN_CACHE_ROWS) and not _is_data_stale(cached):
+    has_enough_cache = len(cached) >= min(count, _MIN_CACHE_ROWS)
+    if cached and not _is_data_stale(cached) and (has_enough_cache or allow_short_fresh_cache):
         logger.debug("本地数据湖命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
         return cached
     

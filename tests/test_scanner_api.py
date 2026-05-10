@@ -143,6 +143,9 @@ def test_list_scan_results_returns_ready_with_parsed_research(monkeypatch):
     assert item["strategy_type"] == "战法一"
     assert item["strategy_contract"]["status"] == "TRIGGERED"
     assert "plans" in item["strategy_contract"]["outputs"]
+    assert item["signal_code"] == "d1_zs_above_bs3_medium"
+    assert item["signals_v2"]["primary"]["label_plain"] == "日线级别回踩支撑位不破，信号中等"
+    assert item["signals_v2"]["context"]["risk_reward_ratio"] == 2.1
 
 
 def test_list_scan_results_maps_pending_strategy_contract(monkeypatch):
@@ -214,6 +217,28 @@ def test_run_scan_returns_running_when_job_exists(monkeypatch):
         "candidate_count": 3,
     }
     assert len(tasks.tasks) == 0
+
+
+def test_run_scan_job_uses_effective_scan_date_for_force_backfill(monkeypatch):
+    reset_scan_job()
+    called = {}
+
+    monkeypatch.setattr("server.workers.scanner.get_today", lambda: "2026-05-10")
+    monkeypatch.setattr("server.workers.scanner.run_scan", lambda force: 2)
+    monkeypatch.setattr("server.workers.scanner.get_last_effective_scan_date", lambda default=None: "2026-05-08")
+
+    async def fake_trigger(scan_date):
+        called["scan_date"] = scan_date
+
+    monkeypatch.setattr("server.workers.scanner.trigger_fundamental_analysis", fake_trigger)
+
+    scanner._run_scan_job(force=True)
+
+    assert called["scan_date"] == "2026-05-08"
+    snapshot = scanner._scan_job_snapshot()
+    assert snapshot["last_status"] == "completed"
+    assert snapshot["last_scan_date"] == "2026-05-08"
+    assert snapshot["last_candidate_count"] == 2
 
 
 def test_scanner_admin_token_blocks_mutations_when_configured(monkeypatch):
