@@ -145,7 +145,7 @@ class PriceMonitor:
         """Run AI stop/reduce shadow-training once per trading day after close."""
         from datetime import datetime
         from server import config
-        from server.workers.stop_reduce_daily import StopReduceDailyConfig, run_stop_reduce_daily
+        from server.workers.stop_reduce_daily import StopReduceDailyConfig, run_stop_reduce_daily_logged
 
         if not config.AI_STOP_REDUCE_DAILY_ENABLED:
             return
@@ -170,8 +170,8 @@ class PriceMonitor:
         self._ai_stop_reduce_daily_attempted_date = today_str
         logger.info("[AI训练] 开始每日 stop/reduce shadow-training")
         try:
-            run = runner or run_stop_reduce_daily
-            report = await run(config=StopReduceDailyConfig(user_id=1))
+            run = runner or run_stop_reduce_daily_logged
+            report = await run(config=StopReduceDailyConfig(user_id=1), trigger="AUTO")
             self._ai_stop_reduce_daily_completed_date = today_str
             logger.info(
                 "[AI训练] 每日训练完成 plans=%s intents=%s settled=%s lessons=%s",

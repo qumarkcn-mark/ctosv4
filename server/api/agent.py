@@ -201,6 +201,14 @@ class AINativeRadarAutoSettleRequest(BaseModel):
     limit: int = 20
     force: bool = False
 
+class StopReduceDailyRunRequest(BaseModel):
+    user_id: int = 1
+    symbol: Optional[str] = None
+    mode: str = "FULL"
+    limit: int = 20
+    settlement_limit: int = 5
+    dry_run: bool = False
+
 class PortfolioStrategyRequest(BaseModel):
     scan_results: list
 
@@ -579,6 +587,81 @@ async def auto_settle_ai_native_radar_runs(request: AINativeRadarAutoSettleReque
     except Exception as e:
         logger.error(f"AI Native Radar auto-settle failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"AI Native Radar 自动结算失败: {str(e)}")
+
+
+@router.get("/stop-reduce/training-status")
+async def stop_reduce_training_status(
+    user_id: int = Query(1),
+    today: Optional[str] = Query(None),
+):
+    """读取 AI 止损/减仓训练状态，只展示，不触发交易或结算。"""
+    try:
+        from server.engines.ai_native.stop_reduce_report import build_stop_reduce_training_status
+
+        def _load_status():
+            conn = get_connection()
+            try:
+                return build_stop_reduce_training_status(conn, user_id=user_id, today=today)
+            finally:
+                conn.close()
+
+        status = await run_in_threadpool(_load_status)
+        return {
+            "status": "success",
+            "data": {
+                **status,
+                "scheduler": {
+                    "enabled": config.AI_STOP_REDUCE_DAILY_ENABLED,
+                    "start": config.AI_STOP_REDUCE_DAILY_START,
+                    "end": config.AI_STOP_REDUCE_DAILY_END,
+                },
+            },
+        }
+    except Exception as e:
+        logger.error(f"AI Stop/Reduce training status failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI 训练状态加载失败: {str(e)}")
+
+
+@router.post("/stop-reduce/run-daily")
+async def run_stop_reduce_training_daily(request: StopReduceDailyRunRequest):
+    """手动触发 AI 止损/减仓训练；只跑影子训练，不执行真实交易。"""
+    try:
+        from server.workers.stop_reduce_daily import (
+            StopReduceDailyConfig,
+            run_stop_reduce_daily_logged,
+            summarize_stop_reduce_daily_report,
+        )
+
+        mode = request.mode.upper()
+        if mode not in {"FULL", "MONITOR", "SETTLEMENT"}:
+            raise HTTPException(status_code=400, detail="mode must be FULL, MONITOR, or SETTLEMENT")
+
+        daily_config = StopReduceDailyConfig(
+            user_id=request.user_id,
+            symbol=request.symbol,
+            limit=max(1, min(request.limit, 200)),
+            settlement_limit=max(1, min(request.settlement_limit, 20)),
+            dry_run=request.dry_run,
+            skip_monitor=mode == "SETTLEMENT",
+            skip_settlement=mode == "MONITOR",
+        )
+        report = await run_stop_reduce_daily_logged(
+            config=daily_config,
+            trigger="MANUAL_DRY_RUN" if request.dry_run else "MANUAL",
+        )
+        return {
+            "status": "success",
+            "data": {
+                "mode": mode,
+                "summary": summarize_stop_reduce_daily_report(report),
+                "disclaimer": "仅供参考，不构成投资建议",
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI Stop/Reduce manual training failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI 训练手动触发失败: {str(e)}")
 
 
 @router.get("/stop-reduce/training-report")

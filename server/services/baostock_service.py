@@ -18,17 +18,75 @@
 
 import logging
 import asyncio
+import os
+import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
 import baostock as bs
+import baostock.common.context as bs_context
+import baostock.common.contants as bs_cons
+import baostock.util.socketutil as bs_socket_util
 import pandas as pd
 
 from server.db.kline_lake import upsert_klines, get_last_sync_date, count_klines
 
 logger = logging.getLogger(__name__)
+
+def _load_baostock_socket_timeout_seconds() -> float:
+    """读取 BaoStock socket 超时配置，配置异常时回退到 4 秒。"""
+
+    raw_timeout = os.getenv("BAOSTOCK_SOCKET_TIMEOUT_SECONDS", "4")
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        logger.warning("BAOSTOCK_SOCKET_TIMEOUT_SECONDS 无效，使用默认 4 秒: %r", raw_timeout)
+        return 4.0
+    if timeout <= 0:
+        logger.warning("BAOSTOCK_SOCKET_TIMEOUT_SECONDS 必须为正数，使用默认 4 秒: %r", raw_timeout)
+        return 4.0
+    return timeout
+
+
+# BaoStock 客户端内部直接使用 socket.connect/recv，默认没有超时。
+# 当 public-api.baostock.com:10030 不通时，登录会长期阻塞并拖死 K 线 API。
+BAOSTOCK_SOCKET_TIMEOUT_SECONDS = _load_baostock_socket_timeout_seconds()
+
+
+def _install_baostock_socket_timeout() -> None:
+    """只给 BaoStock 自己的 socket 加超时，避免影响腾讯/QMT/httpx 等其它网络调用。"""
+
+    def _connect_with_timeout(self):
+        try:
+            bs_sock = socket.create_connection(
+                (bs_cons.BAOSTOCK_SERVER_IP, bs_cons.BAOSTOCK_SERVER_PORT),
+                timeout=BAOSTOCK_SOCKET_TIMEOUT_SECONDS,
+            )
+            bs_sock.settimeout(BAOSTOCK_SOCKET_TIMEOUT_SECONDS)
+        except Exception:
+            print("服务器连接失败，请稍后再试。")
+            bs_sock = None
+        setattr(bs_context, "default_socket", bs_sock)
+
+    def _get_default_socket_with_timeout():
+        try:
+            bs_sock = socket.create_connection(
+                (bs_cons.BAOSTOCK_SERVER_IP, bs_cons.BAOSTOCK_SERVER_PORT),
+                timeout=BAOSTOCK_SOCKET_TIMEOUT_SECONDS,
+            )
+            bs_sock.settimeout(BAOSTOCK_SOCKET_TIMEOUT_SECONDS)
+            return bs_sock
+        except Exception:
+            print("服务器连接失败，请稍后再试。")
+            return None
+
+    bs_socket_util.SocketUtil.connect = _connect_with_timeout
+    bs_socket_util.get_default_socket = _get_default_socket_with_timeout
+
+
+_install_baostock_socket_timeout()
 
 # ---------------------------------------------------------------------------
 # Pandas 2.x 兼容性修复
