@@ -3,8 +3,8 @@
 扫描 BaoStock 数据湖，聚合每只股票的缓存状态。
 提供概览、WAL清理、数据生命周期管理。
 
-V4.1 架构：TDX 日线与 BaoStock 多级别缓存物理拆库。
-本服务只管理 BaoStock lake，scanner 使用 TDX lake。
+V5 架构：TDX 日线与 BaoStock 多级别缓存物理拆库。
+本服务只管理 BaoStock lake，正式结构快照由 BaoStock K 线 + CZSC 生成。
 """
 
 import logging

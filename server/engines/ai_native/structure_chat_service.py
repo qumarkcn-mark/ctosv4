@@ -1,0 +1,346 @@
+"""AI Native V5 deterministic structure chat.
+
+This service answers from saved AI Structure Context only. It does not call
+CZSC, old radar, or any heavy structure path.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+from server.db.database import get_connection
+from server.domain.symbols import normalize_symbol
+from server.engines.ai_native.czsc_snapshot_service import now_text, stable_hash
+from server.engines.ai_native.structure_context_service import get_latest_ai_structure_context
+from server.engines.ai_native.structure_evidence_service import (
+    chart_focus_for_intent,
+    ensure_evidence_ids_belong_to_context,
+)
+
+
+RISK_DISCLAIMER = "仅供参考，不构成投资建议"
+
+
+def answer_structure_question(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    canonical = normalize_symbol(symbol)
+    context = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
+    if not context:
+        return None
+    intent_type = classify_intent(question)
+    chart_focus = chart_focus_for_intent(context, intent_type)
+    if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
+        raise ValueError("evidence ids do not belong to context")
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=canonical,
+        context_id=context["context_id"],
+        session_id=session_id,
+    )
+    if not session:
+        return None
+    answer = _build_answer(question=question, intent_type=intent_type, context=context, chart_focus=chart_focus)
+    reminder_candidates = _reminder_candidates(intent_type=intent_type, context=context, chart_focus=chart_focus)
+    payload = {
+        "session_id": session["session_id"],
+        "context_id": context["context_id"],
+        "answer": answer["coach_answer"],
+        "coach_answer": answer["coach_answer"],
+        "intent_type": intent_type,
+        "referenced_boundaries": answer["referenced_boundaries"],
+        "chart_focus": chart_focus,
+        "suggested_reminders": reminder_candidates,
+        "risk_disclaimer": RISK_DISCLAIMER,
+    }
+    message = save_chat_message(
+        user_id=user_id,
+        symbol=canonical,
+        session_id=session["session_id"],
+        context_id=context["context_id"],
+        question_text=question,
+        intent_type=intent_type,
+        answer_payload=payload,
+        evidence_refs=chart_focus["evidence_ids"],
+        reminder_candidates=reminder_candidates,
+    )
+    payload["message_id"] = message["message_id"]
+    return payload
+
+
+def classify_intent(question: str) -> str:
+    text = (question or "").strip().lower()
+    if any(token in text for token in ("跌破", "不看", "失效", "哪里止", "防守", "破位")):
+        return "invalidation"
+    if any(token in text for token in ("拿着", "还能持", "要走", "卖", "减仓", "清仓")):
+        return "hold_or_exit"
+    if any(token in text for token in ("提醒", "盯", "到了叫", "到价")):
+        return "reminder"
+    if any(token in text for token in ("为什么", "解释", "结构", "中枢")):
+        return "explain_structure"
+    if any(token in text for token in ("复盘", "回顾")):
+        return "review"
+    return "buy_window"
+
+
+def upsert_chat_session(
+    *,
+    user_id: int,
+    symbol: str,
+    context_id: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    canonical = normalize_symbol(symbol)
+    conn = get_connection()
+    try:
+        now = now_text()
+        row = None
+        if session_id:
+            row = conn.execute(
+                "SELECT * FROM ai_structure_chat_sessions WHERE session_id = ? AND user_id = ? AND symbol = ?",
+                (session_id, int(user_id), canonical),
+            ).fetchone()
+            if not row:
+                return {}
+        if not row:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM ai_structure_chat_sessions
+                 WHERE user_id = ? AND symbol = ? AND status = 'ACTIVE'
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (int(user_id), canonical),
+            ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE ai_structure_chat_sessions
+                   SET latest_context_id = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (context_id, now, row["id"]),
+            )
+            conn.commit()
+            updated = conn.execute("SELECT * FROM ai_structure_chat_sessions WHERE id = ?", (row["id"],)).fetchone()
+            return dict(updated)
+        new_session_id = _new_session_id(user_id=user_id, symbol=canonical)
+        conn.execute(
+            """
+            INSERT INTO ai_structure_chat_sessions (
+                session_id, user_id, symbol, latest_context_id, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)
+            """,
+            (new_session_id, int(user_id), canonical, context_id, now, now),
+        )
+        conn.commit()
+        created = conn.execute("SELECT * FROM ai_structure_chat_sessions WHERE session_id = ?", (new_session_id,)).fetchone()
+        return dict(created)
+    finally:
+        conn.close()
+
+
+def list_chat_sessions(*, user_id: int, symbol: str) -> list[dict[str, Any]]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+              FROM ai_structure_chat_sessions
+             WHERE user_id = ? AND symbol = ?
+             ORDER BY updated_at DESC, id DESC
+            """,
+            (int(user_id), normalize_symbol(symbol)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_chat_messages(*, user_id: int, session_id: str) -> list[dict[str, Any]] | None:
+    conn = get_connection()
+    try:
+        session = conn.execute(
+            "SELECT * FROM ai_structure_chat_sessions WHERE user_id = ? AND session_id = ?",
+            (int(user_id), session_id),
+        ).fetchone()
+        if not session:
+            return None
+        rows = conn.execute(
+            """
+            SELECT *
+              FROM ai_structure_chat_messages
+             WHERE user_id = ? AND session_id = ?
+             ORDER BY created_at ASC, id ASC
+            """,
+            (int(user_id), session_id),
+        ).fetchall()
+        return [_message_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def save_chat_message(
+    *,
+    user_id: int,
+    symbol: str,
+    session_id: str,
+    context_id: str,
+    question_text: str,
+    intent_type: str,
+    answer_payload: dict[str, Any],
+    evidence_refs: list[str],
+    reminder_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    message_key = stable_hash({
+        "user_id": int(user_id),
+        "session_id": session_id,
+        "context_id": context_id,
+        "question": question_text,
+        "intent_type": intent_type,
+        "nonce": uuid.uuid4().hex,
+    })
+    message_id = f"v5msg_{message_key[:16]}"
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO ai_structure_chat_messages (
+                message_id, session_id, user_id, symbol, context_id, role,
+                question_text, intent_type, answer_json, evidence_refs_json,
+                reminder_candidates_json, risk_disclaimer, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                session_id,
+                int(user_id),
+                normalize_symbol(symbol),
+                context_id,
+                question_text,
+                intent_type,
+                _json(answer_payload),
+                _json(evidence_refs),
+                _json(reminder_candidates),
+                RISK_DISCLAIMER,
+                now_text(),
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM ai_structure_chat_messages WHERE message_id = ?", (message_id,)).fetchone()
+        return _message_row(row)
+    finally:
+        conn.close()
+
+
+def _build_answer(*, question: str, intent_type: str, context: dict[str, Any], chart_focus: dict[str, Any]) -> dict[str, Any]:
+    symbol = context["symbol"]
+    boundary = context.get("boundary") or {}
+    level = chart_focus.get("level") or ""
+    center = (((boundary.get("levels") or {}).get(level) or {}).get("active_center") or {})
+    zg = _num(center.get("zg"))
+    zd = _num(center.get("zd"))
+    position = (context.get("raw_context") or {}).get("position_context") or {}
+    holding_text = "你现在有持仓，先把防守线看清楚" if position.get("has_position") else "你现在是空仓，重点是等触发条件而不是追问结论"
+    if zg <= 0 or zd <= 0:
+        coach = f"{symbol} 目前结构边界不足，无法判断。先等 CZSC 快照刷新出有效中枢，再讨论观察窗口。{RISK_DISCLAIMER}"
+        return {"coach_answer": coach, "referenced_boundaries": []}
+    if intent_type == "invalidation":
+        coach = (
+            f"这只票先看 {level} 级别下沿 {zd:.2f}。如果有效跌破这里，当前观察分支就要降级；"
+            f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "hold_or_exit":
+        coach = (
+            f"{holding_text}：{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
+            f"我不能替你下卖出结论，但可以把跌破 {zd:.2f} 设成复核提醒。{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "reminder":
+        coach = (
+            f"可以围绕两个条件设提醒：站上 {zg:.2f} 后观察是否回踩不破，或跌破 {zd:.2f} 后复核结构失效。"
+            f"提醒只帮助你复核，不代表交易指令。{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "explain_structure":
+        coach = (
+            f"当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
+            f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。{RISK_DISCLAIMER}"
+        )
+    else:
+        coach = (
+            f"不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
+            f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
+            f"{RISK_DISCLAIMER}"
+        )
+    return {
+        "coach_answer": coach,
+        "referenced_boundaries": [
+            {"role": "trigger", "level": level, "price": zg},
+            {"role": "invalidation", "level": level, "price": zd},
+        ],
+    }
+
+
+def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_focus: dict[str, Any]) -> list[dict[str, Any]]:
+    boundary = context.get("boundary") or {}
+    level = chart_focus.get("level") or ""
+    level_item = ((boundary.get("levels") or {}).get(level) or {})
+    center = level_item.get("active_center") or {}
+    evidence = level_item.get("evidence") or {}
+    candidates = []
+    zg = _num(center.get("zg"))
+    zd = _num(center.get("zd"))
+    if intent_type in {"buy_window", "reminder", "explain_structure"} and zg > 0:
+        candidates.append({
+            "type": "price_cross",
+            "direction": "ABOVE",
+            "trigger_price": zg,
+            "level": level,
+            "evidence_id": evidence.get("trigger_line"),
+            "message": f"站上 {level} 级别中枢上沿后复核观察窗口",
+            "risk_disclaimer": RISK_DISCLAIMER,
+        })
+    if intent_type in {"invalidation", "hold_or_exit", "reminder", "buy_window"} and zd > 0:
+        candidates.append({
+            "type": "price_cross",
+            "direction": "BELOW",
+            "trigger_price": zd,
+            "level": level,
+            "evidence_id": evidence.get("invalidation_line"),
+            "message": f"跌破 {level} 级别中枢下沿后复核结构失效",
+            "risk_disclaimer": RISK_DISCLAIMER,
+        })
+    return [item for item in candidates if item.get("evidence_id")]
+
+
+def _message_row(row) -> dict[str, Any]:
+    data = dict(row)
+    data["answer"] = json.loads(data.pop("answer_json") or "{}")
+    data["evidence_refs"] = json.loads(data.pop("evidence_refs_json") or "[]")
+    data["reminder_candidates"] = json.loads(data.pop("reminder_candidates_json") or "[]")
+    return data
+
+
+def _new_session_id(*, user_id: int, symbol: str) -> str:
+    digest = stable_hash({"user_id": int(user_id), "symbol": symbol, "nonce": uuid.uuid4().hex})
+    return f"v5chat_{digest[:16]}"
+
+
+def _json(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _num(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0

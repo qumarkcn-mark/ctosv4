@@ -1,0 +1,146 @@
+.ai-evidence-chart {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  background: #0b0c0f;
+}
+
+.ai-evidence-chart__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+}
+
+.ai-evidence-chart__head div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-evidence-chart__head span {
+  color: rgba(255,255,255,0.42);
+  font-size: 12px;
+}
+
+.ai-evidence-chart__head strong {
+  color: rgba(255,255,255,0.9);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ai-evidence-chart__head em {
+  color: rgba(255,255,255,0.38);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.ai-evidence-chart__canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ai-evidence-chart svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ai-evidence-bg {
+  fill: #090a0d;
+}
+
+.ai-evidence-grid {
+  stroke: rgba(255,255,255,0.07);
+  stroke-width: 1;
+}
+
+.ai-evidence-axis {
+  fill: rgba(255,255,255,0.38);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.ai-evidence-center {
+  fill: rgba(220, 179, 92, 0.16);
+  stroke: rgba(220, 179, 92, 0.48);
+  stroke-width: 1.2;
+}
+
+.ai-candle line {
+  stroke-width: 1.2;
+}
+
+.ai-candle rect {
+  stroke-width: 1;
+}
+
+.ai-candle--up line,
+.ai-candle--up rect {
+  stroke: #e25a5a;
+  fill: rgba(226, 90, 90, 0.22);
+}
+
+.ai-candle--down line,
+.ai-candle--down rect {
+  stroke: #33a06f;
+  fill: rgba(51, 160, 111, 0.22);
+}
+
+.ai-evidence-line line {
+  stroke-width: 1.6;
+  stroke-dasharray: 6 5;
+}
+
+.ai-evidence-line text {
+  fill: rgba(255,255,255,0.74);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.ai-evidence-line--trigger line {
+  stroke: rgba(95, 178, 255, 0.86);
+}
+
+.ai-evidence-line--invalidation line {
+  stroke: rgba(255, 108, 108, 0.88);
+}
+
+.ai-evidence-line--current_price line {
+  stroke: rgba(245, 210, 115, 0.9);
+}
+
+.ai-evidence-chart__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.ai-evidence-chart__empty strong {
+  color: rgba(255,255,255,0.84);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.ai-evidence-chart__empty span {
+  max-width: 420px;
+  color: rgba(255,255,255,0.42);
+  font-size: 13px;
+  line-height: 1.6;
+}

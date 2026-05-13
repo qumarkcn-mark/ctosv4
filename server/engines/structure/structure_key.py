@@ -1,6 +1,6 @@
-"""Stable keys for shared Chan structure snapshots.
+"""Stable keys for shared CZSC structure snapshots.
 
-This module deliberately does not call chan.py. It only defines the versioned
+This module deliberately does not call the engine. It only defines the versioned
 identity of a structure result so display preferences do not trigger recompute.
 """
 
@@ -14,10 +14,10 @@ from typing import Any
 from server.domain.symbols import normalize_symbol
 
 
-ENGINE_NAME = "chan.py"
-ENGINE_VERSION = "vendor_chan_py_current"
-ADAPTER_VERSION = "chan_adapter.v1"
-SNAPSHOT_SCHEMA_VERSION = "chan_detail_snapshot:v2"
+ENGINE_NAME = "czsc"
+ENGINE_VERSION = "czsc_current"
+ADAPTER_VERSION = "czsc_adapter.v1"
+SNAPSHOT_SCHEMA_VERSION = "czsc_snapshot:v1"
 FORMAL_SOURCE = "baostock"
 FORMAL_ADJUSTFLAG = "2"
 FORMAL_SOURCE_ROLE = "formal_structure"
@@ -32,7 +32,7 @@ COMPUTE_PROFILES: dict[str, dict[str, int]] = {
         "15": 1200,
         "5": 1200,
     },
-    "radar_tactical_v1": {
+    "tactical_v1": {
         "week": 0,
         "day": 2500,
         "60": 3000,
@@ -78,7 +78,7 @@ class StructureKey:
     source: str
     source_role: str
     adjustflag: str
-    cchan_preset: str
+    engine_preset: str
     compute_profile: str
     engine: str
     engine_version: str
@@ -93,7 +93,7 @@ class StructureKey:
             "source": self.source,
             "source_role": self.source_role,
             "adjustflag": self.adjustflag,
-            "cchan_preset": self.cchan_preset,
+            "engine_preset": self.engine_preset,
             "compute_profile": self.compute_profile,
             "engine": self.engine,
             "engine_version": self.engine_version,
@@ -128,7 +128,7 @@ def build_structure_key(
     symbol: str,
     freq: str,
     data_signature: str,
-    cchan_preset: str = "live_tolerant",
+    engine_preset: str = "live_tolerant",
     compute_profile: str = "chart_standard_v1",
     source: str = FORMAL_SOURCE,
     source_role: str = FORMAL_SOURCE_ROLE,
@@ -145,7 +145,7 @@ def build_structure_key(
         source=source,
         source_role=source_role,
         adjustflag=adjustflag,
-        cchan_preset=cchan_preset or "live_tolerant",
+        engine_preset=engine_preset or "live_tolerant",
         compute_profile=compute_profile,
         engine=ENGINE_NAME,
         engine_version=engine_version,

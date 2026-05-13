@@ -1,7 +1,7 @@
 """推送规则层：把提醒触发条件从 worker 剥离出来。
 
 这里不读写数据库、不发送消息，只产出“候选提醒”和文案。worker 负责调度、
-去重入库和真实推送，这样雷达/缠论算法换代时不会牵动外围基础设施。
+去重入库和真实推送，这样结构算法换代时不会牵动外围基础设施。
 """
 
 from dataclasses import dataclass, field
@@ -141,8 +141,8 @@ def evaluate_scanner_candidate_alert(result: dict, min_score: float = 80.0) -> O
 def build_scanner_signal_payload(result: dict) -> dict:
     """Build a lightweight semantic signal for scanner candidates.
 
-    scanner 阶段不重新跑结构雷达，只用扫描器已经确认的策略/赔率字段生成候选语义。
-    正式交易复核仍以 Radar 的 signals_v2 为准。
+    discovery 阶段不重新跑结构计算，只用候选源已经确认的策略/赔率字段生成候选语义。
+    正式交易复核仍以 AI 教练的结构上下文为准。
     """
     strategy = str(result.get("strategy_code") or result.get("strategy") or "war1")
     status = str(result.get("status") or "").lower()
@@ -225,9 +225,9 @@ def build_alert_message(
         elif beichi_type == "中继":
             msg = f"{name} 30分顶背驰偏中继，可能进入震荡，请继续观察结构变化。"
         else:
-            msg = f"{name} 30分顶背驰出现，请确认是否转折并检查雷达。"
+            msg = f"{name} 30分顶背驰出现，请确认是否转折并打开 AI 教练复核。"
     elif alert_type == "CHAN_30M_BOT_DIV":
-        msg = f"{name} 30分底背驰出现，入场条件有进展，请检查雷达。"
+        msg = f"{name} 30分底背驰出现，入场条件有进展，请打开 AI 教练复核。"
     elif alert_type == "CHAN_ENTRY_SIGNAL":
         if strategy_type == "战法一":
             label = "战法一（三级别共振）"
@@ -237,7 +237,7 @@ def build_alert_message(
             label = "战法一+战法二（双确认）"
         else:
             label = "入场条件"
-        msg = f"{name} {label}信号触发，五条件已满足，请检查雷达确认。"
+        msg = f"{name} {label}信号触发，五条件已满足，请打开 AI 教练确认结构。"
     elif alert_type == "STAGE_VALIDATION_FAIL":
         msg = f"{name} 预案失效，30分未走出预期上涨笔，入场假设不成立。"
     elif alert_type == "STAGE_TIME_EXPIRED":
@@ -253,9 +253,9 @@ def build_alert_message(
         if signal_label or signal_action:
             code_str = f"（{signal_code}）" if signal_code else ""
             action_str = f" → {signal_action}" if signal_action else ""
-            msg = f"{name} 出现 {signal_label}{code_str}{action_str}。扫描器{score_str}，请打开雷达复核结构、止损和赔率。"
+            msg = f"{name} 出现 {signal_label}{code_str}{action_str}。候选{score_str}，请打开 AI 教练复核结构、止损和赔率。"
         else:
-            msg = f"{name} 进入扫描器重点候选（{score_str}），请打开雷达复核结构、止损和赔率。"
+            msg = f"{name} 进入重点候选（{score_str}），请打开 AI 教练复核结构、止损和赔率。"
     else:
         msg = f"{name} 触发 {alert_type} 提醒，请检查交易计划。"
 

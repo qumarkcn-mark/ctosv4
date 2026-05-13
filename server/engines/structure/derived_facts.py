@@ -1,6 +1,6 @@
-"""Derived structure facts built from chan_adapter serialized output.
+"""Derived structure facts built from CZSC serialized output.
 
-基础结构必须来自 chan.py；本模块只聚合 CT-OS 产品层派生事实。
+基础结构必须来自 CZSC；本模块只聚合 CT-OS 产品层派生事实。
 """
 
 from server.engines.structure.divergence import (

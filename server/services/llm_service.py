@@ -134,31 +134,6 @@ class WatchPrice(BaseModel):
     price: float = Field(..., description="价位")
     role: str = Field(..., description="价位角色")
 
-class AccountStatus(BaseModel):
-    is_holding: bool
-    cost: Optional[float] = None
-    pnl_percentage: Optional[float] = None
-
-class PrePlan(BaseModel):
-    plan_name: str
-    trigger: str
-    deduction: str
-    machine_action: str
-    color: str
-
-class RadarInferenceResult(BaseModel):
-    diagnosis: str
-    chan_talk: Optional[str] = None
-    account_status: Optional[AccountStatus] = None
-    pre_plans: List[PrePlan] = Field(default=[])
-    core_defense: Optional[str] = None
-    market_context_verdict: Optional[str] = None
-    plain_reading: Optional[str] = None
-    operator_mistake: Optional[str] = None
-    empty_position_view: Optional[str] = None
-    holding_position_view: Optional[str] = None
-    next_focus: Optional[str] = None
-
 class TradeParseResult(BaseModel):
     """语音/文本交易解析结果"""
     direction: str = Field(..., description="BUY 或 SELL")
@@ -210,7 +185,7 @@ class LLMService:
 
     def _ai_native_client_config(self, user_id: int, model_route=None) -> dict:
         settings = self._get_user_ai_native_provider_settings(user_id)
-        provider = str(settings.get("ai_native_radar_provider") or "deepseek").strip().lower()
+        provider = str(settings.get("ai_native_provider") or "deepseek").strip().lower()
         if provider == "gemini":
             model_name = str(settings.get("gemini_model") or config.GEMINI_MODEL or "gemini-2.5-pro").strip()
             if model_route and model_route.model_name:
@@ -224,14 +199,14 @@ class LLMService:
                 "reasoning_effort": "high",
             }
 
-        model_name = config.AI_NATIVE_RADAR_MODEL
-        thinking_enabled = config.AI_NATIVE_RADAR_THINKING_ENABLED
-        reasoning_effort = config.AI_NATIVE_RADAR_REASONING_EFFORT
-        if settings.get("ai_native_radar_model"):
-            model_name = settings.get("ai_native_radar_model")
-        if isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
-            thinking_enabled = settings["ai_native_radar_thinking_enabled"]
-        reasoning_effort = settings.get("ai_native_radar_reasoning_effort") or reasoning_effort
+        model_name = config.AI_NATIVE_MODEL
+        thinking_enabled = config.AI_NATIVE_THINKING_ENABLED
+        reasoning_effort = config.AI_NATIVE_REASONING_EFFORT
+        if settings.get("ai_native_model"):
+            model_name = settings.get("ai_native_model")
+        if isinstance(settings.get("ai_native_thinking_enabled"), bool):
+            thinking_enabled = settings["ai_native_thinking_enabled"]
+        reasoning_effort = settings.get("ai_native_reasoning_effort") or reasoning_effort
         if model_route:
             model_name = model_route.model_name or model_name
             thinking_enabled = model_route.thinking_enabled
@@ -306,64 +281,6 @@ class LLMService:
                 ]
             }
 
-    async def infer_radar_deduction(self, system_prompt: str, context_json: str) -> dict:
-        """
-        Sends the TRadar matrix snapshot to generate deductuon narratives.
-        """
-        from server.db.database import get_connection
-        try:
-            api_key = None
-            db_conn = get_connection()
-            try:
-                row = db_conn.execute("SELECT settings_json FROM users WHERE id=1").fetchone()
-                if row and row["settings_json"]:
-                    settings = json.loads(row["settings_json"])
-                    api_key = settings.get("deepseek_api_key")
-            finally:
-                db_conn.close()
-                
-            if not api_key:
-                api_key = os.environ.get("LLM_API_KEY", "dummy_key_replace_in_prod")
-            
-            client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
-            
-            response = await client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Matrix Context:\n{context_json}"}
-                ],
-                temperature=0.4,
-                response_format={"type": "json_object"}
-            )
-            raw_content = response.choices[0].message.content
-            parsed_data = json.loads(raw_content)
-            validated_data = RadarInferenceResult(**parsed_data)
-            return validated_data.model_dump()
-        except Exception as e:
-            logger.error(f"Radar LLM Inference failed: {e}")
-            return {
-                "diagnosis": f"推演引擎异常: {str(e)[:50]}",
-                "account_status": {"is_holding": False},
-                "pre_plans": [
-                    {
-                        "plan_name": "系统故障",
-                        "trigger": "后台报错",
-                        "deduction": "请检查终端日志或大模型API Key",
-                        "machine_action": "等待修复",
-                        "color": "🟡"
-                    }
-                ],
-                "core_defense": "N/A",
-                "market_context_verdict": "未知",
-                "chan_talk": "现在 AI 解读暂不可用。先按规则雷达处理：没有触发转强条件前，不提前下结论；跌破失效边界并拉不回来，本轮推演先作废；在关键区间内，以观察为主。",
-                "plain_reading": "AI 解读暂不可用，请先按规则雷达的 A/B/C 条件管理。",
-                "operator_mistake": "不要因为 AI 离线而忽略雷达边界。",
-                "empty_position_view": "空仓时只看规则雷达的 A 路径确认，不提前假设。",
-                "holding_position_view": "持仓时先看规则雷达的 C 路径失效线。",
-                "next_focus": "先确认雷达数据健康和核心边界。",
-            }
-
     async def infer_portfolio_strategy(self, system_prompt: str, context_json: str) -> str:
         """
         Sends the portfolio summary to generate a markdown strategy report.
@@ -398,14 +315,14 @@ class LLMService:
             logger.error(f"Portfolio LLM Inference failed: {e}")
             return f"❌ 生成全局战略失败，请检查网络或大模型 API Key。错误详情: {e}"
 
-    async def infer_ai_native_radar(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> dict:
-        """AI Native Radar 影子系统推理。调用方负责 verifier 和 fallback。"""
+    async def infer_ai_native_json(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> dict:
+        """AI Native JSON 推理。调用方负责结构上下文和安全边界。"""
         from server.db.database import get_connection
 
         api_key = None
-        model_name = config.AI_NATIVE_RADAR_MODEL
-        thinking_enabled = config.AI_NATIVE_RADAR_THINKING_ENABLED
-        reasoning_effort = config.AI_NATIVE_RADAR_REASONING_EFFORT
+        model_name = config.AI_NATIVE_MODEL
+        thinking_enabled = config.AI_NATIVE_THINKING_ENABLED
+        reasoning_effort = config.AI_NATIVE_REASONING_EFFORT
         try:
             db_conn = get_connection()
             try:
@@ -413,10 +330,10 @@ class LLMService:
                 if row and row["settings_json"]:
                     settings = json.loads(row["settings_json"])
                     api_key = settings.get("deepseek_api_key")
-                    model_name = settings.get("ai_native_radar_model") or model_name
-                    if isinstance(settings.get("ai_native_radar_thinking_enabled"), bool):
-                        thinking_enabled = settings["ai_native_radar_thinking_enabled"]
-                    reasoning_effort = settings.get("ai_native_radar_reasoning_effort") or reasoning_effort
+                    model_name = settings.get("ai_native_model") or model_name
+                    if isinstance(settings.get("ai_native_thinking_enabled"), bool):
+                        thinking_enabled = settings["ai_native_thinking_enabled"]
+                    reasoning_effort = settings.get("ai_native_reasoning_effort") or reasoning_effort
             finally:
                 db_conn.close()
         except Exception:
@@ -432,15 +349,15 @@ class LLMService:
             timeout = model_route.timeout_seconds
             max_tokens = model_route.max_tokens
         else:
-            timeout = config.AI_NATIVE_RADAR_LLM_TIMEOUT
-            max_tokens = config.AI_NATIVE_RADAR_MAX_TOKENS
+            timeout = config.AI_NATIVE_LLM_TIMEOUT
+            max_tokens = config.AI_NATIVE_MAX_TOKENS
 
         client = AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
         request = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"AI Native Radar Context:\n{context_json}"},
+                {"role": "user", "content": f"AI Native Context:\n{context_json}"},
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
@@ -457,12 +374,12 @@ class LLMService:
         return _loads_lenient_json_object(raw_content)
 
     async def infer_ai_native_markdown(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> str:
-        """AI Native Radar Markdown 推演。调用方负责语义过滤和确定性门禁。"""
+        """AI Native Markdown 推演。调用方负责语义过滤和确定性门禁。"""
         client_config = self._ai_native_client_config(user_id, model_route=model_route)
         api_key = client_config["api_key"]
         model_name = client_config["model_name"]
-        timeout = config.AI_NATIVE_RADAR_LLM_TIMEOUT
-        max_tokens = config.AI_NATIVE_RADAR_MAX_TOKENS
+        timeout = config.AI_NATIVE_LLM_TIMEOUT
+        max_tokens = config.AI_NATIVE_MAX_TOKENS
         thinking_enabled = client_config["thinking_enabled"]
         reasoning_effort = client_config["reasoning_effort"]
 

@@ -64,7 +64,7 @@ def test_confirm_batch_writes_imported_trade_and_recalculates_position(monkeypat
         {"中国卫星": {"status": "MATCHED", "symbol": "sh600118", "candidates": []}},
     )
 
-    result = asyncio.run(confirm_import_batch("batch2", ConfirmRequest(), user_id=1))
+    result = asyncio.run(confirm_import_batch("batch2", ConfirmRequest(), current_user_id=1))
 
     conn = database.get_connection()
     try:
@@ -98,8 +98,8 @@ def test_confirm_batch_is_idempotent(monkeypatch, tmp_path):
         {"中国卫星": {"status": "MATCHED", "symbol": "sh600118", "candidates": []}},
     )
 
-    first = asyncio.run(confirm_import_batch("batch-idempotent", ConfirmRequest(), user_id=1))
-    second = asyncio.run(confirm_import_batch("batch-idempotent", ConfirmRequest(), user_id=1))
+    first = asyncio.run(confirm_import_batch("batch-idempotent", ConfirmRequest(), current_user_id=1))
+    second = asyncio.run(confirm_import_batch("batch-idempotent", ConfirmRequest(), current_user_id=1))
 
     conn = database.get_connection()
     try:
@@ -139,7 +139,7 @@ def test_partial_confirm_keeps_batch_pending_until_all_drafts_confirmed(monkeypa
 
     first_draft_id = batch["drafts"][0]["id"]
     result = asyncio.run(
-        confirm_import_batch("batch-partial", ConfirmRequest(draft_ids=[first_draft_id]), user_id=1)
+        confirm_import_batch("batch-partial", ConfirmRequest(draft_ids=[first_draft_id]), current_user_id=1)
     )
 
     assert result["batch"]["batch"]["status"] == "PENDING"
@@ -169,7 +169,7 @@ def test_delete_import_draft_removes_non_stock_row(monkeypatch, tmp_path):
     )
 
     gc_draft_id = batch["drafts"][0]["id"]
-    result = asyncio.run(delete_import_draft(gc_draft_id, user_id=1))
+    result = asyncio.run(delete_import_draft(gc_draft_id, current_user_id=1))
 
     assert [draft["name"] for draft in result["drafts"]] == ["中国卫星"]
     assert result["summary"][0]["name"] == "中国卫星"
@@ -195,10 +195,10 @@ def test_update_import_draft_can_clear_amount_and_unack_duplicate(monkeypatch, t
     draft_id = batch["drafts"][0]["id"]
 
     acknowledged = asyncio.run(
-        update_import_draft(draft_id, DraftUpdate(duplicate_ack=True), user_id=1)
+        update_import_draft(draft_id, DraftUpdate(duplicate_ack=True), current_user_id=1)
     )["draft"]
     cleared = asyncio.run(
-        update_import_draft(draft_id, DraftUpdate(amount=None, duplicate_ack=False), user_id=1)
+        update_import_draft(draft_id, DraftUpdate(amount=None, duplicate_ack=False), current_user_id=1)
     )["draft"]
 
     assert acknowledged["duplicate_ack"] is True

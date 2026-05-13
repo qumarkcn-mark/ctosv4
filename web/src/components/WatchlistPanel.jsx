@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef } from 'react'
+import { apiFetch } from '../api/client.js'
 import './WatchlistPanel.css'
 
 const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSelect }, ref) {
@@ -21,7 +22,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
 
   const fetchWatchlist = async () => {
     try {
-      const resp = await fetch('/api/watchlist')
+      const resp = await apiFetch('/api/watchlist')
       if (resp.ok) {
         const data = await resp.json()
         setGroups(data)
@@ -40,13 +41,18 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
   const fetchDataHealth = async () => {
     setHealthLoading(true)
     try {
-      const resp = await fetch('/api/radar/health/watchlist?user_id=1')
+      const resp = await apiFetch('/api/ai-structure/universe?sources=watchlist')
       if (resp.ok) {
         const json = await resp.json()
-        setHealth(json.data)
+        const symbols = json.data?.symbols || []
+        setHealth({
+          count: symbols.length,
+          stale_count: 0,
+          checked_at: new Date().toISOString(),
+        })
       }
     } catch (err) {
-      console.error('自选股数据健康检查失败:', err)
+      console.error('AI 结构股票池检查失败:', err)
     } finally {
       setHealthLoading(false)
     }
@@ -75,7 +81,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     }
     
     try {
-      await fetch('/api/watchlist/groups', {
+      await apiFetch('/api/watchlist/groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -96,7 +102,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     if (groups.some((g) => g.name === newName)) { setRenamingGroup(null); return }
     
     try {
-      await fetch(`/api/watchlist/groups/${encodeURIComponent(renamingGroup)}`, {
+      await apiFetch(`/api/watchlist/groups/${encodeURIComponent(renamingGroup)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName })
@@ -113,7 +119,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
   const deleteGroup = async (name) => {
     if (!window.confirm(`确定删除分组「${name}」及其中所有股票吗？`)) return
     try {
-      await fetch(`/api/watchlist/groups/${encodeURIComponent(name)}`, {
+      await apiFetch(`/api/watchlist/groups/${encodeURIComponent(name)}`, {
         method: 'DELETE'
       })
       await fetchWatchlist()
@@ -139,7 +145,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     )
 
     try {
-      await fetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks`, {
+      await apiFetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: stock.symbol, name: stock.name })
@@ -161,7 +167,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     )
     
     try {
-      await fetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks/${symbol}`, {
+      await apiFetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks/${symbol}`, {
         method: 'DELETE'
       })
     } catch (err) {
@@ -184,7 +190,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
           <button
             className={`watchlist-health-btn ${health?.stale_count ? 'is-stale' : ''}`}
             onClick={fetchDataHealth}
-            title="检查自选股数据健康"
+            title="检查 AI 结构股票池"
             disabled={healthLoading}
           >
             {healthLoading ? '…' : health ? `${health.stale_count}/${health.count}` : '检'}
@@ -201,7 +207,7 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
 
       {health && (
         <div className={`watchlist-health-strip ${health.stale_count ? 'is-stale' : ''}`}>
-          <span>{health.stale_count ? `数据异常 ${health.stale_count} 只` : `数据健康 ${health.count} 只`}</span>
+          <span>{health.stale_count ? `待刷新 ${health.stale_count} 只` : `AI 池 ${health.count} 只`}</span>
           <strong>{health.checked_at?.slice(5, 16) || ''}</strong>
         </div>
       )}

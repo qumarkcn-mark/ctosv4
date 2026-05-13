@@ -95,7 +95,7 @@ def test_create_buy_trade_persists_entry_thesis(monkeypatch):
         traded_at="2026-04-26T10:00:00",
     )
 
-    asyncio.run(trades.create_trade(trade, user_id=1))
+    asyncio.run(trades.create_trade(trade, current_user_id=1))
 
     row = conn.execute("SELECT * FROM positions WHERE symbol = 'sh600519'").fetchone()
     thesis = json.loads(row["entry_thesis_json"])
@@ -123,7 +123,7 @@ def test_create_trade_stores_canonical_input_as_tencent_symbol(monkeypatch):
         traded_at="2026-04-26T10:00:00",
     )
 
-    asyncio.run(trades.create_trade(trade, user_id=1))
+    asyncio.run(trades.create_trade(trade, current_user_id=1))
 
     trade_row = conn.execute("SELECT symbol FROM trades").fetchone()
     pos_row = conn.execute("SELECT symbol, quantity FROM positions").fetchone()
@@ -159,6 +159,6 @@ def test_sell_trade_accepts_canonical_symbol_against_compact_position(monkeypatc
         traded_at="2026-04-26T10:00:00",
     )
 
-    asyncio.run(trades.create_trade(trade, user_id=1))
+    asyncio.run(trades.create_trade(trade, current_user_id=1))
 
     assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0

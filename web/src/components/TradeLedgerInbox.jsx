@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { API_BASE } from '../config.js'
+import { apiFetch, apiUrl } from '../api/client.js'
 import './TradeLedgerInbox.css'
 
 const STATUS_LABEL = {
@@ -37,7 +37,7 @@ export default function TradeLedgerInbox({ onConfirmed }) {
     try {
       const body = new FormData()
       body.append('file', file)
-      const resp = await fetch(apiUrl(`/trade-imports/ths-summary?trade_date=${encodeURIComponent(tradeDate)}`), {
+      const resp = await apiFetch(apiUrl(`/trade-imports/ths-summary?trade_date=${encodeURIComponent(tradeDate)}`), {
         method: 'POST',
         body,
       })
@@ -63,7 +63,7 @@ export default function TradeLedgerInbox({ onConfirmed }) {
 
   const patchDraft = async (draftId, patch) => {
     setError('')
-    const resp = await fetch(apiUrl(`/trade-imports/drafts/${draftId}`), {
+    const resp = await apiFetch(apiUrl(`/trade-imports/drafts/${draftId}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -78,7 +78,7 @@ export default function TradeLedgerInbox({ onConfirmed }) {
   const ignoreDraft = async (draft) => {
     setError('')
     try {
-      const resp = await fetch(apiUrl(`/trade-imports/drafts/${draft.id}`), {
+      const resp = await apiFetch(apiUrl(`/trade-imports/drafts/${draft.id}`), {
         method: 'DELETE',
       })
       const data = await resp.json()
@@ -133,7 +133,7 @@ export default function TradeLedgerInbox({ onConfirmed }) {
     setError('')
     setConfirming(true)
     try {
-      const resp = await fetch(apiUrl(`/trade-imports/${batch.batch_id}/confirm`), {
+      const resp = await apiFetch(apiUrl(`/trade-imports/${batch.batch_id}/confirm`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ draft_ids: confirmableRows.map(row => row.id) }),
@@ -315,14 +315,4 @@ export default function TradeLedgerInbox({ onConfirmed }) {
       </div>
     </div>
   )
-}
-
-function apiUrl(path) {
-  const value = String(path || '')
-  if (/^https?:\/\//.test(value)) return value
-  if (value.startsWith('/api/')) {
-    return `${API_BASE}${value.slice(4)}`
-  }
-  if (value.startsWith('/')) return `${API_BASE}${value}`
-  return `${API_BASE}/${value}`
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import './BehaviorReport.css'
 import { API_BASE } from '../config.js'
+import { apiFetch } from '../api/client.js'
 
 const LEVEL_ICONS = { critical: '🔴', warning: '🟡', success: '🟢', info: '🔵' }
 
@@ -9,7 +10,7 @@ export default function BehaviorReport() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${API_BASE}/behavior/report?user_id=1`)
+    apiFetch(`${API_BASE}/behavior/report`)
       .then(r => r.json())
       .then(json => { setData(json.data); setLoading(false) })
       .catch(() => setLoading(false))
@@ -56,7 +57,7 @@ export default function BehaviorReport() {
       <h2>📈 投资行为体检</h2>
 
       <div className="report-grid">
-        {/* 左: 评分 + 雷达 */}
+        {/* 左: 评分 + 行为维度 */}
         <div className="report-left">
           <div className="score-ring" style={{ '--score-color': scoreColor }}>
             <div className="score-inner">
@@ -65,8 +66,8 @@ export default function BehaviorReport() {
             </div>
           </div>
 
-          <div className="radar-container">
-            <svg viewBox="0 0 240 240" className="radar-svg">
+          <div className="behavior-wheel-container">
+            <svg viewBox="0 0 240 240" className="behavior-wheel-svg">
               <polygon points={bgPoints} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>
               <polygon points={bg60} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>
               <polygon points={bg30} fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="0.5"/>
@@ -106,7 +107,7 @@ export default function BehaviorReport() {
       </div>
 
       <div className="behavior-scope-note">
-        本页只复盘已发生的交易行为。持仓结构、防线和候选对比已回到雷达与调仓罗盘模块。
+        本页只复盘已发生的交易行为。持仓结构、防线和候选对比已回到 AI 教练工作台。
       </div>
     </div>
   )

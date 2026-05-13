@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE } from '../config.js'
+import { apiFetch } from '../api/client.js'
 import VoiceInput from './VoiceInput.jsx'
 import './TradeForm.css'
 
@@ -69,7 +70,7 @@ export default function TradeForm({ onSubmitted }) {
     setT1Warning(false)
     if (form.direction === 'SELL' && form.symbol) {
       // 查当日是否有买入记录（前端预检）
-      fetch(`/api/trades?symbol=${encodeURIComponent(form.symbol)}&direction=BUY&limit=5`)
+      apiFetch(`/api/trades?symbol=${encodeURIComponent(form.symbol)}&direction=BUY&limit=5`)
         .then(r => r.json())
         .then(data => {
           const today = new Date().toISOString().split('T')[0]
@@ -212,7 +213,7 @@ export default function TradeForm({ onSubmitted }) {
 
     setSubmitting(true)
     try {
-      const resp = await fetch('/api/trades', {
+      const resp = await apiFetch('/api/trades', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -105,19 +105,18 @@ ct-os-v4/
 │   ├── workers/                #   后台任务
 │   │   ├── price_monitor.py    #     持仓价格监控 (30s)
 │   │   ├── daily_report.py     #     日报生成
-│   │   └── scanner.py          #     盘后扫描 (Phase 5)
+│   │   ├── ai_structure_snapshot_worker.py
+│   │   └── ai_structure_context_worker.py
 │   └── tests/                  #   测试
 │
 ├── web/                        # React 19 + Vite 桌面端
 │   └── src/
-│       ├── pages/              #   Dashboard, Analysis, ChanView
+│       ├── pages/              #   Dashboard, AI Structure Workspace, Review
 │       ├── components/         #   TradeForm, PositionOverview, AlertCard...
 │       └── App.jsx
 │
 ├── miniprogram/                # 微信小程序
 │   └── pages/                  #   index, record, positions, analysis, profile
-│
-├── chan_engine/                 # Phase 3+ 从 V3 移植
 │
 ├── docker-compose.yml
 ├── Dockerfile

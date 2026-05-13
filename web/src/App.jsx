@@ -1,30 +1,25 @@
 import { useState } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
-import ChanView from './pages/ChanView.jsx'
 import ReviewTrainingPage from './pages/ReviewTrainingPage.jsx'
-import RotationCompass from './pages/RotationCompass.jsx'
-import Scanner from './pages/Scanner.jsx'
-import DailyPlaybook from './pages/DailyPlaybook.jsx'
+import AIStructureWorkspace from './pages/AIStructureWorkspace.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import { normalizeSymbolInput, readLastViewedSymbol } from './utils/symbolStorage.js'
 import './App.css'
 
 const PAGE_ALIASES = {
   analysis: 'review',
-  'sand-table': 'review',
-  rotation: 'playbook',
 }
 
-const VALID_PAGES = new Set(['dashboard', 'playbook', 'scanner', 'chan', 'rotation', 'review'])
+const VALID_PAGES = new Set(['dashboard', 'ai', 'review'])
 
 function normalizePage(page) {
-  const nextPage = PAGE_ALIASES[page] || page || 'playbook'
-  return VALID_PAGES.has(nextPage) ? nextPage : 'playbook'
+  const nextPage = PAGE_ALIASES[page] || page || 'ai'
+  return VALID_PAGES.has(nextPage) ? nextPage : 'ai'
 }
 
 function App() {
   const [page, setPage] = useState(
-    () => normalizePage(localStorage.getItem('ct_last_page')) || 'playbook'
+    () => normalizePage(localStorage.getItem('ct_last_page')) || 'ai'
   )
   const [showSettings, setShowSettings] = useState(false)
 
@@ -45,9 +40,9 @@ function App() {
   }
 
   // ─── 跨板块「去看盘」跳转 ───────────────────────────────
-  const handleViewInChan = (symbol, name) => {
+  const handleViewInAI = (symbol, name) => {
     setGlobalSymbol(symbol, name)
-    navigate('chan')
+    navigate('ai')
   }
 
   const navigate = (p) => {
@@ -67,22 +62,10 @@ function App() {
         </div>
         <nav className="nav-tabs">
           <button
-            className={`nav-tab ${page === 'playbook' ? 'active' : ''}`}
-            onClick={() => navigate('playbook')}
+            className={`nav-tab ${page === 'ai' ? 'active' : ''}`}
+            onClick={() => navigate('ai')}
           >
-            作战台
-          </button>
-          <button
-            className={`nav-tab ${page === 'chan' ? 'active' : ''}`}
-            onClick={() => navigate('chan')}
-          >
-            雷达工作台
-          </button>
-          <button
-            className={`nav-tab ${page === 'scanner' ? 'active' : ''}`}
-            onClick={() => navigate('scanner')}
-          >
-            机会池
+            AI 教练
           </button>
           <button
             className={`nav-tab ${page === 'dashboard' ? 'active' : ''}`}
@@ -108,17 +91,14 @@ function App() {
 
       {/* 主内容区 */}
       <main className="main-content">
-        {page === 'dashboard' && <Dashboard onViewInChan={handleViewInChan} onOpenRotation={() => setPage('rotation')} />}
-        {page === 'playbook' && <DailyPlaybook onViewInChan={handleViewInChan} onOpenRotation={() => setPage('rotation')} />}
-        {page === 'scanner' && <Scanner onViewInChan={handleViewInChan} />}
-        {page === 'chan' && (
-          <ChanView
+        {page === 'dashboard' && <Dashboard onViewInAI={handleViewInAI} onOpenAI={() => navigate('ai')} />}
+        {page === 'ai' && (
+          <AIStructureWorkspace
             activeSymbol={activeSymbol}
             activeSymbolName={activeSymbolName}
             onSymbolChange={setGlobalSymbol}
           />
         )}
-        {page === 'rotation' && <RotationCompass onViewInChan={handleViewInChan} />}
         {page === 'review' && <ReviewTrainingPage />}
       </main>
 

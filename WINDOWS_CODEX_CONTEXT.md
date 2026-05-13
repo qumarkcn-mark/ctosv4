@@ -53,7 +53,6 @@ ct-os-v4/
 ├── server/                  # FastAPI 后端
 ├── web/                     # React 桌面端
 ├── miniprogram/             # 微信小程序
-├── chan_engine/             # 缠论结构引擎
 ├── qmt_bridge/              # Windows QMT 只读行情桥
 ├── scripts/                 # TDX 导入和同步脚本
 ├── tests/                   # pytest 测试
@@ -80,8 +79,8 @@ CT-OS 最容易出问题的地方是混用行情源。不要乱混。
 
 | 数据源 | 当前角色 | 是否能驱动正式缠论结构 |
 |---|---|---|
-| BaoStock | 正式多级别缠论结构源 | 可以 |
-| TDX `.day` | 全市场日线扫描事实源 | 不直接驱动雷达正式结构 |
+| BaoStock / K 线事实层 | 正式 CZSC snapshot 输入 | 可以 |
+| TDX `.day` | 全市场日线事实源 | 不直接驱动 V5 正式结构 |
 | TDX `.lc1` 1分钟 | 本地 1 分钟展示/历史回放补充 | 不可以 |
 | Tencent | 当前价、持仓盈亏、轻量预览、普通价格提醒 | 不可以 |
 | QMT / XtQuant | Windows 私有只读实时行情，现在只做 preview | 不可以 |
@@ -89,11 +88,11 @@ CT-OS 最容易出问题的地方是混用行情源。不要乱混。
 
 正式规则：
 
-- Scanner 用 TDX 日线湖，`freq=day`，`adjustflag=3`。
-- Radar / Chan 正式结构用 BaoStock，`adjustflag=2`。
+- V5 正式结构只来自 CZSC snapshot，不保留旧 `chan.py` / radar fallback。
+- CZSC snapshot 使用 K 线事实层输入，不混用旧结构输出。
 - UI 当前价和持仓盈亏可用 Tencent。
 - QMT 现在只做只读实时行情桥，不下单。
-- TDX 本地 1 分钟只做展示/回放，不确认雷达主推演。
+- TDX 本地 1 分钟只做展示/回放，不确认 V5 正式结构。
 - BaoStock 前复权结构价不能拿去当 QMT 委托价。
 
 ## 符号格式
@@ -156,10 +155,10 @@ Strategy candidate
 在 Windows 项目根目录：
 
 ```powershell
-python -m venv venv
+py -3.11 -m venv venv
 .\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install -r server\requirements.txt
 ```
 
 如果 Windows 已经安装 QMT/XtQuant，并且 Python 能 import `xtquant`：
@@ -221,8 +220,8 @@ TDX 用于本地历史行情文件。
 
 CT-OS 当前读取：
 
-- 日线 `.day`：用于全市场 scanner，写入 `data/tdx_lake.db`。
-- 1 分钟 `.lc1`：用于 K 线展示和历史回放补充，不能形成正式雷达结构。
+- 日线 `.day`：用于全市场 discovery facts，写入 `data/tdx_lake.db`。
+- 1 分钟 `.lc1`：用于 K 线展示和历史回放补充，不能形成正式 CZSC 结构。
 
 常见 TDX 路径形态：
 
@@ -270,28 +269,28 @@ data/tdx_lake.db
 重要边界：
 
 - 只导入 A 股正股。
-- TDX 日线是 scanner discovery facts。
-- Scanner 候选股打开 Radar 时，Radar 必须重新用 BaoStock 计算深层结构。
+- TDX 日线只作为 discovery facts。
+- AI Native V5 的正式结构快照必须来自 BaoStock K 线 + CZSC 计算。
 
 ## 本地开发命令
 
 后端：
 
 ```bash
-python -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install -r server/requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Windows PowerShell：
 
 ```powershell
-python -m venv venv
+py -3.11 -m venv venv
 .\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install -r server\requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 

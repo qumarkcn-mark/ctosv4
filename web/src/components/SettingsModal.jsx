@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { API_BASE } from '../config.js'
+import { apiFetch } from '../api/client.js'
 import DataLakePanel from './DataLakePanel.jsx'
 import './SettingsModal.css'
 
@@ -28,12 +29,11 @@ export default function SettingsModal({ onClose }) {
   const [message, setMessage] = useState(null)
 
   useEffect(() => {
-    // 桌面开发模式下，强制锁定 user_id=1 
-    fetch(`${API_BASE}/auth/user/1/settings`)
+    apiFetch(`${API_BASE}/auth/me/settings`)
       .then(r => r.json())
       .then(data => {
         const settings = data.settings || {}
-        if (settings.ai_native_radar_provider) setAiNativeProvider(settings.ai_native_radar_provider)
+        if (settings.ai_native_provider) setAiNativeProvider(settings.ai_native_provider)
         if (settings.deepseek_api_key_configured) setHasDeepseekApiKey(true)
         if (settings.qwen_api_key_configured) setHasQwenApiKey(true)
         if (settings.qwen_base_url) setQwenBaseUrl(settings.qwen_base_url)
@@ -42,11 +42,11 @@ export default function SettingsModal({ onClose }) {
         if (settings.gemini_api_key_configured) setHasGeminiApiKey(true)
         if (settings.gemini_model) setGeminiModel(settings.gemini_model)
         if (settings.gemini_base_url) setGeminiBaseUrl(settings.gemini_base_url)
-        if (settings.ai_native_radar_model) setAiNativeModel(settings.ai_native_radar_model)
-        if (typeof settings.ai_native_radar_thinking_enabled === 'boolean') {
-          setAiNativeThinkingEnabled(settings.ai_native_radar_thinking_enabled)
+        if (settings.ai_native_model) setAiNativeModel(settings.ai_native_model)
+        if (typeof settings.ai_native_thinking_enabled === 'boolean') {
+          setAiNativeThinkingEnabled(settings.ai_native_thinking_enabled)
         }
-        if (settings.ai_native_radar_reasoning_effort) setAiNativeReasoningEffort(settings.ai_native_radar_reasoning_effort)
+        if (settings.ai_native_reasoning_effort) setAiNativeReasoningEffort(settings.ai_native_reasoning_effort)
         if (typeof settings.expert_mode === 'boolean') {
           setExpertMode(settings.expert_mode)
           writeExpertModePreference(settings.expert_mode)
@@ -61,12 +61,12 @@ export default function SettingsModal({ onClose }) {
     setMessage(null)
     try {
       const nextSettings = {
-        ai_native_radar_provider: aiNativeProvider,
+        ai_native_provider: aiNativeProvider,
         gemini_model: geminiModel.trim(),
         gemini_base_url: geminiBaseUrl.trim(),
-        ai_native_radar_model: aiNativeModel.trim(),
-        ai_native_radar_thinking_enabled: aiNativeThinkingEnabled,
-        ai_native_radar_reasoning_effort: aiNativeReasoningEffort,
+        ai_native_model: aiNativeModel.trim(),
+        ai_native_thinking_enabled: aiNativeThinkingEnabled,
+        ai_native_reasoning_effort: aiNativeReasoningEffort,
         qwen_base_url: qwenBaseUrl.trim(),
         qwen_trade_parse_model: qwenTradeParseModel.trim(),
         qwen_screenshot_ocr_model: qwenScreenshotOcrModel.trim(),
@@ -76,7 +76,7 @@ export default function SettingsModal({ onClose }) {
       if (qwenApiKey.trim()) nextSettings.qwen_api_key = qwenApiKey.trim()
       if (geminiApiKey.trim()) nextSettings.gemini_api_key = geminiApiKey.trim()
 
-      const res = await fetch(`${API_BASE}/auth/user/1/settings`, {
+      const res = await apiFetch(`${API_BASE}/auth/me/settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -130,16 +130,16 @@ export default function SettingsModal({ onClose }) {
               ) : (
                 <div className="settings-form">
                   <div className="form-group">
-                    <label>雷达显示模式</label>
+                    <label>AI 教练显示模式</label>
                     <label className="settings-switch settings-switch-block">
                       <input
                         type="checkbox"
                         checked={expertMode}
                         onChange={(e) => setExpertMode(e.target.checked)}
                       />
-                      <span>专家模式：优先显示语义短码和缠论术语</span>
+                      <span>专家模式：优先显示结构证据和技术边界</span>
                     </label>
-                    <small className="form-hint">关闭时仍保留短码，但优先展示自然语言操作指令。</small>
+                    <small className="form-hint">关闭时优先展示自然语言判断，减少结构术语密度。</small>
                   </div>
 
                   <div className="form-group">
@@ -160,7 +160,7 @@ export default function SettingsModal({ onClose }) {
                         Gemini
                       </button>
                     </div>
-                    <small className="form-hint">只影响 AI Native Free Reasoning 推演，不影响旧雷达。</small>
+                    <small className="form-hint">只影响 AI 教练问答，不影响交易记录和提醒。</small>
                   </div>
 
                   <div className="form-group">

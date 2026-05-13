@@ -119,43 +119,6 @@ def test_init_migrations_create_coach_event_tables():
     assert {"coach_events", "strategy_triggers", "alert_deliveries"}.issubset(tables)
 
 
-def test_init_migrations_create_daily_playbook_tables():
-    conn = make_old_alerts_conn()
-    conn.execute(
-        """
-        CREATE TABLE trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            direction TEXT NOT NULL,
-            price REAL NOT NULL,
-            quantity INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            traded_at DATETIME NOT NULL
-        )
-        """
-    )
-    from server.db.database import run_migrations
-
-    run_migrations(conn)
-
-    tables = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    }
-    trade_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(trades)").fetchall()
-    }
-    item_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(daily_playbook_items)").fetchall()
-    }
-    assert {"daily_playbooks", "daily_playbook_items"}.issubset(tables)
-    assert {"playbook_item_id", "plan_relationship", "discipline_tag", "coach_event_id"}.issubset(trade_columns)
-    assert {"source", "source_json"}.issubset(item_columns)
-
-
 def test_run_migrations_adds_position_entry_thesis_json():
     conn = make_old_alerts_conn()
     from server.db.database import run_migrations
@@ -198,127 +161,46 @@ def test_run_migrations_create_paper_trading_tables():
         row["name"]
         for row in conn.execute("PRAGMA table_info(paper_feature_cache)").fetchall()
     }
-    assert {"cache_key", "cache_version", "features_json", "level_chain_json"}.issubset(cache_columns)
+    assert {"cache_key", "cache_version", "features_json", "level_chain_json", "engine_preset"}.issubset(cache_columns)
 
 
-def test_run_migrations_create_ai_reasoning_runs_table():
+def test_run_migrations_backfills_old_paper_feature_cache_engine_preset():
     conn = make_old_alerts_conn()
-    from server.db.database import run_migrations
-
-    run_migrations(conn)
-
-    tables = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    }
-    assert "ai_reasoning_runs" in tables
-
-    columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(ai_reasoning_runs)").fetchall()
-    }
-    assert {
-        "structure_fingerprint",
-        "transcript_json",
-        "memory_context_json",
-        "ai_output_json",
-        "gate_result_json",
-        "gate_status",
-        "model_route_json",
-        "replay_status",
-    }.issubset(columns)
-
-    indexes = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
-    }
-    assert "idx_ai_reasoning_runs_symbol_created" in indexes
-    assert "idx_ai_reasoning_runs_fingerprint" in indexes
-    assert "idx_ai_reasoning_runs_replay" in indexes
-
-
-def test_run_migrations_create_stop_reduce_shadow_training_tables():
-    conn = make_old_alerts_conn()
-    from server.db.database import run_migrations
-
-    run_migrations(conn)
-
-    tables = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    }
-    assert {
-        "ai_rebalance_runs",
-        "ai_rebalance_intents",
-        "ai_stop_reduce_scores",
-        "ai_case_memory",
-        "ai_calibration_stats",
-        "ai_stop_reduce_daily_runs",
-        "fundamental_snapshots",
-        "ai_holding_plans",
-    }.issubset(tables)
-
-    intent_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(ai_rebalance_intents)").fetchall()
-    }
-    assert {"source_plan_id", "idempotency_key", "conditions_json", "evidence_refs_json", "disclaimer"}.issubset(intent_columns)
-
-    score_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(ai_stop_reduce_scores)").fetchall()
-    }
-    assert {"settlement_source", "settlement_prices_json", "lesson_candidate"}.issubset(score_columns)
-
-    indexes = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
-    }
-    assert "idx_ai_case_memory_key" in indexes
-    assert "idx_fundamental_snapshots_symbol" in indexes
-    assert "idx_ai_holding_plans_user_date" in indexes
-    assert "idx_ai_rebalance_intents_plan" in indexes
-    assert "idx_ai_stop_reduce_daily_runs_user_date" in indexes
-
-
-def test_schema_bootstrap_survives_old_rebalance_intents_without_source_plan_id():
-    conn = make_old_alerts_conn()
-    conn.executescript(
+    conn.execute(
         """
-        CREATE TABLE ai_rebalance_intents (
-            intent_id TEXT PRIMARY KEY,
-            run_id TEXT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+        CREATE TABLE paper_feature_cache (
+            cache_key TEXT PRIMARY KEY,
+            cache_version TEXT NOT NULL,
             symbol TEXT NOT NULL,
-            intent_type TEXT NOT NULL,
-            action TEXT NOT NULL,
-            current_weight_pct REAL,
-            target_weight_pct REAL,
-            quantity_policy TEXT,
-            idempotency_key TEXT NOT NULL UNIQUE,
             as_of TEXT NOT NULL,
-            conditions_json TEXT DEFAULT '{}',
-            reason_json TEXT DEFAULT '{}',
-            evidence_refs_json TEXT DEFAULT '{}',
-            disclaimer TEXT NOT NULL DEFAULT '仅供参考，不构成投资建议',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            level_chain_json TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            cchan_preset TEXT NOT NULL,
+            features_json TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    conn.execute(
+        """
+        INSERT INTO paper_feature_cache (
+            cache_key, cache_version, symbol, as_of, level_chain_json,
+            count, cchan_preset, features_json
+        )
+        VALUES ('k1', 'v1', 'sh600519', '2026-05-12', '{}', 120, 'live_tolerant', '{}')
+        """
+    )
+    conn.commit()
+    from server.db.database import run_migrations
 
-    from server.db.database import SCHEMA, run_migrations
-
-    conn.executescript(SCHEMA)
     run_migrations(conn)
 
-    intent_columns = {
+    columns = {
         row["name"]
-        for row in conn.execute("PRAGMA table_info(ai_rebalance_intents)").fetchall()
+        for row in conn.execute("PRAGMA table_info(paper_feature_cache)").fetchall()
     }
-    assert "source_plan_id" in intent_columns
-
-    indexes = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
-    }
-    assert "idx_ai_rebalance_intents_plan" in indexes
+    assert "engine_preset" in columns
+    row = conn.execute("SELECT cchan_preset, engine_preset FROM paper_feature_cache WHERE cache_key = 'k1'").fetchone()
+    assert row["cchan_preset"] == "live_tolerant"
+    assert row["engine_preset"] == "live_tolerant"

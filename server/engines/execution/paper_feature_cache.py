@@ -51,11 +51,11 @@ def replay_feature_cache_key(
     as_of: str,
     level_chain: dict[str, str],
     count: int,
-    cchan_preset: str,
+    engine_preset: str,
     detail_source: str | None = None,
 ) -> tuple[Hashable, ...]:
     chain_key = tuple(sorted(level_chain.items()))
-    return (symbol, as_of, chain_key, count, cchan_preset, detail_source or "")
+    return (symbol, as_of, chain_key, count, engine_preset, detail_source or "")
 
 
 @dataclass
@@ -113,19 +113,19 @@ class SQLiteReplayFeatureCache(ReplayFeatureCache):
     def _save(self, cache_key: str, key: tuple[Hashable, ...], features: IntradayTFeatures) -> None:
         if self.conn is None:
             return
-        symbol, as_of, chain_key, count, cchan_preset, *_rest = key
+        symbol, as_of, chain_key, count, engine_preset, *_rest = key
         self.conn.execute(
             """
             INSERT INTO paper_feature_cache (
                 cache_key, cache_version, symbol, as_of, level_chain_json,
-                count, cchan_preset, features_json, updated_at
+                count, engine_preset, features_json, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(cache_key) DO UPDATE SET
                 cache_version=excluded.cache_version,
                 level_chain_json=excluded.level_chain_json,
                 count=excluded.count,
-                cchan_preset=excluded.cchan_preset,
+                engine_preset=excluded.engine_preset,
                 features_json=excluded.features_json,
                 updated_at=CURRENT_TIMESTAMP
             """,
@@ -136,7 +136,7 @@ class SQLiteReplayFeatureCache(ReplayFeatureCache):
                 str(as_of),
                 _json(dict(chain_key)),  # type: ignore[arg-type]
                 int(count),
-                str(cchan_preset),
+                str(engine_preset),
                 _json(asdict(features)),
             ),
         )

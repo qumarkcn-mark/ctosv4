@@ -3,7 +3,6 @@
 import os
 import sqlite3
 import sys
-from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -186,25 +185,7 @@ def test_sync_new_watchlist_symbol_enqueues_all_changed_structure_levels(monkeyp
     ]
 
 
-def test_enqueue_structure_jobs_prioritizes_holdings(monkeypatch):
-    enqueued = []
-
-    def fake_build_formal_structure_key(symbol, freq, **kwargs):
-        normalized = "sh.600519" if symbol in {"sh600519", "sh.600519"} else "sz.300866"
-        return SimpleNamespace(
-            symbol=normalized,
-            freq=freq,
-            hash=f"{normalized}:{freq}",
-        ), {}
-
-    def fake_enqueue_structure_job(structure_key, **kwargs):
-        enqueued.append((structure_key.symbol, structure_key.freq, kwargs["priority"]))
-        return {"status": "PENDING", "job_id": structure_key.hash, "enqueued": True, "bumped": False}
-
-    monkeypatch.setattr(kline_sync_worker, "_get_holding_symbol_set", lambda: {"sh.600519"})
-    monkeypatch.setattr("server.engines.structure.snapshot_query.build_formal_structure_key", fake_build_formal_structure_key)
-    monkeypatch.setattr("server.engines.structure.structure_jobs.enqueue_structure_job", fake_enqueue_structure_job)
-
+def test_enqueue_structure_jobs_for_changes_is_removed_from_v5_runtime():
     result = kline_sync_worker.enqueue_structure_jobs_for_changes(
         [
             {"symbol": "sh600519", "freq": "day", "written": 10},
@@ -214,9 +195,9 @@ def test_enqueue_structure_jobs_prioritizes_holdings(monkeypatch):
         holding_priority=95,
     )
 
-    assert result["count"] == 2
-    assert enqueued == [
-        ("sh.600519", "day", 95),
-        ("sz.300866", "day", 80),
-    ]
-    assert [item["priority"] for item in result["items"]] == [95, 80]
+    assert result == {
+        "count": 0,
+        "items": [],
+        "skipped": True,
+        "reason": "LEGACY_CHAN_RADAR_REMOVED",
+    }

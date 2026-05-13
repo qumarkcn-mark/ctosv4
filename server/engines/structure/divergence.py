@@ -1,10 +1,10 @@
-"""Divergence facts derived from chan.py serialized bi data."""
+"""Divergence facts derived from CZSC serialized BI data."""
 
 from typing import Optional
 
 
 def detect_recent_divergence(bis: list) -> Optional[dict]:
-    """检测最近一笔对应方向的背驰，只消费 chan.py 已序列化的笔数据。"""
+    """检测最近一笔对应方向的背驰，只消费 CZSC 已序列化的笔数据。"""
     if not bis:
         return None
     last_bi = bis[-1]
@@ -53,7 +53,7 @@ def detect_structural_divergence(
     if not div_info:
         return None
     div_info.update({
-        "source": "chan_adapter.bis.structural_momentum",
+        "source": "czsc_adapter.bis.structural_momentum",
         "previous_bi": _bi_ref(prev_bi),
         "current_bi": _bi_ref(curr_bi),
     })
@@ -138,7 +138,7 @@ def get_divergence(bis: list, is_up: bool) -> Optional[dict]:
     div_info = _divergence_from_pair(prev_bi, curr_bi, is_up, 0.20)
     if not div_info:
         return None
-    div_info["source"] = "chan_adapter.bis.momentum"
+    div_info["source"] = "czsc_adapter.bis.momentum"
     return div_info
 
 

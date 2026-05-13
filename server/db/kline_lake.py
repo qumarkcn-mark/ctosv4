@@ -32,9 +32,9 @@ _write_locks = {
 }
 
 # K 线数据湖拆分：
-#   TDX_LAKE_PATH      = 全市场日线事实源（freq=day, adjustflag=3），供 scanner 使用
-#   BAOSTOCK_LAKE_PATH = BaoStock 多级别缓存（day/week/60/30/15/5），供缠论/持仓/价格使用
-#   QMT_LAKE_PATH      = QMT 实时分钟收线缓存（实价、不复权），供盘中雷达预览使用
+#   TDX_LAKE_PATH      = 全市场日线事实源（freq=day, adjustflag=3），供 discovery 使用
+#   BAOSTOCK_LAKE_PATH = BaoStock 多级别缓存（day/week/60/30/15/5），供 CZSC/持仓/价格使用
+#   QMT_LAKE_PATH      = QMT 实时分钟收线缓存（实价、不复权），供盘中预览使用
 LakeSource = Literal["tdx", "baostock", "qmt"]
 TDX_LAKE_PATH = str(Path(DB_PATH).parent / "tdx_lake.db")
 BAOSTOCK_LAKE_PATH = str(Path(DB_PATH).parent / "baostock_lake.db")
@@ -46,12 +46,12 @@ LAKE_PATH = BAOSTOCK_LAKE_PATH
 LAKE_SOURCE_ROLES = {
     "tdx": {
         "role": "full_market_daily_fact",
-        "description": "TDX 全市场日线事实源，供 scanner / 初筛 / AI Native 候选发现使用。",
+        "description": "TDX 全市场日线事实源，供 discovery / 初筛 / AI Native 候选发现使用。",
         "formal_structure": False,
     },
     "baostock": {
         "role": "multi_level_structure_cache",
-        "description": "BaoStock 多级别前复权缓存，供 Chan / Radar / AI Native 结构推理使用。",
+        "description": "BaoStock 多级别前复权缓存，供 CZSC / AI Native 结构推理使用。",
         "formal_structure": True,
     },
     "qmt": {

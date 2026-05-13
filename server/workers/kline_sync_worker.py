@@ -20,7 +20,7 @@ from server.domain.symbols import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
-# 同步的频率列表。周线是 AI 推演和全量 Radar 的宏观背景，不能只在展示层支持。
+# 同步的频率列表。周线是 AI 推演和 CZSC 结构快照的宏观背景，不能只在展示层支持。
 ALL_FREQS = ["week", "day", "60", "30", "15", "5"]
 
 # 检查间隔（秒）：30 分钟
@@ -205,41 +205,7 @@ def enqueue_structure_jobs_for_changes(
     reason: str = "kline_sync",
 ) -> dict:
     """Enqueue structure jobs for formal BaoStock bars that actually changed."""
-    from server.engines.structure.snapshot_query import build_formal_structure_key
-    from server.engines.structure.structure_jobs import enqueue_structure_job
-
-    items = []
-    holding_symbols = _get_holding_symbol_set()
-    for change in changes or []:
-        symbol = change.get("symbol")
-        freq = change.get("freq")
-        if not symbol or freq not in {"week", "day", "60", "30", "15", "5"}:
-            continue
-        try:
-            structure_key, context = build_formal_structure_key(symbol=symbol, freq=freq)
-            if structure_key is None:
-                items.append({"symbol": symbol, "freq": freq, "status": "skipped", "reason": "NO_DATA"})
-                continue
-            job_priority = holding_priority if structure_key.symbol in holding_symbols else priority
-            job = enqueue_structure_job(
-                structure_key,
-                priority=job_priority,
-                reason=reason,
-                retry_terminal=True,
-            )
-            items.append({
-                "symbol": structure_key.symbol,
-                "freq": structure_key.freq,
-                "status": job.get("status"),
-                "priority": job_priority,
-                "job_id": job.get("job_id"),
-                "enqueued": job.get("enqueued"),
-                "bumped": job.get("bumped"),
-            })
-        except Exception as exc:
-            logger.warning("结构任务入队失败 %s/%s: %s", symbol, freq, exc)
-            items.append({"symbol": symbol, "freq": freq, "status": "error", "error": str(exc)})
-    return {"count": len(items), "items": items}
+    return {"count": 0, "items": [], "skipped": True, "reason": "LEGACY_CHAN_RADAR_REMOVED"}
 
 
 def _get_holding_symbol_set() -> set[str]:

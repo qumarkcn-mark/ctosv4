@@ -1,5 +1,1 @@
-PyJWT>=2.8.0
-baostock
-fastapi
-pandas
-python-dotenv
+-r ../requirements.txt

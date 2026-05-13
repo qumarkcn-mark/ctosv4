@@ -12,11 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from server import config
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.domain.symbols import parse_symbol, to_tencent_symbol
 from server.services.position_calc import recalculate_all_positions
@@ -51,9 +52,10 @@ class ConfirmRequest(BaseModel):
 async def import_ths_summary_screenshot(
     file: UploadFile = File(...),
     trade_date: Optional[str] = None,
-    user_id: int = 1,
+    current_user_id: int = Depends(get_current_user_id),
 ):
     """上传同花顺当日成交汇总截图，返回待确认草稿。"""
+    user_id = current_user_id
     effective_date = trade_date or datetime.now().strftime("%Y-%m-%d")
     content = await file.read()
     try:
@@ -83,12 +85,18 @@ async def import_ths_summary_screenshot(
 
 
 @router.get("/{batch_id}")
-def get_import_batch(batch_id: str, user_id: int = 1):
+def get_import_batch(batch_id: str, current_user_id: int = Depends(get_current_user_id)):
+    user_id = current_user_id
     return _load_batch(batch_id, user_id)
 
 
 @router.patch("/drafts/{draft_id}")
-async def update_import_draft(draft_id: int, update: DraftUpdate, user_id: int = 1):
+async def update_import_draft(
+    draft_id: int,
+    update: DraftUpdate,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    user_id = current_user_id
     def _update():
         conn = get_connection()
         try:
@@ -144,8 +152,9 @@ async def update_import_draft(draft_id: int, update: DraftUpdate, user_id: int =
 
 
 @router.delete("/drafts/{draft_id}")
-async def delete_import_draft(draft_id: int, user_id: int = 1):
+async def delete_import_draft(draft_id: int, current_user_id: int = Depends(get_current_user_id)):
     """从当前导入批次中忽略一条草稿。用于剔除国债逆回购等非股票成交。"""
+    user_id = current_user_id
     def _delete():
         conn = get_connection()
         try:
@@ -168,7 +177,12 @@ async def delete_import_draft(draft_id: int, user_id: int = 1):
 
 
 @router.post("/{batch_id}/confirm")
-async def confirm_import_batch(batch_id: str, req: Optional[ConfirmRequest] = None, user_id: int = 1):
+async def confirm_import_batch(
+    batch_id: str,
+    req: Optional[ConfirmRequest] = None,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    user_id = current_user_id
     def _confirm():
         conn = get_connection()
         try:

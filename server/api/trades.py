@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.domain.symbols import parse_symbol, symbol_aliases, to_tencent_symbol
 from server.engines.coach.event_log import log_user_action
@@ -38,7 +39,6 @@ class TradeCreate(BaseModel):
     entry_zd: Optional[float] = Field(None, description="入场中枢 ZD")
     initial_target: Optional[float] = Field(None, description="入场初始目标价")
     trigger_conditions: Optional[list] = Field(None, description="入场触发条件列表")
-    playbook_item_id: Optional[int] = Field(None, description="今日作战项 ID")
     plan_relationship: Optional[str] = Field("UNKNOWN", description="计划关系：PLANNED/UNPLANNED/EMOTIONAL/AFTER_ALERT/IGNORED_ALERT/UNKNOWN")
     discipline_tag: Optional[str] = Field(None, description="纪律标签，用于盘后复盘")
 
@@ -94,9 +94,10 @@ def _is_astock_special(symbol: str) -> bool:
 
 
 @router.post("", response_model=TradeResponse)
-async def create_trade(trade: TradeCreate, user_id: int = 1):
+async def create_trade(trade: TradeCreate, current_user_id: int = Depends(get_current_user_id)):
     """创建一笔交易记录（含A股合规校验）"""
     from fastapi.concurrency import run_in_threadpool
+    user_id = current_user_id
     trade_symbol = to_tencent_symbol(trade.symbol)
     trade_aliases = symbol_aliases(trade.symbol)
 
@@ -199,7 +200,6 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
                 trade.trend_direction, trade.source,
             ]
             optional_values = {
-                "playbook_item_id": trade.playbook_item_id,
                 "plan_relationship": trade.plan_relationship or "UNKNOWN",
                 "discipline_tag": trade.discipline_tag,
             }
@@ -262,7 +262,6 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
                     evidence={
                         "trade_id": trade_id,
                         "direction": trade.direction,
-                        "playbook_item_id": trade.playbook_item_id,
                         "plan_relationship": trade.plan_relationship or "UNKNOWN",
                         "discipline_tag": trade.discipline_tag,
                     },
@@ -296,13 +295,14 @@ async def create_trade(trade: TradeCreate, user_id: int = 1):
 
 @router.get("")
 def list_trades(
-    user_id: int = 1,
     symbol: Optional[str] = None,
     direction: Optional[str] = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    current_user_id: int = Depends(get_current_user_id),
 ):
     """查询交易记录列表"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         query = "SELECT * FROM trades WHERE user_id = ?"
@@ -340,8 +340,9 @@ def list_trades(
 
 # 注意: /from-text 必须在 /{trade_id} 之前注册，否则会被路径参数捕获
 @router.post("/from-text")
-async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
+async def create_trade_from_text(req: TradeFromText, current_user_id: int = Depends(get_current_user_id)):
     """从自然语言/语音文本提取交易信息（调用 Qwen 做事实抽取）"""
+    user_id = current_user_id
     from server.services.llm_service import LLMService
     svc = LLMService()
     result = await svc.parse_trade_from_text(req.text, user_id=user_id)
@@ -352,8 +353,9 @@ async def create_trade_from_text(req: TradeFromText, user_id: int = 1):
 
 
 @router.get("/{trade_id}")
-def get_trade(trade_id: int, user_id: int = 1):
+def get_trade(trade_id: int, current_user_id: int = Depends(get_current_user_id)):
     """查询单笔交易"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         row = conn.execute(
@@ -380,8 +382,9 @@ class TradeUpdate(BaseModel):
 
 
 @router.put("/{trade_id}")
-def update_trade(trade_id: int, update: TradeUpdate, user_id: int = 1):
+def update_trade(trade_id: int, update: TradeUpdate, current_user_id: int = Depends(get_current_user_id)):
     """编辑交易记录（同时重算持仓）"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         # 先查到原记录
@@ -430,8 +433,9 @@ def update_trade(trade_id: int, update: TradeUpdate, user_id: int = 1):
 
 
 @router.delete("/{trade_id}")
-def delete_trade(trade_id: int, user_id: int = 1):
+def delete_trade(trade_id: int, current_user_id: int = Depends(get_current_user_id)):
     """删除交易记录 (同时重算持仓)"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         # 先查到 symbol 用于重算持仓

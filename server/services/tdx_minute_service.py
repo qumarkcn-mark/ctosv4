@@ -1,7 +1,7 @@
 """Read-only TDX local 1-minute kline reader.
 
-TDX minute data is a display/replay supplement. It must not override QMT as the
-live Radar confirmation source.
+TDX minute data is a display/replay supplement. It must not override the
+formal BaoStock + CZSC structure source.
 """
 
 from __future__ import annotations
