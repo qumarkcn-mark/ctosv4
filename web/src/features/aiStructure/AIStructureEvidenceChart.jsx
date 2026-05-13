@@ -10,7 +10,7 @@ export default function AIStructureEvidenceChart({ symbol, symbolName, chartCont
   const [selectedEvidenceId, setSelectedEvidenceId] = useState('')
   const klines = Array.isArray(chartContext?.klines) ? chartContext.klines : []
   const overlays = chartContext?.overlays || {}
-  const lines = Array.isArray(overlays.lines) ? overlays.lines : []
+  const lines = sortEvidenceLines(Array.isArray(overlays.lines) ? overlays.lines : [])
   const center = overlays.active_center || null
   const candles = normalizeKlines(klines)
   const priceRange = buildPriceRange(candles, overlays)
@@ -180,6 +180,19 @@ function buildEvidenceItems(center, lines) {
   }
   lines.forEach((line) => items.push(line))
   return items.filter((item) => item.evidence_id)
+}
+
+function sortEvidenceLines(lines) {
+  const rank = {
+    current_price: 0,
+    trigger: 1,
+    invalidation: 2,
+  }
+  return [...lines].sort((left, right) => {
+    const leftRank = rank[left.role] ?? 1
+    const rightRank = rank[right.role] ?? 1
+    return leftRank - rightRank
+  })
 }
 
 function normalizeKlines(klines) {
