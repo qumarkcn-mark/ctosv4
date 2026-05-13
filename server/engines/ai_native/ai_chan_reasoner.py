@@ -22,7 +22,12 @@ from server.engines.ai_native.fusion_schemas import (
 )
 from server.engines.ai_native.schemas import DISCLAIMER, ModelRoute, PositionContext
 from server.engines.structure.chan_adapter import export_raw_bi_context
-from server.prompts.ai_chan_reasoning_prompt import AI_CHAN_REASONING_PROMPT, AI_CHAN_REASONING_PROMPT_VERSION
+from server.prompts.ai_chan_reasoning_prompt import (
+    AI_CHAN_REASONING_PROMPT,
+    AI_CHAN_REASONING_PROMPT_E1,
+    AI_CHAN_REASONING_PROMPT_E1_VERSION,
+    AI_CHAN_REASONING_PROMPT_VERSION,
+)
 from server.services.llm_service import LLMService
 
 
@@ -38,6 +43,7 @@ async def build_ai_chan_inference(
     llm_service: LLMService | None = None,
     model_route: ModelRoute | None = None,
     fallback_on_error: bool = False,
+    prompt_variant: str = "default",
 ) -> AIChanInference:
     """Run first-stage AI Chan reasoning from raw bi sequence.
 
@@ -61,6 +67,7 @@ async def build_ai_chan_inference(
 
     context = _ai_chan_context(chan_analysis, position_context, raw_bi_context)
     context_json = json.dumps(context, ensure_ascii=False, indent=2)
+    prompt_text, prompt_version = _resolve_ai_chan_prompt(prompt_variant)
     effective_route = model_route or _default_ai_chan_model_route()
     diagnostics = {
         "prompt_chars": len(context_json),
@@ -73,7 +80,7 @@ async def build_ai_chan_inference(
         llm_started = time.perf_counter()
         raw_output = await asyncio.wait_for(
             service.infer_ai_native_radar(
-                AI_CHAN_REASONING_PROMPT,
+                prompt_text,
                 context_json,
                 user_id=user_id,
                 model_route=effective_route,
@@ -84,7 +91,8 @@ async def build_ai_chan_inference(
         output.source_versions = {
             **(output.source_versions or {}),
             "chan": chan_analysis.version,
-            "prompt": AI_CHAN_REASONING_PROMPT_VERSION,
+            "prompt": prompt_version,
+            "prompt_variant": prompt_variant,
             "signal_code": _signal_code(chan_analysis),
             "llm_ms": _elapsed_ms(llm_started),
             "fallback_triggered": False,
@@ -120,35 +128,37 @@ def _default_ai_chan_model_route() -> ModelRoute:
     )
 
 
+def _resolve_ai_chan_prompt(prompt_variant: str = "default") -> tuple[str, str]:
+    variant = str(prompt_variant or "default").lower()
+    if variant in {"e1", "e1_chan_terms", "ai_chan_reasoning.e1_chan_terms"}:
+        return AI_CHAN_REASONING_PROMPT_E1, AI_CHAN_REASONING_PROMPT_E1_VERSION
+    return AI_CHAN_REASONING_PROMPT, AI_CHAN_REASONING_PROMPT_VERSION
+
+
 def _ai_chan_context(
     chan_analysis: ChanAnalysisResult,
     position_context: PositionContext | None,
     raw_bi_context: dict | None = None,
 ) -> dict:
-    # P4: raw_bi_context 是主输入，chan_structure 降级为算法参考
+    # AI 主推理只喂原始笔结构和最小信号锚点，避免旧 ABC 规则路径污染推演。
     context = {
         "version": "ai_chan_input.v70_six_step",
         "raw_bi_context": raw_bi_context if raw_bi_context else {"levels": {}},
         "current_price": _estimate_current_price(raw_bi_context, chan_analysis),
         "semantic_signal": _semantic_signal_context(chan_analysis),
-        "algorithm_reference": {
-            "note": "以下是硬编码算法的结构判断，仅供参考。AI 应基于 raw_bi_context 自行推演，可修正或推翻。",
-            "current_position": chan_analysis.current_position,
-            "structure_state": chan_analysis.structure_state,
-            "key_levels": [
-                {"label": lv.label, "price": lv.price, "level": lv.level, "role": lv.role}
-                for lv in chan_analysis.key_levels[:8]
-            ],
-            "buy_sell_candidates": chan_analysis.buy_sell_candidates[:3],
-        },
+        "allowed_prices": [
+            {"label": lv.label, "price": lv.price, "level": lv.level, "role": lv.role}
+            for lv in chan_analysis.key_levels[:12]
+        ],
         "position_context": position_context.model_dump() if position_context else None,
         "rules": {
-            "input_priority": "raw_bi_context 是主输入，semantic_signal 与 algorithm_reference 仅供参考和验证。",
+            "input_priority": "raw_bi_context 是主输入；allowed_prices 只允许引用价格，不提供路径结论。",
             "reasoner_role": "从原始笔序列自行识别中枢、判断位置、给出三段式作战指令。",
-            "must_verify": "algorithm_zhongshus 可能有错，必须从笔序列验证后才能引用。",
-            "semantic_signal_rule": "必须引用 semantic_signal.primary.code；若推演结论不同，必须在 corrections 中说明为什么 raw_bi_context 推翻了短码动作。",
+            "must_verify": "必须从笔序列验证结构，不能把任何旧规则路径当作判据。",
+            "semantic_signal_rule": "semantic_signal 只作后台追踪锚点；禁止写入 evidence/current_signal，证据必须来自 raw_bi_context。",
+            "operation_state_rule": "classification.paths 每条必须先判定 30分 operation_state，再描述 5分内部触发。",
             "do_not_use": ["Kronos", "final_path_probability", "automatic_trade"],
-            "output_format": "展示优先级：level_positions + synthesis + paths(ABC)。main_deduction 只作内部长摘要，不作为前端主展示。",
+            "output_format": "展示优先级：level_positions + synthesis + classification.paths。路径由 30分 operation_state 生成，禁止固定 ABC。",
             "disclaimer": DISCLAIMER,
         },
     }
@@ -164,12 +174,8 @@ def _semantic_signal_context(chan_analysis: ChanAnalysisResult) -> dict | None:
     return {
         "version": signal.get("version") or "semantic_signal.v2",
         "state": signal.get("state") or "",
-        "primary": primary,
-        "context": signal.get("context") or {},
-        "resonance": signal.get("resonance") or [],
-        "deterministic_scenarios": signal.get("deterministic_scenarios") or [],
-        "ai_classification": signal.get("ai_classification") or [],
-        "usage": "参考锚点。输出需引用 primary.code；如与 raw_bi_context 推导冲突，写入 corrections。",
+        "primary": {"code": code},
+        "usage": "只作追踪锚点。不得把信号短码当作路径结论。",
     }
 
 
@@ -276,7 +282,7 @@ def _coerce_classification(
             if scenario:
                 paths.append(scenario)
         classification = AIClassificationOutput(
-            current_signal=str(raw.get("current_signal") or raw.get("currentSignal") or signal_code),
+            current_signal=str(raw.get("current_signal") or raw.get("currentSignal") or ""),
             structure_basis=str(raw.get("structure_basis") or raw.get("structureBasis") or chan_analysis.current_position),
             paths=paths,
         )
@@ -287,6 +293,7 @@ def _coerce_classification(
         scenarios.append(
             AIPathScenario(
                 path_id=index,
+                operation_state="",
                 current_state=path.description or chan_analysis.current_position,
                 description=path.name or path.description,
                 next_boundary=_next_boundary_from_path(path),
@@ -311,6 +318,7 @@ def _coerce_path_scenario(raw_item: Any, index: int, chan_analysis: ChanAnalysis
         return None
     return AIPathScenario(
         path_id=int(_safe_float(raw.get("path_id") or raw.get("pathId") or index) or index),
+        operation_state=_text(raw, "operation_state", "operationState", "state", default=""),
         current_state=_text(raw, "current_state", "currentState", default=chan_analysis.current_position),
         description=_text(raw, "description", "summary", default=f"路径 {index}"),
         next_boundary=_text(raw, "next_boundary", "nextBoundary", default=_default_trigger(chan_analysis)),
@@ -325,11 +333,11 @@ def _coerce_path_scenario(raw_item: Any, index: int, chan_analysis: ChanAnalysis
 
 def validate_classification(output: AIClassificationOutput) -> list[str]:
     violations = []
-    if not output.current_signal:
-        violations.append("MISSING_SIGNAL: 缺少 current_signal")
     if len(output.paths) < 2:
         violations.append("TOO_FEW_PATHS: 实时完全分类至少需要 2 条路径")
     for path in output.paths:
+        if not path.operation_state:
+            violations.append(f"MISSING_OPERATION_STATE: 路径 {path.path_id}")
         if not path.current_state:
             violations.append(f"MISSING_CURRENT_STATE: 路径 {path.path_id}")
         if not path.next_boundary:

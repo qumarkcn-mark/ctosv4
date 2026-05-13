@@ -9,6 +9,7 @@ from __future__ import annotations
 
 
 from server.engines.ai_native.divergence_context import DivergenceContext
+from server.engines.structure.czsc_evidence import build_czsc_evidence
 
 def build_reasoning_evidence_pack(radar_contract: dict, divergence_context: DivergenceContext | None = None) -> dict:
     structure = radar_contract.get("structure") or {}
@@ -38,6 +39,7 @@ def build_reasoning_evidence_pack(radar_contract: dict, divergence_context: Dive
         quote_anchors=quote_anchors,
         current_price=current_price,
     )
+    czsc_structure = radar_contract.get("shadow_structure") or radar_contract.get("czsc_structure") or {}
     return {
         "version": "reasoning_evidence_pack.v1",
         "symbol": radar_contract.get("symbol") or "",
@@ -52,6 +54,8 @@ def build_reasoning_evidence_pack(radar_contract: dict, divergence_context: Dive
         "key_levels": key_levels,
         "position_context": _position_pack(radar_contract, current_price),
         "semantic_assertions": assertions,
+        "czsc_shadow": build_czsc_evidence(czsc_structure),
+        "structure_engine_comparison": radar_contract.get("structure_engine_comparison") or {},
         "data_quality": {
             "freshness": radar_contract.get("freshness") or {},
             "tactical_freshness": radar_contract.get("tactical_freshness") or {},

@@ -20,6 +20,7 @@ CT-OS 自研代码只做三类事情：
 | 位置 | 当前角色 | 后续处置 |
 |---|---|---|
 | `server/vendor/chan_py` | 第三方 `chan.py` vendor，实现基础结构 | 保留为唯一权威；不直接改源码 |
+| `server/engines/structure/czsc_adapter.py` | CZSC shadow engine adapter，作为第二结构视角和 AI evidence 辅助输入 | 实验/调试路径；默认不替换 `chan.py`；不得直接驱动交易决策 |
 | `server/services/chan_detail_service.py` | 当前最接近 `chan.py adapter` 的实现，负责调用 `CChan` 并序列化 `bis`、`segs`、`zhongshus`、`bsps` | 保留；后续迁移/收敛到 `server/engines/structure/chan_adapter.py` |
 | `server/services/chan_scanner.py` | Scanner 里调用 `chan.py` 做战法一结构判断，同时包含战法二价格摆动规则 | 保留策略能力；把 `chan.py` 调用收敛到 adapter，战法规则归入 Strategy/Decision |
 | `chan_engine/parser.py` | 自研 K 线包含、分型、笔、线段构造 | 标记为 legacy/reference；不得作为生产结构权威 |
@@ -45,6 +46,8 @@ CT-OS 自研代码只做三类事情：
 - 多级别联立结构
 
 第一阶段允许 `server/services/chan_detail_service.py` 继续作为过渡入口，但它的职责必须限定为 adapter/serializer。
+
+CZSC 引擎接入期间，`chan.py` 仍为默认权威结构来源。CZSC 输出只能作为 shadow / dual 模式下的辅助视角，除非后续通过独立验收流程显式切换主引擎。
 
 ## 允许的派生结构事实
 
@@ -106,6 +109,8 @@ CT-OS 自研代码只做三类事情：
 ## 第一阶段落地动作
 
 - 新增 `server/engines/structure/chan_adapter.py`，统一封装 `chan.py` 输入输出。
+- 新增 `server/engines/structure/engine_router.py`，支持 `chan_py` / `czsc` / `dual` 结构引擎模式；默认仍为 `chan_py`。
+- 新增 `server/engines/structure/czsc_adapter.py`，整套接入 CZSC 作为 shadow engine，不手抄 CZSC 算法。
 - `chan_detail_service.py` 逐步降级为兼容壳或直接迁移到 adapter。
 - `/api/radar/{symbol}` 的 `structure` 字段全部来自 adapter。
 - `/api/chan/matrix/v2` 先保持旧输出，通过 characterization tests 锁住行为。
@@ -119,3 +124,4 @@ CT-OS 自研代码只做三类事情：
 - 禁止同一次结构分析混用 TDX、BaoStock、腾讯实时数据。
 - 禁止把腾讯实时拼出的 K 线写入正式 `chan.py` 结构判断结果。
 - 禁止使用前复权结构价作为 Phase 3 委托价。
+- 禁止在未完成 shadow evaluation 和 contract 验收前，把 CZSC shadow 输出作为交易决策主依据。

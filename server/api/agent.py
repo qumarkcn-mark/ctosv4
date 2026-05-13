@@ -360,6 +360,8 @@ class AINativeFusionRequest(BaseModel):
     user_id: int = 1
     signal_code: Optional[str] = None
     structure_fingerprint: Optional[str] = None
+    structure_engine: Optional[str] = None
+    prompt_variant: Optional[str] = None
 
 class AINativeRebalanceRequest(BaseModel):
     user_id: int = 1
@@ -700,6 +702,12 @@ async def ai_native_fusion(request: AINativeFusionRequest):
         )
         if not _usable_first_stage_reasoning(first_stage_reasoning):
             first_stage_reasoning = None
+        requested_structure_engine = str(request.structure_engine or "").lower()
+        requested_prompt_variant = str(request.prompt_variant or "").lower()
+        use_czsc_e1 = requested_structure_engine == "czsc" or requested_prompt_variant in {"e1", "e1_chan_terms"}
+        if use_czsc_e1:
+            # CZSC/E1 是实验推演通道，不能复用 chan.py/v72 的旧缓存。
+            first_stage_reasoning = None
 
         ai_chan_started = time.perf_counter()
         ai_chan_inference = None
@@ -708,11 +716,24 @@ async def ai_native_fusion(request: AINativeFusionRequest):
         if first_stage_reasoning is None:
             async def _run_ai_chan() -> tuple[object, int, Optional[str]]:
                 started = time.perf_counter()
+                raw_bi_context = None
+                prompt_variant = request.prompt_variant or "default"
+                if requested_structure_engine == "czsc":
+                    from server.engines.structure.czsc_adapter import export_czsc_raw_bi_context
+
+                    raw_bi_context = await export_czsc_raw_bi_context(
+                        request.symbol,
+                        levels=["day", "30", "5"],
+                        count=1200,
+                    )
+                    prompt_variant = request.prompt_variant or "e1"
                 inference = await build_ai_chan_inference(
                     chan_analysis=chan_analysis,
                     position_context=transcript.position_context,
+                    raw_bi_context=raw_bi_context,
                     user_id=request.user_id,
                     llm_service=_llm_service,
+                    prompt_variant=prompt_variant,
                 )
                 return inference, _elapsed_ms(started), None
 

@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.engines.ai_native.ai_chan_reasoner import build_ai_chan_inference
+from server.prompts.ai_chan_reasoning_prompt import AI_CHAN_REASONING_PROMPT_E1_VERSION
 from server.engines.ai_native.fusion_chan_adapter import build_chan_analysis_from_radar_contract
 from server.engines.ai_native.fusion_kronos_adapter import build_kronos_forecast_from_service_result
 
@@ -14,9 +15,11 @@ from server.engines.ai_native.fusion_kronos_adapter import build_kronos_forecast
 class FakeChanLLM:
     def __init__(self, payload):
         self.payload = payload
+        self.system_prompt = ""
         self.context_json = ""
 
     async def infer_ai_native_radar(self, system_prompt, context_json, **kwargs):
+        self.system_prompt = system_prompt
         self.context_json = context_json
         return self.payload
 
@@ -76,9 +79,10 @@ def test_ai_chan_reasoner_returns_structured_output():
             "current_signal": "m30_zs_above_bs3_strong",
             "structure_basis": "现价在12.80确认位下方，5分钟修复未确认。",
             "paths": [
-                {
-                    "path_id": 1,
-                    "current_state": "现价在确认位12.80下方，尚未转强。",
+                    {
+                        "path_id": 1,
+                        "operation_state": "30F_RANGE_UNKNOWN",
+                        "current_state": "现价在确认位12.80下方，尚未转强。",
                     "description": "站回确认位后再看修复延续",
                     "next_boundary": "5分钟确认位 12.80",
                     "trigger_condition": "现价重新站稳 12.80。",
@@ -88,9 +92,10 @@ def test_ai_chan_reasoner_returns_structured_output():
                     "requires_confirmation": True,
                     "evidence": ["m30_zs_above_bs3_strong"],
                 },
-                {
-                    "path_id": 2,
-                    "current_state": "现价未站回12.80，结构仍按震荡处理。",
+                    {
+                        "path_id": 2,
+                        "operation_state": "30F_RANGE_UNKNOWN",
+                        "current_state": "现价未站回12.80，结构仍按震荡处理。",
                     "description": "继续中枢震荡等待",
                     "next_boundary": "30分钟失效位 11.20",
                     "trigger_condition": "现价继续在 11.20-12.80 区间内运行。",
@@ -149,7 +154,91 @@ def test_ai_chan_reasoner_returns_structured_output():
     assert "kronos_evidence" not in llm.context_json
     assert "forecast_mean" not in llm.context_json
     assert "\"raw_bi_context\"" in llm.context_json
+    assert "\"allowed_prices\"" in llm.context_json
+    assert "\"algorithm_reference\"" not in llm.context_json
+    assert "\"deterministic_scenarios\"" not in llm.context_json
+    assert "\"ai_classification\"" not in llm.context_json
+    assert "paths(ABC)" not in llm.context_json
     assert "\"output_format\"" in llm.context_json
+
+
+def test_ai_chan_reasoner_can_use_e1_prompt_with_czsc_context():
+    chan, _ = inputs()
+    llm = FakeChanLLM({
+        "symbol": "sh.600519",
+        "current_position": "30分钟中枢震荡。",
+        "structure_confidence": 0.6,
+        "classification": {
+            "current_signal": "",
+            "structure_basis": "当前焦点是 5分钟顶端中枢能否离开。",
+            "paths": [
+                {
+                    "path_id": 1,
+                    "operation_state": "30F_RANGE_UNKNOWN",
+                    "current_state": "价格仍在5分钟中枢内。",
+                    "description": "观察能否向上离开中枢",
+                    "next_boundary": "5分钟中枢上沿 243.49",
+                    "trigger_condition": "站稳 243.49 后重新推演。",
+                    "action": "观察。仅供参考，不构成投资建议。",
+                    "requires_confirmation": True,
+                    "evidence": ["czsc_raw_bi_context"],
+                },
+                {
+                    "path_id": 2,
+                    "operation_state": "30F_RANGE_UNKNOWN",
+                    "current_state": "价格仍在5分钟中枢内。",
+                    "description": "跌回中枢下沿",
+                    "next_boundary": "5分钟中枢下沿 236.72",
+                    "trigger_condition": "跌破 236.72 后重新推演。",
+                    "action": "放弃追高。仅供参考，不构成投资建议。",
+                    "requires_confirmation": True,
+                    "evidence": ["czsc_raw_bi_context"],
+                },
+            ],
+        },
+        "paths": [],
+        "main_deduction": "当前先看5分钟顶端中枢能否有效离开。",
+        "synthesis": "当前焦点是5分钟顶端中枢能否离开，先观察。",
+        "discipline": "未确认前不追高。仅供参考，不构成投资建议。",
+        "disclaimer": "仅供参考，不构成投资建议",
+    })
+    czsc_context = {
+        "symbol": "sh.600519",
+        "version": "czsc_raw_bi_context.v1",
+        "levels": {
+            "5": {
+                "last_close": 240.7,
+                "bi_sequence": [
+                    {
+                        "direction": "UP",
+                        "begin_price": 231.17,
+                        "end_price": 245.69,
+                        "high": 245.69,
+                        "low": 231.17,
+                        "begin_time": "2026-05-12 09:45:00",
+                        "end_time": "2026-05-12 10:55:00",
+                        "bar_count": 14,
+                        "is_sure": True,
+                    }
+                ],
+                "algorithm_zhongshus": [{"zg": 243.49, "zd": 236.72}],
+            }
+        },
+    }
+
+    output = asyncio.run(
+        build_ai_chan_inference(
+            chan_analysis=chan,
+            raw_bi_context=czsc_context,
+            llm_service=llm,
+            prompt_variant="e1",
+        )
+    )
+
+    assert output.source_versions["prompt"] == AI_CHAN_REASONING_PROMPT_E1_VERSION
+    assert output.source_versions["prompt_variant"] == "e1"
+    assert "AI 缠论实战教练" in llm.system_prompt
+    assert "czsc_raw_bi_context.v1" in llm.context_json
 
 
 def test_ai_chan_reasoner_marks_legacy_paths_as_classification_compat():
