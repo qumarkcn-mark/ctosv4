@@ -42,18 +42,37 @@ def test_default_app_runtime_does_not_import_legacy_structure_modules():
         assert module_name not in sys.modules
 
 
-def test_default_kline_sync_does_not_enqueue_legacy_structure_jobs():
+def test_default_kline_sync_enqueues_only_czsc_v5_jobs(monkeypatch):
+    def fake_prewarm(**kwargs):
+        return {
+            "count": len(kwargs["levels"]),
+            "items": [
+                {"symbol": kwargs["symbols"][0], "level": level, "status": "PENDING", "engine": "czsc", "enqueued": True}
+                for level in kwargs["levels"]
+            ],
+        }
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
+        fake_prewarm,
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.list_interested_user_ids_for_symbol",
+        lambda _symbol: [],
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.has_active_position_for_symbol",
+        lambda _symbol: False,
+    )
+
     result = enqueue_structure_jobs_for_changes(
         [{"symbol": "sh600519", "freq": "day", "written": 1}],
         reason="test",
     )
 
-    assert result == {
-        "count": 0,
-        "items": [],
-        "skipped": True,
-        "reason": "LEGACY_CHAN_RADAR_REMOVED",
-    }
+    assert result["engine"] == "czsc"
+    assert result["count"] == 1
+    assert result["items"][0]["status"] == "PENDING"
     assert "server.engines.structure.structure_jobs" not in sys.modules
     assert "server.engines.structure.snapshot_query" not in sys.modules
 

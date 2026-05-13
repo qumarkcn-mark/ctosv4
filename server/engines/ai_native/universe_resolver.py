@@ -54,6 +54,81 @@ def resolve_ai_native_universe(user_id: int, sources: Iterable[str] | None = Non
     return sorted(items.values(), key=lambda item: (-int(item["priority"]), item["symbol"]))
 
 
+def list_ai_native_user_ids(limit: int | None = None) -> list[int]:
+    """List users whose watchlist or active positions can drive V5 background jobs."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT user_id
+              FROM positions
+             WHERE quantity > 0
+            UNION
+            SELECT DISTINCT wg.user_id
+              FROM watchlist_groups wg
+              JOIN watchlist_items wi ON wi.group_id = wg.id
+             ORDER BY user_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    user_ids = [int(row["user_id"]) for row in rows if row["user_id"] is not None]
+    return user_ids[: int(limit)] if limit is not None else user_ids
+
+
+def list_interested_user_ids_for_symbol(symbol: str) -> list[int]:
+    """Find users whose positions or watchlist include the symbol.
+
+    Symbols may be stored as sh600519, sh.600519, or other UI variants, so
+    normalize in Python instead of relying on raw SQL equality.
+    """
+    canonical = normalize_symbol(symbol)
+    interested: set[int] = set()
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT user_id, symbol
+              FROM positions
+             WHERE quantity > 0
+            """
+        ).fetchall()
+        for row in rows:
+            if normalize_symbol(row["symbol"]) == canonical:
+                interested.add(int(row["user_id"]))
+
+        rows = conn.execute(
+            """
+            SELECT wg.user_id, wi.symbol
+              FROM watchlist_items wi
+              JOIN watchlist_groups wg ON wg.id = wi.group_id
+            """
+        ).fetchall()
+        for row in rows:
+            if normalize_symbol(row["symbol"]) == canonical:
+                interested.add(int(row["user_id"]))
+    finally:
+        conn.close()
+    return sorted(interested)
+
+
+def has_active_position_for_symbol(symbol: str) -> bool:
+    """Return whether any user currently holds the symbol."""
+    canonical = normalize_symbol(symbol)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol
+              FROM positions
+             WHERE quantity > 0
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return any(normalize_symbol(row["symbol"]) == canonical for row in rows)
+
+
 def _position_rows(user_id: int) -> list[dict]:
     conn = get_connection()
     try:
