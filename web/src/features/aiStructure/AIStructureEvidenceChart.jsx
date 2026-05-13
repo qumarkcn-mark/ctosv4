@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import './AIStructureEvidenceChart.css'
 
 const WIDTH = 960
@@ -5,13 +6,19 @@ const HEIGHT = 520
 const PAD = { top: 28, right: 88, bottom: 34, left: 54 }
 
 export default function AIStructureEvidenceChart({ symbol, symbolName, chartContext }) {
+  const [hoveredEvidenceId, setHoveredEvidenceId] = useState('')
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState('')
   const klines = Array.isArray(chartContext?.klines) ? chartContext.klines : []
   const overlays = chartContext?.overlays || {}
   const lines = Array.isArray(overlays.lines) ? overlays.lines : []
+  const center = overlays.active_center || null
   const candles = normalizeKlines(klines)
   const priceRange = buildPriceRange(candles, overlays)
   const plotWidth = WIDTH - PAD.left - PAD.right
   const plotHeight = HEIGHT - PAD.top - PAD.bottom
+  const evidenceItems = useMemo(() => buildEvidenceItems(center, lines), [center, lines])
+  const activeEvidenceId = hoveredEvidenceId || selectedEvidenceId
+  const activeEvidence = evidenceItems.find((item) => item.evidence_id === activeEvidenceId) || evidenceItems[0] || null
 
   const xAt = (index) => PAD.left + (candles.length <= 1 ? plotWidth : (index / (candles.length - 1)) * plotWidth)
   const yAt = (price) => PAD.top + ((priceRange.max - price) / (priceRange.max - priceRange.min || 1)) * plotHeight
@@ -28,7 +35,10 @@ export default function AIStructureEvidenceChart({ symbol, symbolName, chartCont
         <em>{chartContext?.level ? `${chartContext.level} 级别` : '等待回答'}</em>
       </header>
 
-      <div className="ai-evidence-chart__canvas">
+      <div
+        className="ai-evidence-chart__canvas"
+        onMouseLeave={() => setHoveredEvidenceId('')}
+      >
         <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="AI structure evidence chart">
           <rect className="ai-evidence-bg" x="0" y="0" width={WIDTH} height={HEIGHT} rx="0" />
 
@@ -39,13 +49,16 @@ export default function AIStructureEvidenceChart({ symbol, symbolName, chartCont
             </g>
           ))}
 
-          {overlays.active_center && (
-            <rect
-              className="ai-evidence-center"
+          {center && (
+            <EvidenceCenter
+              item={center}
               x={PAD.left}
-              y={Math.min(yAt(Number(overlays.active_center.zg)), yAt(Number(overlays.active_center.zd)))}
+              y={Math.min(yAt(Number(center.zg)), yAt(Number(center.zd)))}
               width={plotWidth}
-              height={Math.abs(yAt(Number(overlays.active_center.zd)) - yAt(Number(overlays.active_center.zg))) || 3}
+              height={Math.abs(yAt(Number(center.zd)) - yAt(Number(center.zg))) || 3}
+              active={activeEvidenceId === center.evidence_id}
+              onHover={setHoveredEvidenceId}
+              onSelect={setSelectedEvidenceId}
             />
           )}
 
@@ -66,9 +79,24 @@ export default function AIStructureEvidenceChart({ symbol, symbolName, chartCont
           })}
 
           {lines.map((line) => (
-            <EvidenceLine key={line.evidence_id || `${line.role}-${line.price}`} item={line} y={yAt(Number(line.price))} />
+            <EvidenceLine
+              key={line.evidence_id || `${line.role}-${line.price}`}
+              item={line}
+              y={yAt(Number(line.price))}
+              active={activeEvidenceId === line.evidence_id}
+              onHover={setHoveredEvidenceId}
+              onSelect={setSelectedEvidenceId}
+            />
           ))}
         </svg>
+
+        {activeEvidence && (
+          <EvidenceInspector
+            item={activeEvidence}
+            selected={selectedEvidenceId === activeEvidence.evidence_id}
+            onClear={() => setSelectedEvidenceId('')}
+          />
+        )}
 
         {!candles.length && (
           <div className="ai-evidence-chart__empty">
@@ -81,14 +109,77 @@ export default function AIStructureEvidenceChart({ symbol, symbolName, chartCont
   )
 }
 
-function EvidenceLine({ item, y }) {
+function EvidenceCenter({ item, x, y, width, height, active, onHover, onSelect }) {
+  const evidenceId = item.evidence_id || ''
   return (
-    <g className={`ai-evidence-line ai-evidence-line--${item.role || 'default'}`}>
+    <g
+      className={`ai-evidence-center-wrap ${active ? 'is-active' : ''}`}
+      tabIndex="0"
+      role="button"
+      aria-label={`中枢证据 ${formatCenterLabel(item)}`}
+      onMouseEnter={() => onHover(evidenceId)}
+      onFocus={() => onHover(evidenceId)}
+      onBlur={() => onHover('')}
+      onClick={() => onSelect((current) => current === evidenceId ? '' : evidenceId)}
+    >
+      <rect className="ai-evidence-center" x={x} y={y} width={width} height={height} />
+      <rect className="ai-evidence-center-hit" x={x} y={y - 6} width={width} height={height + 12} />
+      <text className="ai-evidence-center-label" x={x + 10} y={y + 16}>中枢 {formatCenterLabel(item)}</text>
+    </g>
+  )
+}
+
+function EvidenceLine({ item, y, active, onHover, onSelect }) {
+  const evidenceId = item.evidence_id || ''
+  return (
+    <g
+      className={`ai-evidence-line ai-evidence-line--${item.role || 'default'} ${active ? 'is-active' : ''}`}
+      tabIndex="0"
+      role="button"
+      aria-label={`${item.label || item.role} ${formatPrice(item.price)}`}
+      onMouseEnter={() => onHover(evidenceId)}
+      onFocus={() => onHover(evidenceId)}
+      onBlur={() => onHover('')}
+      onClick={() => onSelect((current) => current === evidenceId ? '' : evidenceId)}
+    >
+      <line className="ai-evidence-line-hit" x1={PAD.left} y1={y} x2={WIDTH - PAD.right} y2={y} />
       <line x1={PAD.left} y1={y} x2={WIDTH - PAD.right} y2={y} />
       <text x={WIDTH - PAD.right + 12} y={y - 7}>{item.label || item.role}</text>
       <text x={WIDTH - PAD.right + 12} y={y + 12}>{formatPrice(item.price)}</text>
     </g>
   )
+}
+
+function EvidenceInspector({ item, selected, onClear }) {
+  return (
+    <div className={`ai-evidence-inspector ${selected ? 'is-pinned' : ''}`}>
+      <div>
+        <span>{roleLabel(item.role)}</span>
+        <strong>{item.label || roleLabel(item.role)}</strong>
+      </div>
+      <p>{item.reason || 'AI 回答引用的图表证据'}</p>
+      <em>{formatEvidenceValue(item)}</em>
+      {selected && (
+        <button type="button" onClick={onClear} aria-label="取消固定证据">
+          取消固定
+        </button>
+      )}
+    </div>
+  )
+}
+
+function buildEvidenceItems(center, lines) {
+  const items = []
+  if (center) {
+    items.push({
+      ...center,
+      role: 'active_center',
+      label: '当前中枢',
+      reason: 'AI 回答引用的当前结构中枢',
+    })
+  }
+  lines.forEach((line) => items.push(line))
+  return items.filter((item) => item.evidence_id)
 }
 
 function normalizeKlines(klines) {
@@ -132,4 +223,21 @@ function formatPrice(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return '--'
   return parsed >= 100 ? parsed.toFixed(1) : parsed.toFixed(2)
+}
+
+function formatCenterLabel(item) {
+  return `${formatPrice(item.zd)}-${formatPrice(item.zg)}`
+}
+
+function formatEvidenceValue(item) {
+  if (item.role === 'active_center') return `区间 ${formatCenterLabel(item)}`
+  return `价格 ${formatPrice(item.price)}`
+}
+
+function roleLabel(role) {
+  if (role === 'active_center') return '中枢'
+  if (role === 'trigger') return '触发线'
+  if (role === 'invalidation') return '失败线'
+  if (role === 'current_price') return '当前价'
+  return '证据'
 }
