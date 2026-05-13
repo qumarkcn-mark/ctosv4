@@ -13,7 +13,7 @@ import asyncio
 import logging
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi.concurrency import run_in_threadpool
 from server.domain.symbols import normalize_symbol
@@ -28,6 +28,18 @@ CHECK_INTERVAL = 30 * 60
 
 # 启动后延迟（秒）：等待其他服务就绪
 STARTUP_DELAY = 5
+
+# V5 结构快照只消费这几个轻量级别。60/15 分钟线保留给 K 线展示和未来扩展，
+# 但不会在第一版 AI Native 数据闭环里触发额外结构计算。
+FREQ_TO_STRUCTURE_LEVEL = {
+    "week": "week",
+    "day": "day",
+    "30": "30",
+    "5": "5",
+}
+
+MAX_UNIVERSE_USERS_PER_PASS = 50
+MAX_UNIVERSE_SYMBOLS_PER_USER = 80
 
 
 def _get_all_tracked_symbols() -> list[str]:
@@ -204,8 +216,132 @@ def enqueue_structure_jobs_for_changes(
     holding_priority: int = 95,
     reason: str = "kline_sync",
 ) -> dict:
-    """Enqueue structure jobs for formal BaoStock bars that actually changed."""
-    return {"count": 0, "items": [], "skipped": True, "reason": "LEGACY_CHAN_RADAR_REMOVED"}
+    """Enqueue CZSC V5 snapshot jobs for formal BaoStock bars that changed.
+
+    This is the bridge from the K-line lake into AI Native V5. It never calls
+    old radar/chan fallback code and never performs structure calculation in
+    the page request path.
+    """
+    from server.engines.ai_native.czsc_snapshot_service import prewarm_structure_snapshots
+    from server.engines.ai_native.universe_resolver import (
+        has_active_position_for_symbol,
+        list_interested_user_ids_for_symbol,
+    )
+
+    levels_by_symbol = _structure_levels_from_changes(changes)
+    if not levels_by_symbol:
+        return {"count": 0, "items": [], "skipped": True, "reason": "NO_V5_STRUCTURE_LEVEL_CHANGES"}
+
+    items: list[dict[str, Any]] = []
+    for symbol, levels in sorted(levels_by_symbol.items()):
+        user_ids = list_interested_user_ids_for_symbol(symbol)
+        requested_by_user_id = user_ids[0] if user_ids else None
+        symbol_priority = holding_priority if has_active_position_for_symbol(symbol) else priority
+        result = prewarm_structure_snapshots(
+            symbols=[symbol],
+            levels=levels,
+            priority=symbol_priority,
+            reason=reason,
+            requested_by_user_id=requested_by_user_id,
+        )
+        for item in result.get("items", []):
+            item["interested_user_ids"] = user_ids
+            items.append(item)
+
+    return {
+        "count": _active_item_count(items),
+        "items": items,
+        "skipped": False,
+        "engine": "czsc",
+        "reason": reason,
+    }
+
+
+def prewarm_ai_structure_universe_for_tracked_users(
+    *,
+    priority: int = 70,
+    reason: str = "kline_sync_universe",
+    max_users: int = MAX_UNIVERSE_USERS_PER_PASS,
+    max_symbols_per_user: int = MAX_UNIVERSE_SYMBOLS_PER_USER,
+) -> dict:
+    """Keep user-scoped AI Native V5 universes warm after K-line sync passes.
+
+    Snapshot jobs are idempotent by data signature. Context jobs are user-scoped
+    and are only enqueued when at least one snapshot already exists.
+    """
+    from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, prewarm_structure_snapshots
+    from server.engines.ai_native.structure_context_service import prewarm_ai_structure_contexts
+    from server.engines.ai_native.universe_resolver import list_ai_native_user_ids, resolve_ai_native_universe
+
+    user_ids = list_ai_native_user_ids(limit=max_users)
+    users: list[dict[str, Any]] = []
+    total_snapshot_items = 0
+    total_context_items = 0
+
+    for user_id in user_ids:
+        universe = resolve_ai_native_universe(user_id, ["positions", "watchlist"])
+        symbols = [item["symbol"] for item in universe[:max_symbols_per_user]]
+        if not symbols:
+            continue
+
+        snapshot_result = prewarm_structure_snapshots(
+            symbols=symbols,
+            levels=list(DEFAULT_LEVELS),
+            priority=priority,
+            reason=reason,
+            requested_by_user_id=user_id,
+        )
+        context_result = prewarm_ai_structure_contexts(
+            user_id=user_id,
+            symbols=symbols,
+            levels=list(DEFAULT_LEVELS),
+            priority=max(1, priority - 10),
+            reason=reason,
+        )
+        total_snapshot_items += _active_item_count(snapshot_result.get("items", []))
+        total_context_items += _active_item_count(context_result.get("items", []))
+        users.append({
+            "user_id": user_id,
+            "symbols": len(symbols),
+            "snapshot_jobs": _active_item_count(snapshot_result.get("items", [])),
+            "context_jobs": _active_item_count(context_result.get("items", [])),
+        })
+
+    return {
+        "count": total_snapshot_items + total_context_items,
+        "snapshot_jobs": total_snapshot_items,
+        "context_jobs": total_context_items,
+        "users": users,
+        "skipped": not bool(users),
+        "engine": "czsc",
+        "reason": reason,
+    }
+
+
+def _structure_levels_from_changes(changes: list[dict]) -> dict[str, list[str]]:
+    levels_by_symbol: dict[str, set[str]] = {}
+    for item in changes:
+        if int(item.get("written") or 0) <= 0:
+            continue
+        level = FREQ_TO_STRUCTURE_LEVEL.get(str(item.get("freq") or "").strip())
+        if not level:
+            continue
+        symbol = normalize_symbol(item["symbol"])
+        levels_by_symbol.setdefault(symbol, set()).add(level)
+
+    order = {level: idx for idx, level in enumerate(FREQ_TO_STRUCTURE_LEVEL.values())}
+    return {
+        symbol: sorted(levels, key=lambda level: order.get(level, 999))
+        for symbol, levels in levels_by_symbol.items()
+    }
+
+
+def _active_item_count(items: list[dict]) -> int:
+    return sum(
+        1
+        for item in items
+        if item.get("enqueued") or item.get("bumped") or item.get("retried")
+    )
 
 
 def _get_holding_symbol_set() -> set[str]:
@@ -318,6 +454,11 @@ class KlineSyncWorker:
                 priority=80,
                 reason="kline_sync",
             )
+            universe_jobs = await run_in_threadpool(
+                prewarm_ai_structure_universe_for_tracked_users,
+                priority=70,
+                reason="kline_sync_universe",
+            )
 
             self._last_sync_time = datetime.now()
 
@@ -331,6 +472,13 @@ class KlineSyncWorker:
             )
             if structure_jobs["count"]:
                 logger.info("📊 [%s] 结构任务入队: %d", trigger, structure_jobs["count"])
+            if universe_jobs["count"]:
+                logger.info(
+                    "📊 [%s] AI Native 用户宇宙预热: snapshot=%d context=%d",
+                    trigger,
+                    universe_jobs["snapshot_jobs"],
+                    universe_jobs["context_jobs"],
+                )
 
             # 同步完成后执行 WAL checkpoint，防止 WAL 文件无限积累
             # 用 run_in_threadpool 包裹，避免同步 I/O 阻塞事件循环
@@ -360,6 +508,11 @@ class KlineSyncWorker:
             result.get("changed", []),
             priority=80,
             reason="force_sync",
+        )
+        result["universe_jobs"] = await run_in_threadpool(
+            prewarm_ai_structure_universe_for_tracked_users,
+            priority=70,
+            reason="force_sync_universe",
         )
         self._last_sync_time = datetime.now()
         return result

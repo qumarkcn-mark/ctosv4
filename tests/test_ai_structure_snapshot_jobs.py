@@ -139,6 +139,68 @@ def test_snapshot_followup_context_uses_latest_snapshot_set(monkeypatch, tmp_pat
     }
 
 
+def test_snapshot_followup_context_enqueues_all_interested_users(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO users (id, openid, nickname) VALUES (2, 'u2', 'U2')")
+        conn.execute(
+            "INSERT INTO watchlist_groups (id, user_id, name, sort_order) VALUES (10, 1, '观察', 0), (20, 2, '观察', 0)"
+        )
+        conn.execute(
+            """
+            INSERT INTO watchlist_items (group_id, symbol, name, sort_order)
+            VALUES (10, 'sh600519', '贵州茅台', 0),
+                   (20, 'sh.600519', '贵州茅台', 0)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: fake_signature())
+
+    def fake_analyze(symbol, levels, count, compute_profile):
+        return {
+            "engine": "czsc",
+            "error": "",
+            "levels": {
+                "day": {
+                    "level": "day",
+                    "klines": [{"time": "2026-05-12", "close": 10.5}],
+                    "bis": [],
+                    "zhongshus": [],
+                    "active_zhongshu": {},
+                    "price": 10.5,
+                }
+            },
+        }
+
+    def fake_raw(symbol, levels, count, compute_profile):
+        return {"symbol": "sh.600519", "version": "czsc_raw_bi_context.v1", "levels": {"day": {"last_close": 10.5}}}
+
+    monkeypatch.setattr(service.czsc_adapter, "analyze_czsc_structure_sync", fake_analyze)
+    monkeypatch.setattr(service.czsc_adapter, "export_czsc_raw_bi_context_sync", fake_raw)
+    monkeypatch.setattr(service.czsc_adapter, "get_czsc_engine_version", lambda: "test-czsc")
+
+    service.prewarm_structure_snapshots(symbols=["sh600519"], levels=["day"])
+    job = service.claim_next_snapshot_job(worker_id="test-worker")
+    result = service.run_snapshot_job_sync(job)
+
+    assert result["status"] == "success"
+    assert result["context_job"]["count"] == 2
+    assert {item["user_id"] for item in result["context_job"]["items"]} == {1, 2}
+
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM ai_structure_context_jobs ORDER BY user_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [row["user_id"] for row in rows] == [1, 2]
+
+
 def test_no_data_prewarm_skips_without_job(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     monkeypatch.setattr(

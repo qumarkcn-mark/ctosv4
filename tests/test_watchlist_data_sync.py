@@ -185,19 +185,77 @@ def test_sync_new_watchlist_symbol_enqueues_all_changed_structure_levels(monkeyp
     ]
 
 
-def test_enqueue_structure_jobs_for_changes_is_removed_from_v5_runtime():
+def test_enqueue_structure_jobs_for_changes_enqueues_czsc_v5_snapshots(monkeypatch):
+    calls = []
+
+    def fake_prewarm(**kwargs):
+        calls.append(kwargs)
+        return {
+            "count": len(kwargs["levels"]),
+            "items": [
+                {"symbol": kwargs["symbols"][0], "level": level, "status": "PENDING", "engine": "czsc", "enqueued": True}
+                for level in kwargs["levels"]
+            ],
+        }
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
+        fake_prewarm,
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.list_interested_user_ids_for_symbol",
+        lambda _symbol: [1],
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.has_active_position_for_symbol",
+        lambda _symbol: True,
+    )
+
     result = kline_sync_worker.enqueue_structure_jobs_for_changes(
         [
             {"symbol": "sh600519", "freq": "day", "written": 10},
+            {"symbol": "sh600519", "freq": "15", "written": 10},
             {"symbol": "sz300866", "freq": "day", "written": 10},
         ],
         priority=80,
         holding_priority=95,
     )
 
-    assert result == {
-        "count": 0,
-        "items": [],
-        "skipped": True,
-        "reason": "LEGACY_CHAN_RADAR_REMOVED",
-    }
+    assert result["engine"] == "czsc"
+    assert result["skipped"] is False
+    assert result["count"] == 2
+    assert [call["priority"] for call in calls] == [95, 95]
+    assert calls[0]["levels"] == ["day"]
+    assert calls[0]["requested_by_user_id"] == 1
+    assert all(item["level"] != "15" for item in result["items"])
+
+
+def test_enqueue_structure_jobs_for_changes_does_not_count_completed_jobs(monkeypatch):
+    def fake_prewarm(**kwargs):
+        return {
+            "count": len(kwargs["levels"]),
+            "items": [
+                {"symbol": kwargs["symbols"][0], "level": "day", "status": "SUCCESS", "engine": "czsc", "enqueued": False}
+            ],
+        }
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
+        fake_prewarm,
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.list_interested_user_ids_for_symbol",
+        lambda _symbol: [1],
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.has_active_position_for_symbol",
+        lambda _symbol: False,
+    )
+
+    result = kline_sync_worker.enqueue_structure_jobs_for_changes(
+        [{"symbol": "sh600519", "freq": "day", "written": 10}],
+        priority=80,
+    )
+
+    assert result["count"] == 0
+    assert result["items"][0]["status"] == "SUCCESS"

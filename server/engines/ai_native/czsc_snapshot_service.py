@@ -621,11 +621,9 @@ def _update_job(job_id: str, **fields) -> None:
 
 
 def _enqueue_followup_context_job(job: dict[str, Any]) -> dict[str, Any] | None:
-    user_id = job.get("requested_by_user_id")
-    if not user_id:
-        return None
     try:
         from server.engines.ai_native.structure_context_service import enqueue_context_job
+        from server.engines.ai_native.universe_resolver import list_interested_user_ids_for_symbol
 
         snapshot_ids = _latest_snapshot_ids_for_context(
             symbol=job["symbol"],
@@ -633,17 +631,48 @@ def _enqueue_followup_context_job(job: dict[str, Any]) -> dict[str, Any] | None:
         )
         if not snapshot_ids:
             return None
-        return enqueue_context_job(
-            user_id=int(user_id),
-            symbol=job["symbol"],
-            compute_profile=job["compute_profile"],
-            source_snapshot_ids=snapshot_ids,
-            priority=max(1, int(job.get("priority") or 50) - 5),
-            reason="snapshot_ready",
-        )
+        user_ids = _dedupe_user_ids([
+            job.get("requested_by_user_id"),
+            *list_interested_user_ids_for_symbol(job["symbol"]),
+        ])
+        if not user_ids:
+            return None
+
+        context_jobs = [
+            enqueue_context_job(
+                user_id=user_id,
+                symbol=job["symbol"],
+                compute_profile=job["compute_profile"],
+                source_snapshot_ids=snapshot_ids,
+                priority=max(1, int(job.get("priority") or 50) - 5),
+                reason="snapshot_ready",
+            )
+            for user_id in user_ids
+        ]
+        if len(context_jobs) == 1:
+            return context_jobs[0]
+        return {
+            "status": "PENDING" if any(item.get("status") == "PENDING" for item in context_jobs) else "queued",
+            "count": len(context_jobs),
+            "items": context_jobs,
+            "source_snapshot_ids": snapshot_ids,
+        }
     except Exception as exc:
         logger.warning("AI structure context follow-up enqueue failed for %s: %s", job.get("symbol"), exc)
         return None
+
+
+def _dedupe_user_ids(raw_user_ids: list[Any]) -> list[int]:
+    user_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_user_id in raw_user_ids:
+        if raw_user_id in (None, ""):
+            continue
+        user_id = int(raw_user_id)
+        if user_id not in seen:
+            seen.add(user_id)
+            user_ids.append(user_id)
+    return user_ids
 
 
 def _latest_snapshot_ids_for_context(*, symbol: str, compute_profile: str) -> list[str]:
