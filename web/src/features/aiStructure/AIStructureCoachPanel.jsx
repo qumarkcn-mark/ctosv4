@@ -8,6 +8,7 @@ const QUICK_QUESTIONS = [
   '跌破哪里就不看了？',
   '帮我设提醒',
 ]
+const CONTEXT_LEVELS = ['week', 'day', '30', '5']
 const CONTEXT_POLL_WINDOW_MS = 30_000
 const CONTEXT_POLL_INTERVAL_MS = 2_000
 
@@ -19,17 +20,18 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   const [booting, setBooting] = useState(false)
   const [pollUntil, setPollUntil] = useState(0)
   const [error, setError] = useState('')
+  const [pendingQuestion, setPendingQuestion] = useState('')
   const mountedRef = useRef(true)
 
   const displayName = symbolName || symbol
-  const latestAnswer = messages[messages.length - 1]
-  const canAsk = Boolean(status?.context || latestAnswer)
+  const canAsk = Boolean(status?.context)
   const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
 
   const loadStatus = useCallback(async () => {
     if (!symbol) return
     try {
-      const json = await apiJson(`${API_BASE}/ai-structure/contexts/status/${encodeURIComponent(symbol)}?levels=5`)
+      const levels = CONTEXT_LEVELS.join(',')
+      const json = await apiJson(`${API_BASE}/ai-structure/contexts/status/${encodeURIComponent(symbol)}?levels=${levels}`)
       if (mountedRef.current) setStatus(json.data)
     } catch (err) {
       if (mountedRef.current) setError(err?.message || 'AI 结构状态读取失败')
@@ -43,6 +45,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setError('')
     setStatus(null)
     setPollUntil(0)
+    setPendingQuestion('')
     onEvidenceContext?.(null)
     loadStatus()
     return () => {
@@ -71,19 +74,19 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   }, [symbol, pollUntil, status?.status, loadStatus])
 
   const prewarm = useCallback(async () => {
-    if (!symbol || booting) return
+    if (!symbol || booting || pollingActive) return
     setBooting(true)
     setError('')
     try {
       await apiJson(`${API_BASE}/ai-structure/snapshots/prewarm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: [symbol], levels: ['5'], reason: 'web_ai_structure_thin_slice' }),
+        body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
       })
       await apiJson(`${API_BASE}/ai-structure/contexts/prewarm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: [symbol], levels: ['5'], reason: 'web_ai_structure_thin_slice' }),
+        body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
       })
       setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
       await loadStatus()
@@ -92,31 +95,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     } finally {
       setBooting(false)
     }
-  }, [symbol, booting, loadStatus])
-
-  const ask = useCallback(async (questionText = input) => {
-    const question = questionText.trim()
-    if (!question || loading || !symbol) return
-    setLoading(true)
-    setError('')
-    setInput('')
-    setMessages((prev) => [...prev, { role: 'user', text: question }])
-    try {
-      const json = await apiJson(`${API_BASE}/ai-structure/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, question }),
-      })
-      const answer = json.data
-      setMessages((prev) => [...prev, { role: 'assistant', answer }])
-      await loadChartEvidence(answer)
-      await loadStatus()
-    } catch (err) {
-      setError(err?.message || 'AI 问答失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [input, loading, symbol, loadStatus])
+  }, [symbol, booting, pollingActive, loadStatus])
 
   const loadChartEvidence = useCallback(async (answer) => {
     const focus = answer?.chart_focus
@@ -129,6 +108,52 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     const json = await apiJson(`${API_BASE}/ai-structure/chart-context/${encodeURIComponent(symbol)}?${params}`)
     onEvidenceContext?.(json.data)
   }, [symbol, onEvidenceContext])
+
+  const ask = useCallback(async (questionText = input) => {
+    const question = questionText.trim()
+    if (!question || loading || !symbol) return
+    if (!canAsk) {
+      setPendingQuestion(question)
+      setInput('')
+      setMessages((prev) => {
+        const next = [...prev]
+        if (!next.some((item) => item.role === 'user' && item.pending && item.text === question)) {
+          next.push({ role: 'user', text: question, pending: true })
+        }
+        return next
+      })
+      await prewarm()
+      return
+    }
+    setLoading(true)
+    setError('')
+    setInput('')
+    try {
+      const json = await apiJson(`${API_BASE}/ai-structure/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, question }),
+      })
+      const answer = json.data
+      setMessages((prev) => [
+        ...prev.filter((item) => !(item.role === 'user' && item.pending && item.text === question)),
+        { role: 'user', text: question },
+        { role: 'assistant', answer },
+      ])
+      setPendingQuestion('')
+      await loadChartEvidence(answer)
+      await loadStatus()
+    } catch (err) {
+      setError(err?.message || 'AI 问答失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence])
+
+  useEffect(() => {
+    if (!pendingQuestion || loading || !canAsk) return
+    ask(pendingQuestion)
+  }, [pendingQuestion, loading, canAsk, ask])
 
   const createReminder = useCallback(async (answer, candidate) => {
     if (!answer?.session_id || !answer?.message_id || !candidate?.evidence_id) return
@@ -192,6 +217,14 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
         </div>
       )}
 
+      {pendingQuestion && !canAsk && (
+        <div className="ai-structure-pending">
+          <span>已收到问题</span>
+          <strong>{pendingQuestion}</strong>
+          <em>结构上下文就绪后自动回答</em>
+        </div>
+      )}
+
       <div className="ai-structure-messages">
         {messages.map((item, index) => (
           <Message
@@ -211,7 +244,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="问：跌破哪里就不看了？"
+          placeholder={canAsk ? '问：跌破哪里就不看了？' : '直接提问，会先生成结构上下文'}
           disabled={loading || !symbol}
         />
         <button type="submit" disabled={loading || !input.trim()}>
@@ -224,7 +257,11 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
 
 function Message({ item, onReminder }) {
   if (item.role === 'user') {
-    return <div className="ai-msg ai-msg--user">{item.text}</div>
+    return (
+      <div className={`ai-msg ai-msg--user ${item.pending ? 'ai-msg--pending' : ''}`}>
+        {item.text}
+      </div>
+    )
   }
   if (item.role === 'system') {
     return <div className="ai-msg ai-msg--system">{item.text}</div>
