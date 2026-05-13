@@ -12,7 +12,12 @@ export function getAuthToken() {
 
 export function apiUrl(path) {
   if (path.startsWith('http://') || path.startsWith('https://')) return path
-  if (path.startsWith('/api/')) return path
+  if (path === '/api' || path.startsWith('/api/')) {
+    if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
+      return `${API_BASE.replace(/\/$/, '')}${path.slice('/api'.length)}`
+    }
+    return path
+  }
   if (path.startsWith('/')) return `${API_BASE}${path}`
   return `${API_BASE}/${path}`
 }
