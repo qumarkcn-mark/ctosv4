@@ -84,12 +84,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setBooting(true)
     setError('')
     try {
-      await apiJson(`${API_BASE}/ai-structure/snapshots/prewarm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
-      })
-      await apiJson(`${API_BASE}/ai-structure/contexts/prewarm`, {
+      await apiJson(`${API_BASE}/ai-structure/pipeline/ensure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
@@ -345,8 +340,8 @@ function buildPipelineItems(status, flags) {
     {
       key: 'kline',
       label: 'K线',
-      tone: !status ? 'checking' : isNoData ? 'error' : 'ready',
-      detail: !status ? '检测中' : isNoData ? '缺数据' : '已接入',
+      tone: !status ? 'checking' : isNoData ? 'error' : booting ? 'working' : 'ready',
+      detail: !status ? '检测中' : isNoData ? '缺数据' : booting ? '同步中' : '已接入',
     },
     {
       key: 'snapshot',
