@@ -1,6 +1,6 @@
-"""Level-chain deduction rules for empty-position Radar.
+"""Level-chain deduction rules for empty-position structure review.
 
-本模块只消费 chan_adapter 输出的结构事实，把 day -> 30 -> 5 组织成
+本模块只消费 CZSC 输出的结构事实，把 day -> 30 -> 5 组织成
 可展示的推演路径。这里不查库、不调用行情、不调用 AI、不发送提醒。
 """
 
@@ -16,37 +16,37 @@ BSP_TYPE_META = {
         "family": "FIRST_BUY",
         "code": "B1",
         "name": "一买",
-        "source": "CChan BSP_TYPE.T1",
+        "source": "CZSC BSP_TYPE.T1",
     },
     "1p": {
         "family": "FIRST_BUY",
         "code": "B1P",
         "name": "类一买",
-        "source": "CChan BSP_TYPE.T1P",
+        "source": "CZSC BSP_TYPE.T1P",
     },
     "2": {
         "family": "SECOND_BUY",
         "code": "B2",
         "name": "二买",
-        "source": "CChan BSP_TYPE.T2",
+        "source": "CZSC BSP_TYPE.T2",
     },
     "2s": {
         "family": "SECOND_BUY",
         "code": "B2S",
         "name": "类二买",
-        "source": "CChan BSP_TYPE.T2S",
+        "source": "CZSC BSP_TYPE.T2S",
     },
     "3a": {
         "family": "THIRD_BUY",
         "code": "B3A",
         "name": "三买A",
-        "source": "CChan BSP_TYPE.T3A",
+        "source": "CZSC BSP_TYPE.T3A",
     },
     "3b": {
         "family": "THIRD_BUY",
         "code": "B3B",
         "name": "三买B",
-        "source": "CChan BSP_TYPE.T3B",
+        "source": "CZSC BSP_TYPE.T3B",
     },
 }
 BUY_WORDS = ("一买", "二买", "三买", "类一买", "类二买", "类三买", "底背驰")
@@ -60,7 +60,7 @@ def build_level_chain_deduction(
     mode: str = "EMPTY",
     disclaimer: str = DISCLAIMER,
 ) -> Optional[dict]:
-    """Build the first Radar deduction contract for empty-position workflows."""
+    """Build a deduction contract for empty-position workflows."""
     if mode != "EMPTY":
         return None
 
@@ -860,7 +860,7 @@ def _complete_classification(
             "label": "延长",
             "state": _scenario_state(status, "B"),
             "title": "没有确认，也没有破坏",
-            "summary": "走势继续震荡或等待，雷达保留当前推演但不进入执行前复核。",
+            "summary": "走势继续震荡或等待，系统保留当前推演但不进入执行前复核。",
             "trigger_if": [
                 "5分没有新的确认买点",
                 f"价格仍守住 {_boundary_label(boundary)}" if _num(boundary.get("value")) > 0 else "结构边界未被破坏",
@@ -1307,9 +1307,9 @@ def _forming_buy_type(m5: dict) -> str:
 
 def _expected_bsp_meta(forming_type: str) -> dict:
     expected = {
-        "FIRST_BUY": ("B1/B1P", "一买/类一买", "CChan BSP_TYPE.T1/T1P"),
-        "SECOND_BUY": ("B2/B2S", "二买/类二买", "CChan BSP_TYPE.T2/T2S"),
-        "THIRD_BUY": ("B3A/B3B", "三买A/三买B", "CChan BSP_TYPE.T3A/T3B"),
+        "FIRST_BUY": ("B1/B1P", "一买/类一买", "CZSC BSP_TYPE.T1/T1P"),
+        "SECOND_BUY": ("B2/B2S", "二买/类二买", "CZSC BSP_TYPE.T2/T2S"),
+        "THIRD_BUY": ("B3A/B3B", "三买A/三买B", "CZSC BSP_TYPE.T3A/T3B"),
     }.get(forming_type)
     if not expected:
         return {
@@ -1317,7 +1317,7 @@ def _expected_bsp_meta(forming_type: str) -> dict:
             "code": "",
             "name": "买点待确认",
             "display": "买点待确认",
-            "source": "等待 CChan BSP 确认",
+            "source": "等待 CZSC BSP 确认",
             "is_buy": True,
         }
     code, name, source = expected
@@ -1338,19 +1338,19 @@ def _forming_trigger_if(forming_type: str, m5: dict) -> list[str]:
         return [
             f"5分回试不跌破中枢ZG {zg:g}" if zg > 0 else "5分回试不跌回中枢上沿",
             "回落段力度衰减或出现向上转折",
-            "CChan 确认 B3A/B3B 三买",
+            "CZSC 确认 B3A/B3B 三买",
         ]
     if forming_type == "SECOND_BUY":
         return [
             "5分一买后的回试不破前低",
             "回试后出现向上笔或类二买结构",
-            "CChan 确认 B2/B2S 二买",
+            "CZSC 确认 B2/B2S 二买",
         ]
     if forming_type == "FIRST_BUY":
         return [
             f"5分下跌段在ZD {zd:g} 附近止跌" if zd > 0 else "5分下跌段出现止跌迹象",
             "回落段力度衰减或底背驰继续成立",
-            "CChan 确认 B1/B1P 一买",
+            "CZSC 确认 B1/B1P 一买",
         ]
     return [
         "5分回落段力度衰减",
@@ -1396,7 +1396,7 @@ def _bsp_type_meta(raw_type: str, is_buy: bool) -> dict:
             "code": code,
             "name": "买点" if is_buy else "卖点",
             "display": code or "未知买卖点",
-            "source": "CChan BSP_TYPE",
+            "source": "CZSC BSP_TYPE",
             "is_buy": is_buy,
         }
     code = meta["code"] if is_buy else meta["code"].replace("B", "S", 1)

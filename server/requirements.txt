@@ -1,6 +1,1 @@
-PyJWT>=2.8.0
-baostock
-czsc @ git+https://github.com/waditu/czsc.git@6f5bdf4d878c53b8221f0e64cdc281df60894a83
-fastapi
-pandas
-python-dotenv
+-r ../requirements.txt

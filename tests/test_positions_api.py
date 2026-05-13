@@ -42,7 +42,7 @@ def test_get_position_returns_empty_shape_for_non_holding(monkeypatch):
     conn = make_conn()
     monkeypatch.setattr(positions, "get_connection", lambda: ConnWrapper(conn))
 
-    response = positions.get_position("sh600519", user_id=1)
+    response = positions.get_position("sh600519", current_user_id=1)
 
     assert response == {
         "symbol": "sh600519",
@@ -60,7 +60,7 @@ def test_get_position_accepts_canonical_symbol_for_compact_row(monkeypatch):
     )
     monkeypatch.setattr(positions, "get_connection", lambda: ConnWrapper(conn))
 
-    response = positions.get_position("sh.600519", user_id=1)
+    response = positions.get_position("sh.600519", current_user_id=1)
 
     assert response["is_holding"] is True
     assert response["symbol"] == "sh600519"

@@ -15,21 +15,23 @@ CT-OS V4.0 是基于缠论的 A 股交易教练平台。用户在券商 App 交�
 5. **推演沙盘** — 缠论路径边界、触发、失效条件
 6. **趋势顺风** — 逆势/回本陷阱警报
 
-## 雷达与实时数据
+## AI Native V5 结构与实时数据
 
-当前雷达已经拆成两条链：
+V5 结构生产以 CZSC snapshot 为唯一主线。旧 `chan.py` / radar / scanner / sand-table 链路已经退出运行路径，不作为 fallback、shadow 或对照入口。
+
+当前 AI 结构上下文围绕多级别快照组织：
 
 ```text
-主推演链：day -> 30 -> 5
-盘中触发链：30 -> 5 -> 1
+结构快照：week -> day -> 30 -> 5
+轻量证据：当前回答引用的中枢、触发线、失败线、当前价线
 ```
 
 数据源边界：
 
-- BaoStock：正式 CChan 多级别结构源。
+- BaoStock / K 线事实层：正式 CZSC snapshot 输入。
 - Tencent：当前价、持仓盈亏和轻量预览。
-- QMT / XtQuant：Windows 侧只读实时行情网关，给盘中预览使用。
-- TDX 本地 1分钟：Kline 展示和历史回放补充源，不确认雷达主推演。
+- QMT / XtQuant：Windows 侧只读实时行情网关，只做 preview。
+- TDX 本地 1 分钟：Kline 展示和历史回放补充源，不确认正式结构。
 
 涉及市场判断的内容仅供参考，不构成投资建议。CT-OS 是交易教练，不是交易机器人。
 
@@ -46,8 +48,9 @@ CT-OS V4.0 是基于缠论的 A 股交易教练平台。用户在券商 App 交�
 # 后端
 cd ct-os-v4
 cp .env.example .env
-python -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 uvicorn server.app:app --reload
 

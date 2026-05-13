@@ -1,7 +1,8 @@
 """投资行为体检 API"""
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.services.behavior_engine import analyze
 from server.services.behavior_coach import generate_diagnosis
@@ -135,8 +136,12 @@ def _fetch_plan_metrics(user_id: int) -> dict:
 
 
 @router.get("/report")
-async def get_behavior_report(user_id: int = 1, period: str = Query("ALL_TIME")):
+async def get_behavior_report(
+    period: str = Query("ALL_TIME"),
+    current_user_id: int = Depends(get_current_user_id),
+):
     """生成投资行为体检报告"""
+    user_id = current_user_id
     trades, alert_count = await run_in_threadpool(_fetch_trades_and_alerts, user_id)
 
     report = analyze(trades, alert_count)
@@ -172,8 +177,12 @@ async def get_behavior_report(user_id: int = 1, period: str = Query("ALL_TIME"))
 
 
 @router.get("/history")
-def get_behavior_history(user_id: int = 1, limit: int = Query(10, ge=1, le=50)):
+def get_behavior_history(
+    limit: int = Query(10, ge=1, le=50),
+    current_user_id: int = Depends(get_current_user_id),
+):
     """查询历史体检记录，用于纪律趋势追踪"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         rows = conn.execute(

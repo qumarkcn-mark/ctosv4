@@ -1,8 +1,9 @@
 """持仓查询 API"""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.domain.symbols import symbol_aliases
 
@@ -10,8 +11,9 @@ router = APIRouter()
 
 
 @router.get("")
-def list_positions(user_id: int = 1):
+def list_positions(current_user_id: int = Depends(get_current_user_id)):
     """查询用户所有持仓"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -51,10 +53,11 @@ def list_positions(user_id: int = 1):
 
 
 @router.get("/overview")
-async def position_overview(user_id: int = 1):
+async def position_overview(current_user_id: int = Depends(get_current_user_id)):
     """仓位透视镜 — 武器 1 的数据源"""
     from server.services.analysis.concentration import analyze_concentration
     from datetime import date
+    user_id = current_user_id
     res = await analyze_concentration(user_id)
 
     # 查询今日买入的标的（T+1锁定列表）
@@ -81,8 +84,9 @@ async def position_overview(user_id: int = 1):
 
 
 @router.get("/{symbol}")
-def get_position(symbol: str, user_id: int = 1):
+def get_position(symbol: str, current_user_id: int = Depends(get_current_user_id)):
     """查询单只持仓"""
+    user_id = current_user_id
     aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:

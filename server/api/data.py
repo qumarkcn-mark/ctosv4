@@ -3,9 +3,10 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.concurrency import run_in_threadpool
 
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.db.kline_lake import lake_status
 from server.domain.symbols import normalize_symbol
@@ -41,10 +42,11 @@ router = APIRouter()
 async def import_csv_file(
     file: UploadFile = File(...),
     broker: str = Query("auto", description="eastmoney/ths/auto"),
-    user_id: int = 1,
+    current_user_id: int = Depends(get_current_user_id),
 ):
     """导入券商交割单 CSV"""
     from fastapi.concurrency import run_in_threadpool
+    user_id = current_user_id
 
     content = await file.read()
     csv_text = content.decode("utf-8-sig")  # 东方财富 CSV 带 BOM
@@ -225,7 +227,7 @@ async def query_qmt_log_health():
 
 @router.get("/qmt-log/quotes")
 async def query_qmt_log_quotes(symbols: str = Query(..., description="逗号分隔的股票代码")):
-    """读取 QMT 日志行情快照；不作为正式 Chan/Radar 结构源。"""
+    """读取 QMT 日志行情快照；不作为正式 CZSC 结构源。"""
     symbol_list = [item.strip() for item in symbols.split(",") if item.strip()]
     if not symbol_list:
         raise HTTPException(400, "请提供至少一个股票代码")

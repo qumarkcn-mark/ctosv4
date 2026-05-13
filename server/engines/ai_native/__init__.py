@@ -1,4 +1,4 @@
-"""AI Native Radar commander engine.
+"""AI Native V5 structure coaching engine.
 
-作为雷达的核心 AI 推演体验运行，只读结构事实；失败时降级到确定性结构雷达。
+作为 AI Native 问答和分支推演体验运行，只读 CZSC 结构事实。
 """

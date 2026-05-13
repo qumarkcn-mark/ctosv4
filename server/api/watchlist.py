@@ -1,8 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import sqlite3
 from datetime import datetime
+from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, symbol_aliases, to_tencent_symbol
 from server.workers.kline_sync_worker import ALL_FREQS, sync_new_watchlist_symbol
@@ -32,8 +33,9 @@ class WatchlistGroupResponse(BaseModel):
 # ── Endpoints ──
 
 @router.get("", response_model=List[WatchlistGroupResponse])
-def get_watchlist(user_id: int = 1):
+def get_watchlist(current_user_id: int = Depends(get_current_user_id)):
     """获取用户所有分组及其包含的股票"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         # 获取所有分组
@@ -72,8 +74,9 @@ def get_watchlist(user_id: int = 1):
         conn.close()
 
 @router.post("/groups")
-def create_group(group: WatchlistGroupCreate, user_id: int = 1):
+def create_group(group: WatchlistGroupCreate, current_user_id: int = Depends(get_current_user_id)):
     """创建新分组"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         # 获取当前最大的 sort_order
@@ -92,8 +95,9 @@ def create_group(group: WatchlistGroupCreate, user_id: int = 1):
         conn.close()
 
 @router.put("/groups/{name}")
-def rename_group(name: str, group: WatchlistGroupRename, user_id: int = 1):
+def rename_group(name: str, group: WatchlistGroupRename, current_user_id: int = Depends(get_current_user_id)):
     """重命名分组"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         row = conn.execute("SELECT id FROM watchlist_groups WHERE user_id=? AND name=?", (user_id, name)).fetchone()
@@ -112,8 +116,9 @@ def rename_group(name: str, group: WatchlistGroupRename, user_id: int = 1):
         conn.close()
 
 @router.delete("/groups/{name}")
-def delete_group(name: str, user_id: int = 1):
+def delete_group(name: str, current_user_id: int = Depends(get_current_user_id)):
     """删除分组 (级联删除其下股票)"""
+    user_id = current_user_id
     conn = get_connection()
     try:
         conn.execute("DELETE FROM watchlist_groups WHERE user_id=? AND name=?", (user_id, name))
@@ -127,9 +132,10 @@ def add_stock(
     group_name: str,
     item: WatchlistItem,
     background_tasks: BackgroundTasks,
-    user_id: int = 1,
+    current_user_id: int = Depends(get_current_user_id),
 ):
     """添加股票到分组（保证全局唯一，从其他分组中移除）"""
+    user_id = current_user_id
     import sqlite3
     canonical_symbol = normalize_symbol(item.symbol)
     stock_symbol = to_tencent_symbol(canonical_symbol)
@@ -173,8 +179,9 @@ def add_stock(
         conn.close()
 
 @router.delete("/groups/{group_name}/stocks/{symbol}")
-def remove_stock(group_name: str, symbol: str, user_id: int = 1):
+def remove_stock(group_name: str, symbol: str, current_user_id: int = Depends(get_current_user_id)):
     """从分组中移除股票"""
+    user_id = current_user_id
     aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:

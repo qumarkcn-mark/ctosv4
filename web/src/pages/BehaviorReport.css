@@ -63,12 +63,12 @@
   font-size: 0.75rem;
 }
 
-.radar-container {
+.behavior-wheel-container {
   width: 260px;
   height: 260px;
 }
 
-.radar-svg {
+.behavior-wheel-svg {
   width: 100%;
   height: 100%;
 }

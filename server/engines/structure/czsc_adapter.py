@@ -1,7 +1,8 @@
 """Adapter boundary for the CZSC engine.
 
-CZSC is an optional Rust/PyO3 dependency. This adapter must degrade cleanly
-when the package is unavailable so the existing chan.py path is never blocked.
+CZSC is an optional Rust/PyO3 dependency. This adapter returns explicit
+unavailable/error envelopes when the package or input data cannot produce a
+snapshot; it never falls back to a legacy structure engine.
 """
 
 from __future__ import annotations
@@ -124,12 +125,12 @@ def export_czsc_raw_bi_context_sync(
     count: int = 1200,
     *,
     recent_bi_count: int = 20,
-    compute_profile: str = "radar_tactical_v1",
+    compute_profile: str = "tactical_v1",
 ) -> dict:
-    """Export CZSC BI geometry in the same shape consumed by AI Chan E1.
+    """Export CZSC BI geometry for AI Structure Context.
 
     这里故意只输出几何事实和算法中枢参考，不输出路径结论。
-    E1 提示词负责重新识别中枢、判断 30 分钟作战状态和 5 分钟触发。
+    AI Structure Context 负责重新识别中枢、判断 30 分钟作战状态和 5 分钟触发。
     """
     canonical_symbol = normalize_symbol(symbol)
     requested_levels = [normalize_freq(level) for level in (levels or ["day", "30", "5"])]
@@ -197,7 +198,7 @@ async def export_czsc_raw_bi_context(
     count: int = 1200,
     *,
     recent_bi_count: int = 20,
-    compute_profile: str = "radar_tactical_v1",
+    compute_profile: str = "tactical_v1",
 ) -> dict:
     return await run_in_threadpool(
         export_czsc_raw_bi_context_sync,
@@ -221,6 +222,13 @@ def _load_czsc():
     except Exception as exc:
         logger.info("CZSC unavailable: %s", exc)
         return None
+
+
+def get_czsc_engine_version() -> str:
+    czsc_api = _load_czsc()
+    if czsc_api is None:
+        return "unavailable"
+    return str(getattr(czsc_api, "__version__", "unknown") or "unknown")
 
 
 def _run_czsc(czsc_api, symbol: str, level: str, rows: list[dict]):

@@ -61,6 +61,15 @@ def test_get_user_settings_redacts_api_keys(monkeypatch):
     assert settings["expert_mode"] is True
 
 
+def test_get_my_settings_uses_current_user(monkeypatch):
+    conn = make_settings_conn()
+    monkeypatch.setattr(auth, "get_connection", lambda: ConnWrapper(conn))
+
+    response = auth.get_my_settings(current_user_id=1)
+
+    assert response["settings"]["expert_mode"] is True
+
+
 def test_update_user_settings_preserves_secret_when_omitted_and_redacts_response(monkeypatch):
     conn = make_settings_conn()
     monkeypatch.setattr(auth, "get_connection", lambda: ConnWrapper(conn))
@@ -79,6 +88,15 @@ def test_update_user_settings_preserves_secret_when_omitted_and_redacts_response
     assert stored["deepseek_api_key"] == "sk-secret"
     assert stored["gemini_api_key"] == "AIza-secret"
     assert stored["qwen_api_key"] == "sk-qwen-secret"
+
+
+def test_update_my_settings_uses_current_user(monkeypatch):
+    conn = make_settings_conn()
+    monkeypatch.setattr(auth, "get_connection", lambda: ConnWrapper(conn))
+
+    response = auth.update_my_settings(auth.SettingsUpdate(settings={"expert_mode": False}), current_user_id=1)
+
+    assert response["settings"]["expert_mode"] is False
 
 
 def test_update_user_settings_does_not_persist_redaction_markers(monkeypatch):

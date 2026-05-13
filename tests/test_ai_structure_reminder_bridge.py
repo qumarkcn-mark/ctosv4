@@ -1,0 +1,144 @@
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+import jwt
+
+from server.api import ai_structure
+from server.api.auth import ALGORITHM, JWT_SECRET
+from server.db import database
+from server.engines.ai_native import czsc_snapshot_service as snapshot_service
+from server.engines.ai_native import structure_context_service as context_service
+
+
+def reset_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+
+
+def make_client():
+    app = FastAPI()
+    app.include_router(ai_structure.router, prefix="/api/ai-structure")
+    return TestClient(app)
+
+
+def auth_headers(user_id: int) -> dict:
+    return {"Authorization": f"Bearer {jwt.encode({'sub': str(user_id)}, JWT_SECRET, algorithm=ALGORITHM)}"}
+
+
+def ensure_user(user_id=1):
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, openid, nickname) VALUES (?, ?, ?)",
+            (user_id, f"u{user_id}", f"U{user_id}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def build_context(user_id=1):
+    ensure_user(user_id)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="5",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature=f"sig-reminder-{user_id}",
+        data_as_of="2026-05-12",
+        snapshot_payload={
+            "level": "5",
+            "price": 10.5,
+            "klines": [{"time": "2026-05-12 10:00:00", "close": 10.5}],
+            "active_zhongshu": {"zg": 11.0, "zd": 10.0},
+        },
+        raw_bi_context={"levels": {"5": {"last_close": 10.5}}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+    context_service.prewarm_ai_structure_contexts(user_id=user_id, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id=f"ctx-worker-{user_id}")
+    context_service.run_context_job_sync(job)
+
+
+def test_create_reminder_writes_alert_and_coach_event(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    ).json()["data"]
+    evidence_id = chat["suggested_reminders"][0]["evidence_id"]
+
+    response = client.post(
+        "/api/ai-structure/reminders",
+        json={
+            "session_id": chat["session_id"],
+            "message_id": chat["message_id"],
+            "evidence_id": evidence_id,
+        },
+    )
+
+    assert response.status_code == 200
+    reminder = response.json()["data"]
+    assert reminder["alert_id"] > 0
+    assert reminder["coach_event_id"]
+    assert reminder["context_id"] == chat["context_id"]
+    assert reminder["evidence_id"] == evidence_id
+
+    conn = database.get_connection()
+    try:
+        alert = conn.execute("SELECT * FROM alerts WHERE id = ?", (reminder["alert_id"],)).fetchone()
+        event = conn.execute("SELECT * FROM coach_events WHERE event_id = ?", (reminder["coach_event_id"],)).fetchone()
+    finally:
+        conn.close()
+    assert alert["alert_type"] == "SIGNAL"
+    assert alert["trigger_direction"] == reminder["direction"]
+    assert "提醒不下单" in alert["message"]
+    assert event["event_type"] == "AI_STRUCTURE_REMINDER_CREATED"
+
+
+def test_duplicate_reminder_reuses_existing_alert(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    ).json()["data"]
+    evidence_id = chat["suggested_reminders"][0]["evidence_id"]
+    payload = {"session_id": chat["session_id"], "message_id": chat["message_id"], "evidence_id": evidence_id}
+
+    first = client.post("/api/ai-structure/reminders", json=payload).json()["data"]
+    second = client.post("/api/ai-structure/reminders", json=payload).json()["data"]
+
+    assert second["duplicate"] is True
+    assert second["alert_id"] == first["alert_id"]
+    conn = database.get_connection()
+    try:
+        count = conn.execute("SELECT COUNT(*) AS c FROM alerts").fetchone()["c"]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_reminder_is_user_scoped(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context(user_id=1)
+    ensure_user(2)
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    ).json()["data"]
+
+    response = client.post(
+        "/api/ai-structure/reminders",
+        json={
+            "session_id": chat["session_id"],
+            "message_id": chat["message_id"],
+            "evidence_id": chat["suggested_reminders"][0]["evidence_id"],
+        },
+        headers=auth_headers(2),
+    )
+
+    assert response.status_code == 404

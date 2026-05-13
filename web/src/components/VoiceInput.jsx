@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { apiFetch } from '../api/client.js'
 import './VoiceInput.css'
 
 /**
@@ -20,7 +21,7 @@ export default function VoiceInput({ onFill }) {
     setState('parsing')
     setErrorMsg('')
     try {
-      const resp = await fetch('/api/trades/from-text', {
+      const resp = await apiFetch('/api/trades/from-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: q }),

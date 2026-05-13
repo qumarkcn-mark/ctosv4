@@ -158,13 +158,13 @@ def test_latest_5m_buy_bsp_confirms_trigger():
     assert result["level_roles"]["5"]["state"] == "CONFIRMED"
     assert result["buy_point_candidates"][0]["type"] == "THIRD_BUY"
     assert result["buy_point_candidates"][0]["bsp"]["display"] == "B3A 三买A"
-    assert result["buy_point_candidates"][0]["bsp"]["source"] == "CChan BSP_TYPE.T3A"
+    assert result["buy_point_candidates"][0]["bsp"]["source"] == "CZSC BSP_TYPE.T3A"
     assert result["path_thesis"]["phase"] == "结构触发"
     assert result["complete_classification"][0]["id"] == "A_CONFIRM"
     assert result["complete_classification"][0]["state"] == "CONFIRMED"
 
 
-def test_5m_class_first_buy_bsp_keeps_cchan_label():
+def test_5m_class_first_buy_bsp_keeps_czsc_label():
     m5 = level(
         "m5",
         patterns=["类一买"],
@@ -232,7 +232,7 @@ def test_5m_pullback_above_zg_forms_third_buy_path():
     assert result["status"] == "TRIGGER_FORMING"
     assert candidate["type"] == "THIRD_BUY"
     assert candidate["expected_bsp"]["display"] == "B3A/B3B 三买A/三买B"
-    assert "CChan 确认 B3A/B3B 三买" in candidate["trigger_if"]
+    assert "CZSC 确认 B3A/B3B 三买" in candidate["trigger_if"]
 
 
 def test_bottom_divergence_is_attached_to_confirm_path():

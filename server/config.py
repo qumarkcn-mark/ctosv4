@@ -15,7 +15,8 @@ DATA_DIR.mkdir(exist_ok=True)
 # 服务器
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+DEV_AUTH_FALLBACK = os.getenv("DEV_AUTH_FALLBACK", "false").lower() == "true"
 
 # 数据库
 DB_PATH = os.getenv("DB_PATH", str(DATA_DIR / "ctos.db"))
@@ -47,43 +48,19 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
-# AI Native Radar 核心推演体验。默认开启；失败时必须降级到确定性结构雷达。
-AI_NATIVE_RADAR_ENABLED = os.getenv("AI_NATIVE_RADAR_ENABLED", "true").lower() == "true"
-AI_NATIVE_RADAR_DATA_DIR = os.getenv("AI_NATIVE_RADAR_DATA_DIR", str(BASE_DIR / "data" / "ai_native_radar"))
-AI_NATIVE_RADAR_WRITE_SNAPSHOTS = os.getenv("AI_NATIVE_RADAR_WRITE_SNAPSHOTS", "false").lower() == "true"
-AI_NATIVE_RADAR_GATE_ENABLED = os.getenv("AI_NATIVE_RADAR_GATE_ENABLED", "true").lower() == "true"
-AI_NATIVE_RADAR_MAX_REWRITE = int(os.getenv("AI_NATIVE_RADAR_MAX_REWRITE", "1"))
-AI_NATIVE_RADAR_MODEL = os.getenv("AI_NATIVE_RADAR_MODEL", "deepseek-v4-pro")
-AI_NATIVE_RADAR_THINKING_ENABLED = os.getenv("AI_NATIVE_RADAR_THINKING_ENABLED", "true").lower() == "true"
-AI_NATIVE_RADAR_REASONING_EFFORT = os.getenv("AI_NATIVE_RADAR_REASONING_EFFORT", "high")
-AI_NATIVE_RADAR_MAX_TOKENS = int(os.getenv("AI_NATIVE_RADAR_MAX_TOKENS", "4096"))
-AI_NATIVE_RADAR_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_RADAR_LLM_TIMEOUT", "90"))
-AI_NATIVE_RADAR_PROMPT_VERSION = os.getenv("AI_NATIVE_RADAR_PROMPT_VERSION", "ai_native_radar.v71_signal_v2")
-AI_NATIVE_RADAR_FINGERPRINT_VERSION = os.getenv("AI_NATIVE_RADAR_FINGERPRINT_VERSION", "fingerprint.v2")
-AI_NATIVE_FUSION_MODEL = os.getenv("AI_NATIVE_FUSION_MODEL", AI_NATIVE_RADAR_MODEL)
-AI_NATIVE_FUSION_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_FUSION_LLM_TIMEOUT", "45"))
-AI_NATIVE_FUSION_MAX_TOKENS = int(os.getenv("AI_NATIVE_FUSION_MAX_TOKENS", str(AI_NATIVE_RADAR_MAX_TOKENS)))
-AI_NATIVE_FUSION_THINKING_ENABLED = os.getenv("AI_NATIVE_FUSION_THINKING_ENABLED", "false").lower() == "true"
-
-# AI Native 自动调度。默认关闭，避免开发环境意外触发 LLM/Kronos 调用。
-AI_NATIVE_SCHEDULER_ENABLED = os.getenv("AI_NATIVE_SCHEDULER_ENABLED", "false").lower() == "true"
-AI_NATIVE_SCHEDULER_INTERVAL = int(os.getenv("AI_NATIVE_SCHEDULER_INTERVAL", "30"))
-AI_NATIVE_SCHEDULER_USER_ID = int(os.getenv("AI_NATIVE_SCHEDULER_USER_ID", "1"))
-AI_NATIVE_REBALANCE_MAX_ITEMS = int(os.getenv("AI_NATIVE_REBALANCE_MAX_ITEMS", "8"))
+AI_NATIVE_MODEL = os.getenv("AI_NATIVE_MODEL", "deepseek-v4-pro")
+AI_NATIVE_THINKING_ENABLED = os.getenv("AI_NATIVE_THINKING_ENABLED", "true").lower() == "true"
+AI_NATIVE_REASONING_EFFORT = os.getenv("AI_NATIVE_REASONING_EFFORT", "high")
+AI_NATIVE_MAX_TOKENS = int(os.getenv("AI_NATIVE_MAX_TOKENS", "4096"))
+AI_NATIVE_LLM_TIMEOUT = float(os.getenv("AI_NATIVE_LLM_TIMEOUT", "150"))
 AI_NATIVE_TRADING_CALENDAR_PATH = os.getenv("AI_NATIVE_TRADING_CALENDAR_PATH", str(DATA_DIR / "trading_calendar.json"))
 
-# Structure snapshot job queue. Snapshot-first is now the default structure path;
-# old get_chan_detail() is retained only as the worker's compatibility calculator.
+# CZSC structure snapshot job queue. Snapshot-first is now the only V5 structure path.
 STRUCTURE_SNAPSHOT_FIRST_ENABLED = os.getenv("STRUCTURE_SNAPSHOT_FIRST_ENABLED", "true").lower() == "true"
-STRUCTURE_WORKER_ENABLED = os.getenv("STRUCTURE_WORKER_ENABLED", "false").lower() == "true"
+STRUCTURE_WORKER_ENABLED = os.getenv("STRUCTURE_WORKER_ENABLED", "true").lower() == "true"
 STRUCTURE_SYNC_IF_MISSING = os.getenv("STRUCTURE_SYNC_IF_MISSING", "false").lower() == "true"
 STRUCTURE_WORKER_INTERVAL = float(os.getenv("STRUCTURE_WORKER_INTERVAL", "2"))
 STRUCTURE_JOB_TIMEOUT_SECONDS = int(os.getenv("STRUCTURE_JOB_TIMEOUT_SECONDS", "600"))
-
-# AI Stop/Reduce shadow training daily loop. Coach-only: creates plans/intents/scores, never sends orders.
-AI_STOP_REDUCE_DAILY_ENABLED = os.getenv("AI_STOP_REDUCE_DAILY_ENABLED", "true").lower() == "true"
-AI_STOP_REDUCE_DAILY_START = os.getenv("AI_STOP_REDUCE_DAILY_START", "15:35")
-AI_STOP_REDUCE_DAILY_END = os.getenv("AI_STOP_REDUCE_DAILY_END", "16:30")
 
 # 行情 API
 PRICE_API_TIMEOUT = 5  # 秒
@@ -101,6 +78,3 @@ TDX_VIPDOC = os.getenv("TDX_VIPDOC", "/Volumes/tdx_vipdoc")
 
 # 推送
 DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
-
-# Scanner 管理接口保护。为空时保持本地开发兼容；生产应设置并通过 X-Scanner-Admin-Token 传入。
-SCANNER_ADMIN_TOKEN = os.getenv("SCANNER_ADMIN_TOKEN", "")

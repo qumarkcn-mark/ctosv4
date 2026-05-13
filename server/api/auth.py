@@ -3,7 +3,7 @@
 import os
 import logging
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Depends
 from pydantic import BaseModel
@@ -12,15 +12,16 @@ from fastapi.concurrency import run_in_threadpool
 
 from server import config
 from server.db.database import get_connection
-# from server.config import WECHAT_APP_ID, WECHAT_APP_SECRET, JWT_SECRET
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# TODO: 挪到 config.py
-WECHAT_APP_ID = os.getenv("WECHAT_APP_ID", "")
-WECHAT_APP_SECRET = os.getenv("WECHAT_APP_SECRET", "")
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key-for-ct-os-v4")
+DEV_JWT_SECRET = "ct-os-v4-dev-jwt-secret-change-in-production-2026"
+
+# 兼容历史 WECHAT_* 名称；项目标准环境变量是 WX_*。
+WECHAT_APP_ID = os.getenv("WECHAT_APP_ID") or config.WX_APP_ID
+WECHAT_APP_SECRET = os.getenv("WECHAT_APP_SECRET") or config.WX_APP_SECRET
+JWT_SECRET = os.getenv("JWT_SECRET") or DEV_JWT_SECRET
 ALGORITHM = "HS256"
 
 class LoginRequest(BaseModel):
@@ -36,8 +37,16 @@ async def wechat_login(req: LoginRequest):
     """
     接收小程序 wx.login 返回的 js_code，换取 OpenID 并登录注冊
     """
-    if req.code == "mock_code" or not WECHAT_APP_ID:
+    if req.code == "mock_code":
+        if not config.DEBUG:
+            raise HTTPException(400, "Mock login is disabled")
         # 开发测试模式：直接映射到一个测试 OpenID
+        openid = "mock_openid_test_12345"
+        logger.info("Using mock OpenID %s", openid)
+    elif not WECHAT_APP_ID:
+        if not config.DEBUG:
+            raise HTTPException(503, "Wechat login is not configured")
+        # 本地开发未配置微信 AppID 时，允许普通 code 走同一个 mock 用户。
         openid = "mock_openid_test_12345"
         logger.info("Using mock OpenID %s", openid)
     else:
@@ -92,8 +101,9 @@ async def wechat_login(req: LoginRequest):
 
     # 签发 JWT Token
     expires_delta = timedelta(days=30)
-    expire = datetime.utcnow() + expires_delta
+    expire = datetime.now(timezone.utc) + expires_delta
     to_encode = {"sub": str(user_id), "exp": expire}
+    _ensure_safe_jwt_secret()
     token = jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
 
     return {"token": token, "user_id": user_id, "nickname": nickname}
@@ -120,9 +130,14 @@ def _clean_settings_update(settings: dict) -> dict:
 def _settings_current_user_id(authorization: Optional[str] = Header(None)) -> Optional[int]:
     if not authorization:
         return None
+    return _decode_authorization_user_id(authorization)
+
+
+def _decode_authorization_user_id(authorization: str) -> int:
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "Invalid authorization header")
+    _ensure_safe_jwt_secret()
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
         return int(payload.get("sub"))
@@ -130,9 +145,28 @@ def _settings_current_user_id(authorization: Optional[str] = Header(None)) -> Op
         raise HTTPException(401, "Invalid token") from exc
 
 
+def _ensure_safe_jwt_secret() -> None:
+    if JWT_SECRET and (JWT_SECRET != DEV_JWT_SECRET or config.DEBUG or config.DEV_AUTH_FALLBACK):
+        return
+    raise HTTPException(503, "JWT secret is not configured")
+
+
+def get_current_user_id(authorization: Optional[str] = Header(None)) -> int:
+    """Resolve the authenticated CT-OS user.
+
+    Local dev can opt into mapping missing auth to user 1. Production callers
+    must send a valid bearer token.
+    """
+    if not authorization:
+        if config.DEV_AUTH_FALLBACK:
+            return 1
+        raise HTTPException(401, "Authentication required")
+    return _decode_authorization_user_id(authorization)
+
+
 def _authorize_settings_user(user_id: int, current_user_id: Optional[int]) -> None:
     if current_user_id is None:
-        if config.DEBUG and user_id == 1:
+        if config.DEV_AUTH_FALLBACK and user_id == 1:
             return
         raise HTTPException(401, "Settings update requires authentication")
     if current_user_id != user_id:
@@ -156,6 +190,12 @@ def get_user_settings(user_id: int, current_user_id: Optional[int] = Depends(_se
 
 class SettingsUpdate(BaseModel):
     settings: dict
+
+
+@router.get("/me/settings")
+def get_my_settings(current_user_id: int = Depends(get_current_user_id)):
+    """获取当前登录用户全局配置。"""
+    return get_user_settings(current_user_id, current_user_id=current_user_id)
 
 @router.post("/user/{user_id}/settings")
 def update_user_settings(
@@ -181,6 +221,15 @@ def update_user_settings(
         return {"status": "ok", "settings": _redact_secret_settings(current_settings)}
     finally:
         conn.close()
+
+
+@router.post("/me/settings")
+def update_my_settings(
+    req: SettingsUpdate,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    """保存当前登录用户全局配置。"""
+    return update_user_settings(current_user_id, req, current_user_id=current_user_id)
 
 # JWT 鉴权依赖注入 (给后续需要拦截鉴权的接口用)
 # def get_current_user(token: str = Depends(oauth2_scheme)) -> int: ...

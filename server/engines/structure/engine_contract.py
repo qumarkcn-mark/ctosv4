@@ -11,19 +11,13 @@ from copy import deepcopy
 from typing import Any
 
 
-ENGINE_CHAN_PY = "chan_py"
 ENGINE_CZSC = "czsc"
-ENGINE_DUAL = "dual"
 
-SUPPORTED_ENGINES = {ENGINE_CHAN_PY, ENGINE_CZSC, ENGINE_DUAL}
+SUPPORTED_ENGINES = {ENGINE_CZSC}
 
 
 def normalize_engine_mode(engine: str | None) -> str:
-    mode = str(engine or ENGINE_CHAN_PY).strip().lower()
-    if mode in {"chan", "chan.py", "chanpy"}:
-        return ENGINE_CHAN_PY
-    if mode in {"czsc_shadow", "shadow"}:
-        return ENGINE_DUAL
+    mode = str(engine or ENGINE_CZSC).strip().lower()
     if mode not in SUPPORTED_ENGINES:
         allowed = ", ".join(sorted(SUPPORTED_ENGINES))
         raise ValueError(f"unsupported structure engine: {engine}; allowed: {allowed}")
