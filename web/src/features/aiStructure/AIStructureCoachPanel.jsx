@@ -11,6 +11,12 @@ const QUICK_QUESTIONS = [
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
 const CONTEXT_POLL_WINDOW_MS = 30_000
 const CONTEXT_POLL_INTERVAL_MS = 2_000
+const LEVEL_LABELS = {
+  week: '周线',
+  day: '日线',
+  30: '30分',
+  5: '5分',
+}
 
 export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceContext }) {
   const [status, setStatus] = useState(null)
@@ -188,6 +194,13 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     return status.status || '未知'
   }, [status, pollingActive])
 
+  const pipelineItems = useMemo(() => buildPipelineItems(status, {
+    booting,
+    canAsk,
+    pendingQuestion,
+    pollingActive,
+  }), [status, booting, canAsk, pendingQuestion, pollingActive])
+
   return (
     <section className="ai-structure-panel">
       <header className="ai-structure-head">
@@ -199,6 +212,8 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
           {statusLabel}
         </span>
       </header>
+
+      <PipelineStatus items={pipelineItems} />
 
       <div className="ai-structure-quick">
         {QUICK_QUESTIONS.map((item) => (
@@ -255,6 +270,20 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   )
 }
 
+function PipelineStatus({ items }) {
+  return (
+    <div className="ai-pipeline" aria-label="AI 结构数据流水线状态">
+      {items.map((item) => (
+        <div key={item.key} className={`ai-pipeline-step ai-pipeline-step--${item.tone}`}>
+          <span className="ai-pipeline-dot" aria-hidden="true" />
+          <strong>{item.label}</strong>
+          <em>{item.detail}</em>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function Message({ item, onReminder }) {
   if (item.role === 'user') {
     return (
@@ -298,5 +327,91 @@ function failureText(status) {
 function emptyText(status, pollingActive) {
   if (status?.status === 'failed') return failureText(status)
   if (pollingActive || status?.status === 'pending') return '结构上下文生成中，完成后就可以继续追问。'
+  if (status?.missing_levels?.length) return `等待 ${formatLevels(status.missing_levels)} 的 CZSC 快照。`
   return '当前没有可用结构上下文。'
+}
+
+function buildPipelineItems(status, flags) {
+  const { booting, canAsk, pendingQuestion, pollingActive } = flags
+  const reason = statusReason(status)
+  const isFailed = status?.status === 'failed'
+  const isNoData = reason === 'NO_DATA'
+  const isCzscUnavailable = reason === 'CZSC_UNAVAILABLE'
+  const hasMissingLevels = Boolean(status?.missing_levels?.length)
+  const isWorking = booting || pollingActive || status?.status === 'pending'
+  const contextTone = contextStatusTone(status, isWorking)
+
+  return [
+    {
+      key: 'kline',
+      label: 'K线',
+      tone: !status ? 'checking' : isNoData ? 'error' : 'ready',
+      detail: !status ? '检测中' : isNoData ? '缺数据' : '已接入',
+    },
+    {
+      key: 'snapshot',
+      label: 'CZSC快照',
+      tone: snapshotStatusTone(status, isWorking),
+      detail: snapshotStatusDetail(status, { hasMissingLevels, isCzscUnavailable, isFailed, isNoData, isWorking }),
+    },
+    {
+      key: 'context',
+      label: 'AI上下文',
+      tone: contextTone,
+      detail: contextStatusDetail(status, { canAsk, isFailed, isWorking }),
+    },
+    {
+      key: 'chat',
+      label: '问答',
+      tone: canAsk ? 'ready' : pendingQuestion ? 'working' : 'waiting',
+      detail: canAsk ? '可提问' : pendingQuestion ? '已排队' : '可先问',
+    },
+  ]
+}
+
+function snapshotStatusTone(status, isWorking) {
+  if (!status) return 'checking'
+  if (status.status === 'failed') return 'error'
+  if (isWorking) return 'working'
+  if (status.missing_levels?.length || status.status === 'no_snapshot') return 'waiting'
+  return 'ready'
+}
+
+function snapshotStatusDetail(status, flags) {
+  const { hasMissingLevels, isCzscUnavailable, isFailed, isNoData, isWorking } = flags
+  if (!status) return '检测中'
+  if (isCzscUnavailable) return '不可用'
+  if (isNoData) return '等K线'
+  if (isFailed) return '失败'
+  if (isWorking) return '生成中'
+  if (hasMissingLevels) return `缺${formatLevels(status.missing_levels)}`
+  if (status.status === 'no_snapshot') return '待生成'
+  return '已就绪'
+}
+
+function contextStatusTone(status, isWorking) {
+  if (!status) return 'checking'
+  if (status.status === 'failed') return 'error'
+  if (status.status === 'stale') return 'warn'
+  if (status.context) return 'ready'
+  if (isWorking) return 'working'
+  return 'waiting'
+}
+
+function contextStatusDetail(status, flags) {
+  const { canAsk, isFailed, isWorking } = flags
+  if (!status) return '检测中'
+  if (isFailed) return '失败'
+  if (status.status === 'stale') return '待刷新'
+  if (canAsk) return '已就绪'
+  if (isWorking) return '生成中'
+  return '未生成'
+}
+
+function statusReason(status) {
+  return status?.stale_reason || status?.job?.error_code || ''
+}
+
+function formatLevels(levels = []) {
+  return levels.map((level) => LEVEL_LABELS[level] || level).join('/')
 }
