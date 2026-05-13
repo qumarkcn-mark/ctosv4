@@ -20,15 +20,15 @@ def make_client():
 def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     counts = {}
-    ensure_calls = []
+    quick_calls = []
 
     def fake_count(symbol, freq):
         return counts.get((symbol, freq), 0)
 
-    async def fake_ensure(symbol, freq, min_count=200):
-        ensure_calls.append({"symbol": symbol, "freq": freq, "min_count": min_count})
+    def fake_quick(symbol, freq):
+        quick_calls.append({"symbol": symbol, "freq": freq})
         counts[(symbol, freq)] = 8
-        return True
+        return 8
 
     def fake_snapshot_prewarm(**kwargs):
         return {
@@ -49,9 +49,10 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
         }
 
     monkeypatch.setattr(service, "count_klines", fake_count)
-    monkeypatch.setattr(service, "ensure_klines_cached", fake_ensure)
+    monkeypatch.setattr(service, "fetch_klines_quick", fake_quick)
     monkeypatch.setattr(service, "prewarm_structure_snapshots", fake_snapshot_prewarm)
     monkeypatch.setattr(service, "prewarm_ai_structure_contexts", fake_context_prewarm)
+    monkeypatch.setattr(service, "_schedule_backfill_rewarm", lambda **kwargs: None)
 
     response = make_client().post(
         "/api/ai-structure/pipeline/ensure",
@@ -71,10 +72,54 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
     assert data["kline"]["ready"] is True
     assert data["kline"]["items"][0]["before"] == 0
     assert data["kline"]["items"][0]["after"] == 8
-    assert ensure_calls == [
-        {"symbol": "sh.600519", "freq": "day", "min_count": 1},
-        {"symbol": "sh.600519", "freq": "5", "min_count": 1},
+    assert quick_calls == [
+        {"symbol": "sh.600519", "freq": "day"},
+        {"symbol": "sh.600519", "freq": "5"},
     ]
     assert data["snapshots"]["count"] == 2
     assert data["contexts"]["count"] == 1
     assert data["contexts"]["user_id"] == 1
+
+
+def test_backfill_rewarms_changed_symbol(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    counts = {("sh.600519", "day"): 8}
+    snapshot_calls = []
+    context_calls = []
+
+    def fake_count(symbol, freq):
+        return counts.get((symbol, freq), 0)
+
+    def fake_sync(symbol, freq):
+        counts[(symbol, freq)] = 1200
+        return 1192
+
+    def fake_snapshot_prewarm(**kwargs):
+        snapshot_calls.append(kwargs)
+        return {"count": 1, "items": []}
+
+    def fake_context_prewarm(**kwargs):
+        context_calls.append(kwargs)
+        return {"count": 1, "items": []}
+
+    monkeypatch.setattr(service, "count_klines", fake_count)
+    monkeypatch.setattr(service, "fetch_klines_sync", fake_sync)
+    monkeypatch.setattr(service, "prewarm_structure_snapshots", fake_snapshot_prewarm)
+    monkeypatch.setattr(service, "prewarm_ai_structure_contexts", fake_context_prewarm)
+
+    import asyncio
+
+    asyncio.run(service._backfill_and_rewarm(
+        user_id=7,
+        symbols=["sh.600519"],
+        levels=["day"],
+        compute_profile="chart_standard_v1",
+        priority=88,
+        reason="test_pipeline_backfill",
+    ))
+
+    assert snapshot_calls[0]["symbols"] == ["sh.600519"]
+    assert snapshot_calls[0]["levels"] == ["day"]
+    assert snapshot_calls[0]["requested_by_user_id"] == 7
+    assert context_calls[0]["user_id"] == 7
+    assert context_calls[0]["levels"] == ["day"]

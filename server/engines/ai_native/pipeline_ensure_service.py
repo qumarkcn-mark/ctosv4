@@ -7,6 +7,7 @@ heavy structure synchronously.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,7 +20,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
 )
 from server.engines.ai_native.structure_context_service import prewarm_ai_structure_contexts
 from server.engines.structure.structure_key import normalize_freq, resolve_compute_bars
-from server.services.baostock_service import ensure_klines_cached
+from server.services.baostock_service import fetch_klines_quick, fetch_klines_sync
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,9 @@ async def ensure_ai_structure_pipeline(
 ) -> dict[str, Any]:
     """Ensure K-lines exist, then enqueue CZSC snapshots and AI contexts.
 
-    The K-line step uses a tiny minimum (`min_count=1`) to unblock cold-start
-    symbols quickly. Historical backfill is handled asynchronously by the
-    BaoStock service, while snapshot/context jobs stay in the existing workers.
+    The K-line step fetches a quick cache to unblock cold-start symbols.
+    Historical backfill is scheduled asynchronously and rewarms snapshots and
+    contexts after full data lands.
     """
     normalized_symbols = _unique_symbols(symbols)
     normalized_levels = _unique_levels(levels or list(DEFAULT_LEVELS))
@@ -69,6 +70,14 @@ async def ensure_ai_structure_pipeline(
         priority=max(1, priority - 10),
         reason=reason,
     )
+    _schedule_backfill_rewarm(
+        user_id=user_id,
+        symbols=normalized_symbols,
+        levels=normalized_levels,
+        compute_profile=compute_profile,
+        priority=priority,
+        reason=f"{reason}_backfill",
+    )
 
     return {
         "symbols": normalized_symbols,
@@ -94,7 +103,8 @@ async def _ensure_symbol_level_kline(
     before = count_klines(symbol, level)
     target_bars = resolve_compute_bars(compute_profile, level)
     try:
-        ready = await ensure_klines_cached(symbol, level, min_count=1)
+        if before <= 0:
+            await asyncio.to_thread(fetch_klines_quick, symbol, level)
     except Exception as exc:
         logger.warning("AI structure K-line ensure failed %s/%s: %s", symbol, level, exc)
         after = count_klines(symbol, level)
@@ -110,6 +120,7 @@ async def _ensure_symbol_level_kline(
         }
 
     after = count_klines(symbol, level)
+    ready = after > 0
     return {
         "symbol": symbol,
         "level": level,
@@ -119,6 +130,75 @@ async def _ensure_symbol_level_kline(
         "ready": bool(ready),
         "status": "ready" if ready else "no_data",
     }
+
+
+def _schedule_backfill_rewarm(
+    *,
+    user_id: int,
+    symbols: list[str],
+    levels: list[str],
+    compute_profile: str,
+    priority: int,
+    reason: str,
+) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(
+        _backfill_and_rewarm(
+            user_id=user_id,
+            symbols=symbols,
+            levels=levels,
+            compute_profile=compute_profile,
+            priority=priority,
+            reason=reason,
+        )
+    )
+
+
+async def _backfill_and_rewarm(
+    *,
+    user_id: int,
+    symbols: list[str],
+    levels: list[str],
+    compute_profile: str,
+    priority: int,
+    reason: str,
+) -> None:
+    changed: dict[str, set[str]] = {}
+    for symbol in symbols:
+        for level in levels:
+            before = count_klines(symbol, level)
+            try:
+                written = await asyncio.to_thread(fetch_klines_sync, symbol, level)
+            except Exception as exc:
+                logger.warning("AI structure backfill failed %s/%s: %s", symbol, level, exc)
+                continue
+            after = count_klines(symbol, level)
+            if written > 0 or after != before:
+                changed.setdefault(symbol, set()).add(level)
+
+    if not changed:
+        return
+
+    for symbol, changed_levels in sorted(changed.items()):
+        prewarm_structure_snapshots(
+            symbols=[symbol],
+            levels=sorted(changed_levels),
+            compute_profile=compute_profile,
+            priority=priority,
+            reason=reason,
+            requested_by_user_id=user_id,
+        )
+        prewarm_ai_structure_contexts(
+            user_id=user_id,
+            symbols=[symbol],
+            levels=levels,
+            compute_profile=compute_profile,
+            priority=max(1, priority - 10),
+            reason=reason,
+        )
 
 
 def _unique_symbols(symbols: list[str]) -> list[str]:
