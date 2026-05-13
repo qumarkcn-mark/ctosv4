@@ -26,6 +26,7 @@ from server.engines.ai_native.scenario_outcome_service import (
     get_symbol_memory_profile,
     settle_scenario_branch,
 )
+from server.engines.ai_native.pipeline_ensure_service import ensure_ai_structure_pipeline
 from server.engines.ai_native.structure_context_service import (
     get_ai_structure_context_status,
     get_latest_ai_structure_context,
@@ -54,6 +55,14 @@ class ContextPrewarmRequest(BaseModel):
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     priority: int = Field(default=70, ge=1, le=100)
     reason: str = "manual_context_prewarm"
+
+
+class PipelineEnsureRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list, min_length=1, max_length=20)
+    levels: list[str] = Field(default_factory=lambda: list(DEFAULT_LEVELS), max_length=6)
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE
+    priority: int = Field(default=85, ge=1, le=100)
+    reason: str = "web_ai_structure_workspace"
 
 
 class StructureChatRequest(BaseModel):
@@ -106,6 +115,28 @@ def prewarm_snapshots(
             priority=request.priority,
             reason=request.reason,
             requested_by_user_id=current_user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", "data": result}
+
+
+@router.post("/pipeline/ensure")
+async def ensure_pipeline(
+    request: PipelineEnsureRequest,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    """Ensure the V5 data path is warm without running CZSC inline."""
+    _validate_compute_profile(request.compute_profile)
+    levels = [_validate_level(level) for level in request.levels]
+    try:
+        result = await ensure_ai_structure_pipeline(
+            user_id=current_user_id,
+            symbols=request.symbols,
+            levels=levels,
+            compute_profile=request.compute_profile,
+            priority=request.priority,
+            reason=request.reason,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
