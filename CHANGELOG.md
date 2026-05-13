@@ -13,4 +13,4 @@
 ### Verification
 
 - `npm run build`
-- `venv/bin/python -m pytest tests -q`
+- `.venv312/bin/python -m pytest tests -q`
