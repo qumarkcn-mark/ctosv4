@@ -7,4 +7,4 @@ PyJWT>=2.8.0
 openai>=1.0.0
 pandas>=2.0.0
 baostock>=0.8.9
-czsc @ git+https://github.com/waditu/czsc.git@6f5bdf4d878c53b8221f0e64cdc281df60894a83
+czsc==0.10.12

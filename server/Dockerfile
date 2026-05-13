@@ -7,15 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # 更新和安装基础组件
-# CZSC 1.0 当前需要从 GitHub pinned commit 构建 Rust/PyO3 wheel，
-# 因此后端镜像需要 Rust + Cargo + git 构建工具链。
+# CZSC 使用 PyPI pinned wheel；保留 build-essential 处理少数源码包。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    cargo \
-    git \
-    libssl-dev \
-    pkg-config \
-    rustc \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
