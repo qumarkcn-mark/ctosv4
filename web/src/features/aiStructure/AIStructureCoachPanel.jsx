@@ -6,6 +6,7 @@ import './AIStructureCoachPanel.css'
 const QUICK_QUESTIONS = [
   '我现在能买吗？',
   '跌破哪里就不看了？',
+  '我上次错在哪里？',
   '帮我设提醒',
 ]
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
