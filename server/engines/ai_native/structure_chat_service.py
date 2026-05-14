@@ -37,7 +37,12 @@ def answer_structure_question(
     canonical = normalize_symbol(symbol)
     context = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
     if not context:
-        return None
+        return _answer_without_context(
+            user_id=user_id,
+            symbol=canonical,
+            question=question,
+            session_id=session_id,
+        )
     session = upsert_chat_session(
         user_id=user_id,
         symbol=canonical,
@@ -96,6 +101,67 @@ def answer_structure_question(
         answer_payload=payload,
         evidence_refs=chart_focus["evidence_ids"],
         reminder_candidates=reminder_candidates,
+    )
+    payload["message_id"] = message["message_id"]
+    return payload
+
+
+def _answer_without_context(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=symbol,
+        context_id="",
+        session_id=session_id,
+    )
+    if not session:
+        return None
+    conversation_context = get_recent_conversation_context(
+        user_id=user_id,
+        session_id=session["session_id"],
+    )
+    intent_type = classify_intent(question, conversation_context=conversation_context)
+    data_status = _context_data_status(user_id=user_id, symbol=symbol, context={})
+    answer = _build_unavailable_context_answer(
+        symbol=symbol,
+        intent_type=intent_type,
+        data_status=data_status,
+    )
+    payload = {
+        "session_id": session["session_id"],
+        "context_id": "",
+        "answer": answer,
+        "coach_answer": answer,
+        "intent_type": intent_type,
+        "referenced_boundaries": [],
+        "chart_focus": {
+            "level": "",
+            "snapshot_id": "",
+            "evidence_ids": [],
+            "prices": [],
+        },
+        "suggested_reminders": [],
+        "data_status": data_status,
+        "memory_context": get_memory_context_for_chat(user_id=user_id, symbol=symbol),
+        "review_context": None,
+        "conversation_context": conversation_context,
+        "risk_disclaimer": RISK_DISCLAIMER,
+    }
+    message = save_chat_message(
+        user_id=user_id,
+        symbol=symbol,
+        session_id=session["session_id"],
+        context_id="",
+        question_text=question,
+        intent_type=intent_type,
+        answer_payload=payload,
+        evidence_refs=[],
+        reminder_candidates=[],
     )
     payload["message_id"] = message["message_id"]
     return payload
@@ -373,6 +439,42 @@ def _build_answer(
         "coach_answer": coach,
         "referenced_boundaries": _referenced_boundaries(level, zg, zd),
     }
+
+
+def _build_unavailable_context_answer(
+    *,
+    symbol: str,
+    intent_type: str,
+    data_status: dict[str, Any],
+) -> str:
+    status = data_status.get("status") or "unknown"
+    reason = data_status.get("stale_reason") or ""
+    missing = data_status.get("missing_levels") or []
+    missing_text = f"，缺少 {','.join(missing)} 级别数据" if missing else ""
+    if status == "pending":
+        lead = f"{symbol} 的 CZSC 结构上下文正在生成{missing_text}。"
+    elif status == "failed":
+        lead = f"{symbol} 的结构刷新失败{missing_text}，原因是 {reason or 'UNKNOWN'}。"
+    elif status == "no_snapshot":
+        lead = f"{symbol} 还没有可用的 CZSC 结构快照{missing_text}。"
+    else:
+        lead = f"{symbol} 还没有可用的 CZSC 结构上下文{missing_text}。"
+
+    if intent_type == "out_of_scope":
+        return (
+            f"{lead}这个问题也超出结构教练边界，我不能给目标价、荐股、收益预测或基本面买卖结论。"
+            f"先等 K 线事实层生成结构快照，再只围绕触发线、失败线和提醒条件复核。{RISK_DISCLAIMER}"
+        )
+    if intent_type == "review":
+        return (
+            f"{lead}现在不足以做结构复盘，因为还没有可引用的上下文和证据线。"
+            f"先等结构分支和 outcome 生成后，再看纪律偏差。{RISK_DISCLAIMER}"
+        )
+    return (
+        f"{lead}我现在不能回答“能不能买/要不要卖”这类结论。"
+        f"先刷新或等待后台生成结构上下文；有了触发线和失败线后，我只能给条件化观察、风险边界和提醒建议。"
+        f"{RISK_DISCLAIMER}"
+    )
 
 
 def _review_answer(
