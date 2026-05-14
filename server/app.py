@@ -12,6 +12,7 @@ from server.workers.price_monitor import monitor
 from server.workers.kline_sync_worker import kline_sync
 from server.workers.ai_structure_snapshot_worker import ai_structure_snapshot_worker
 from server.workers.ai_structure_context_worker import ai_structure_context_worker
+from server.workers.ai_structure_outcome_worker import ai_structure_outcome_worker
 from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,14 @@ async def lifespan(app: FastAPI):
     kline_sync.start()
     ai_structure_snapshot_worker.start()
     ai_structure_context_worker.start()
+    ai_structure_outcome_worker.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
     kline_sync.stop()
     ai_structure_snapshot_worker.stop()
     ai_structure_context_worker.stop()
+    ai_structure_outcome_worker.stop()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 

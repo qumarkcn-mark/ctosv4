@@ -12,6 +12,7 @@
 - Added mistake-only AI Structure memory: only ignored invalidations enter daily chat memory, capped to a tiny warning context.
 - Added automatic scenario outcome settlement when AI Structure reminders trigger, without marking user behavior as a mistake until follow-up confirms it.
 - Added triggered reminder follow-up: users can mark reminders as handled, continue watching, or ignored; ignored invalidations now feed mistake memory.
+- Added scheduled AI Structure outcome settlement worker for due `same_day` / `next_day` / `3d` / `5d` branch reviews.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
 - Removed legacy frontend radar/Kline/chan/scanner/AI-training surfaces from the default bundle.
@@ -24,4 +25,5 @@
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_*.py tests/test_czsc_adapter_contract.py -q`
 - `npm run build`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_reminder_bridge.py -q`
+- `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_outcome_worker.py tests/test_ai_structure_outcome_settlement.py -q`
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.

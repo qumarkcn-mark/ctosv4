@@ -11,8 +11,10 @@ V5_FILES = [
     Path("server/engines/ai_native/structure_evidence_service.py"),
     Path("server/engines/ai_native/structure_reminder_service.py"),
     Path("server/engines/ai_native/scenario_outcome_service.py"),
+    Path("server/engines/ai_native/outcome_settlement_service.py"),
     Path("server/workers/ai_structure_snapshot_worker.py"),
     Path("server/workers/ai_structure_context_worker.py"),
+    Path("server/workers/ai_structure_outcome_worker.py"),
 ]
 
 FORBIDDEN_SNIPPETS = [
