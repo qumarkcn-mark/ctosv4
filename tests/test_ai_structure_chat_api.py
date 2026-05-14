@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import json
 import jwt
 
 from server.api import ai_structure
@@ -70,6 +71,35 @@ def build_context(user_id=1):
     return context_service.get_latest_ai_structure_context(user_id=user_id, symbol="sh600519")
 
 
+def seed_fundamental_background():
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO scan_results (
+                scan_date, symbol, strategy, status, llm_verdict, llm_summary,
+                llm_pros, llm_cons, llm_red_flags, fundamental_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-12",
+                "sh.600519",
+                "war1",
+                "ready",
+                "支持",
+                "基本面长期背景强，但短线需要结构触发确认",
+                json.dumps(["品牌壁垒"], ensure_ascii=False),
+                json.dumps(["估值偏高"], ensure_ascii=False),
+                json.dumps([], ensure_ascii=False),
+                "2026-05-12T12:00:00+08:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     context = build_context()
@@ -109,6 +139,31 @@ def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_p
         overlay_ids.add(overlays["active_center"]["evidence_id"])
     overlay_ids.update(line["evidence_id"] for line in overlays["lines"])
     assert set(data["chart_focus"]["evidence_ids"]) <= overlay_ids
+
+
+def test_chat_uses_fundamental_background_without_trade_instruction(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    seed_fundamental_background()
+    save_snapshot()
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    assert context_service.run_context_job_sync(job)["status"] == "success"
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    answer = data["coach_answer"]
+    assert "背景层只作观察背景" in answer
+    assert "不能替代 CZSC 触发线和失败线" in answer
+    assert "不能直接回答" in answer
+    assert "可以买" not in answer
+    assert answer.endswith("仅供参考，不构成投资建议")
 
 
 def test_chat_answers_invalidation_question(monkeypatch, tmp_path):

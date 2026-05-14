@@ -415,24 +415,14 @@ def build_ai_structure_context(
     source_snapshot_ids = [item["snapshot_id"] for item in ordered]
     position = _position_context(user_id=user_id, symbol=canonical)
     boundary = _boundary_payload(ordered)
-    background = {
-        "version": "ai_structure_background.v1",
-        "symbol": canonical,
-        "available_levels": [item.get("level") for item in ordered],
-        "primary_level": _primary_level(boundary),
-        "has_position": position.get("has_position", False),
-        "rules": {
-            "structure_source": "czsc_snapshot_only",
-            "no_direct_trade_instruction": True,
-            "disclaimer_required": "仅供参考，不构成投资建议",
-        },
-    }
+    background = _background_context(symbol=canonical, boundary=boundary, position=position, snapshots=ordered)
     raw_context = {
         "version": prompt_version,
         "symbol": canonical,
         "source": "czsc_snapshot",
         "source_snapshot_ids": source_snapshot_ids,
         "position_context": position,
+        "background_context": background,
         "snapshots": [_compact_snapshot(item) for item in ordered],
     }
     summary_text = _summary_text(canonical, boundary, position)
@@ -443,6 +433,7 @@ def build_ai_structure_context(
         "source_snapshot_ids": source_snapshot_ids,
         "boundary": boundary,
         "position": position,
+        "background": background,
     })
     return {
         "user_id": int(user_id),
@@ -576,6 +567,88 @@ def _position_context(*, user_id: int, symbol: str) -> dict[str, Any]:
         return data
     finally:
         conn.close()
+
+
+def _background_context(
+    *,
+    symbol: str,
+    boundary: dict[str, Any],
+    position: dict[str, Any],
+    snapshots: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fundamental = _latest_fundamental_background(symbol)
+    return {
+        "version": "ai_structure_background.v1",
+        "symbol": normalize_symbol(symbol),
+        "available_levels": [item.get("level") for item in snapshots],
+        "primary_level": _primary_level(boundary),
+        "has_position": position.get("has_position", False),
+        "fundamental": fundamental,
+        "market": {
+            "fund_flow": {},
+            "sector_context": {},
+            "index_background": {},
+            "status": "not_loaded",
+        },
+        "rules": {
+            "structure_source": "czsc_snapshot_only",
+            "background_role": "context_only",
+            "structure_role": "decision_boundary",
+            "conflict_policy": "structure_discipline_first",
+            "no_direct_trade_instruction": True,
+            "disclaimer_required": "仅供参考，不构成投资建议",
+        },
+    }
+
+
+def _latest_fundamental_background(symbol: str) -> dict[str, Any]:
+    canonical = normalize_symbol(symbol)
+    compact = canonical.replace(".", "")
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT symbol, strategy, llm_verdict, llm_summary,
+                   llm_pros, llm_cons, llm_red_flags, fundamental_at, created_at
+              FROM scan_results
+             WHERE symbol IN (?, ?)
+               AND (
+                    llm_summary IS NOT NULL
+                 OR llm_verdict IS NOT NULL
+                 OR llm_pros IS NOT NULL
+                 OR llm_cons IS NOT NULL
+                 OR llm_red_flags IS NOT NULL
+               )
+             ORDER BY COALESCE(fundamental_at, created_at) DESC, id DESC
+             LIMIT 1
+            """,
+            (canonical, compact),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {
+            "status": "not_available",
+            "role": "context_only",
+            "summary": "",
+            "verdict": "",
+            "pros": [],
+            "cons": [],
+            "red_flags": [],
+            "as_of": "",
+            "source": "scan_results",
+        }
+    return {
+        "status": "available",
+        "role": "context_only",
+        "summary": str(row["llm_summary"] or "")[:160],
+        "verdict": str(row["llm_verdict"] or ""),
+        "pros": _json_list(row["llm_pros"]),
+        "cons": _json_list(row["llm_cons"]),
+        "red_flags": _json_list(row["llm_red_flags"]),
+        "as_of": str(row["fundamental_at"] or row["created_at"] or ""),
+        "source": f"scan_results:{row['strategy'] or ''}",
+    }
 
 
 def _boundary_payload(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
@@ -740,6 +813,18 @@ def _num(value) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _json_list(value) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item)[:80] for item in parsed if str(item or "").strip()][:5]
 
 
 def _new_id(prefix: str) -> str:

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 from server.db import database
 from server.engines.ai_native import structure_context_service as context_service
@@ -101,6 +102,49 @@ def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path)
         "invalidation_watch",
         "holding_defense",
     }
+
+
+def test_context_background_contract_keeps_fundamental_context_only(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snap = save_snapshot()
+    ensure_user()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO scan_results (
+                scan_date, symbol, strategy, status, llm_verdict, llm_summary,
+                llm_pros, llm_cons, llm_red_flags, fundamental_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-12",
+                "sh.600519",
+                "war1",
+                "ready",
+                "支持",
+                "品牌和现金流背景较强，但短线仍需结构确认",
+                json.dumps(["盈利质量高"], ensure_ascii=False),
+                json.dumps(["估值不低"], ensure_ascii=False),
+                json.dumps([], ensure_ascii=False),
+                "2026-05-12T12:00:00+08:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = context_service.build_ai_structure_context(user_id=1, symbol="sh600519", snapshots=[snap])
+
+    background = context["background"]
+    assert background["rules"]["background_role"] == "context_only"
+    assert background["rules"]["structure_role"] == "decision_boundary"
+    assert background["rules"]["conflict_policy"] == "structure_discipline_first"
+    assert background["fundamental"]["status"] == "available"
+    assert background["fundamental"]["verdict"] == "支持"
+    assert "结构确认" in background["fundamental"]["summary"]
+    assert context["raw_context"]["background_context"]["fundamental"]["role"] == "context_only"
 
 
 def test_context_status_turns_stale_when_new_snapshot_exists(monkeypatch, tmp_path):
