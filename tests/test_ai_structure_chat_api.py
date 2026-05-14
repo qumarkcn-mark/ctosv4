@@ -37,25 +37,25 @@ def ensure_user(user_id=1):
         conn.close()
 
 
-def save_snapshot():
+def save_snapshot(signature="sig-chat", price=10.5, zg=11.0, zd=10.0):
     return snapshot_service.save_snapshot(
         symbol="sh600519",
         level="5",
         compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
-        data_signature="sig-chat",
+        data_signature=signature,
         data_as_of="2026-05-12",
         snapshot_payload={
             "level": "5",
-            "price": 10.5,
-            "klines": [{"time": "2026-05-12 10:00:00", "close": 10.5}],
+            "price": price,
+            "klines": [{"time": "2026-05-12 10:00:00", "close": price}],
             "active_zhongshu": {
-                "zg": 11.0,
-                "zd": 10.0,
+                "zg": zg,
+                "zd": zd,
                 "begin_time": "2026-05-12 10:00:00",
                 "end_time": "2026-05-12 11:00:00",
             },
         },
-        raw_bi_context={"levels": {"5": {"last_close": 10.5}}},
+        raw_bi_context={"levels": {"5": {"last_close": price}}},
         engine_version="test-czsc",
         adapter_version="test-adapter",
     )
@@ -124,6 +124,8 @@ def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_p
     assert data["context_id"] == context["context_id"]
     assert "不能直接回答" in data["coach_answer"]
     assert data["risk_disclaimer"] == "仅供参考，不构成投资建议"
+    assert data["data_status"]["status"] == "fresh"
+    assert set(data["data_status"]["missing_levels"]) == {"week", "day", "30"}
     assert data["chart_focus"]["evidence_ids"]
     assert data["suggested_reminders"]
 
@@ -182,6 +184,79 @@ def test_chat_answers_invalidation_question(monkeypatch, tmp_path):
     assert "10.00" in data["coach_answer"]
     assert "仅供参考，不构成投资建议" in data["coach_answer"]
     assert any(item["role"] == "invalidation" for item in data["referenced_boundaries"])
+
+
+def test_chat_marks_stale_context_without_recomputing(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    save_snapshot(signature="sig-new-chat", price=11.2, zg=11.6, zd=10.9)
+    called = {"snapshot": 0}
+
+    def forbidden(*args, **kwargs):
+        called["snapshot"] += 1
+        raise AssertionError("chat must not refresh CZSC inline")
+
+    monkeypatch.setattr(snapshot_service.czsc_adapter, "analyze_czsc_structure_sync", forbidden)
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert called["snapshot"] == 0
+    assert data["data_status"]["status"] == "stale"
+    assert data["data_status"]["stale_reason"] == "SOURCE_SNAPSHOT_CHANGED"
+    assert "结构快照待刷新，当前基于上一版数据" in data["coach_answer"]
+    assert "不能直接回答" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_guardrails_out_of_scope_fundamental_trade_question(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "基本面这么好是不是可以买，目标价多少？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "out_of_scope"
+    assert "超出当前结构教练边界" in data["coach_answer"]
+    assert "不能给目标价、荐股、基本面买卖结论或收益预测" in data["coach_answer"]
+    assert "站上 11.00" in data["coach_answer"]
+    assert "跌破 10.00" in data["coach_answer"]
+    assert data["suggested_reminders"] == []
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_guardrails_out_of_scope_even_when_boundary_missing(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    save_snapshot(zg=0, zd=0)
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    assert context_service.run_context_job_sync(job)["status"] == "success"
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "推荐一只类似的票，目标价多少？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "out_of_scope"
+    assert "不能给目标价、荐股、基本面买卖结论或收益预测" in data["coach_answer"]
+    assert "CZSC 边界不足" in data["coach_answer"]
+    assert data["referenced_boundaries"] == []
+    assert data["suggested_reminders"] == []
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
 
 
 def test_chat_includes_only_mistake_memory_warning(monkeypatch, tmp_path):
@@ -270,6 +345,25 @@ def test_chat_answers_review_question_without_outcomes(monkeypatch, tmp_path):
     assert data["intent_type"] == "review"
     assert "还没有可复盘的结构分支结果" in data["coach_answer"]
     assert data["review_context"]["count"] == 0
+
+
+def test_chat_review_answer_discloses_stale_context(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    save_snapshot(signature="sig-review-stale", price=11.2, zg=11.6, zd=10.9)
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "最近有没有纪律问题？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "review"
+    assert data["data_status"]["status"] == "stale"
+    assert "结构快照待刷新，当前基于上一版数据" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
 
 
 def test_chat_sessions_and_messages_are_user_scoped(monkeypatch, tmp_path):
