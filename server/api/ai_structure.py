@@ -40,6 +40,7 @@ from server.engines.ai_native.structure_reminder_service import (
     list_structure_reminders,
 )
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
+from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
 
 
@@ -68,6 +69,16 @@ class PipelineEnsureRequest(BaseModel):
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     priority: int = Field(default=85, ge=1, le=100)
     reason: str = "web_ai_structure_workspace"
+
+
+class WorkspaceBootstrapRequest(BaseModel):
+    sources: list[str] = Field(default_factory=lambda: ["positions", "recent_chat", "watchlist"], max_length=5)
+    levels: list[str] = Field(default_factory=lambda: list(DEFAULT_LEVELS), max_length=6)
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE
+    limit: int = Field(default=20, ge=1, le=50)
+    ensure_pipeline: bool = False
+    priority: int = Field(default=85, ge=1, le=100)
+    reason: str = "workspace_bootstrap"
 
 
 class StructureChatRequest(BaseModel):
@@ -107,6 +118,27 @@ def get_ai_native_universe(
             "symbols": resolve_ai_native_universe(current_user_id, source_list),
         },
     }
+
+
+@router.post("/workspace/bootstrap")
+async def workspace_bootstrap(
+    request: WorkspaceBootstrapRequest,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    """Return a client-ready V5 workspace state without inline CZSC computation."""
+    _validate_compute_profile(request.compute_profile)
+    levels = [_validate_level(level) for level in request.levels]
+    result = await bootstrap_ai_structure_workspace(
+        user_id=current_user_id,
+        sources=request.sources,
+        levels=levels,
+        compute_profile=request.compute_profile,
+        limit=request.limit,
+        ensure_pipeline=request.ensure_pipeline,
+        priority=request.priority,
+        reason=request.reason,
+    )
+    return {"status": "success", "data": result}
 
 
 @router.post("/snapshots/prewarm")
