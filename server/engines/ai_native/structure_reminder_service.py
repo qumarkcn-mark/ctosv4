@@ -12,6 +12,7 @@ from typing import Any
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.czsc_snapshot_service import now_text, stable_hash
+from server.engines.ai_native.scenario_outcome_service import settle_scenario_branch
 from server.engines.ai_native.structure_chat_service import RISK_DISCLAIMER
 from server.engines.coach.event_log import record_alert_delivery, record_coach_event
 
@@ -312,8 +313,22 @@ def scan_structure_reminders(price_by_symbol: dict[str, dict]) -> dict[str, Any]
                 "current_price": price,
                 "direction": row["direction"],
                 "message": message_text,
+                "settled_outcome": None,
             })
         conn.commit()
+        for item in triggered:
+            try:
+                item["settled_outcome"] = _auto_settle_branch_for_reminder(
+                    user_id=item["user_id"],
+                    symbol=item["symbol"],
+                    context_id=item["context_id"],
+                    evidence_id=item["evidence_id"],
+                    direction=item["direction"],
+                    current_price=item["current_price"],
+                    checked_at=now,
+                )
+            except Exception as exc:
+                item["settled_outcome_error"] = str(exc)[:200]
         return {"count": len(triggered), "items": triggered}
     except Exception:
         conn.rollback()
@@ -411,6 +426,79 @@ def _trigger_message(*, row, current_price: float) -> str:
         f"{row['symbol']} 已{direction} {float(row['trigger_price']):.2f}，"
         f"当前价 {current_price:.2f}，请复核 AI 结构提醒。提醒不下单，{RISK_DISCLAIMER}"
     )
+
+
+def _auto_settle_branch_for_reminder(
+    *,
+    user_id: int,
+    symbol: str,
+    context_id: str,
+    evidence_id: str,
+    direction: str,
+    current_price: float,
+    checked_at: str,
+) -> dict[str, Any] | None:
+    branch_id = _find_branch_for_reminder(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context_id,
+        evidence_id=evidence_id,
+        direction=direction,
+    )
+    if not branch_id:
+        return None
+    return settle_scenario_branch(
+        user_id=user_id,
+        branch_id=branch_id,
+        current_price=current_price,
+        settlement_window="ai_reminder_trigger",
+        checked_at=checked_at,
+        user_followed_plan=None,
+    )
+
+
+def _find_branch_for_reminder(
+    *,
+    user_id: int,
+    symbol: str,
+    context_id: str,
+    evidence_id: str,
+    direction: str,
+) -> str:
+    expected_condition = "price_above" if str(direction).upper() == "ABOVE" else "price_below"
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT branch_id, branch_type, trigger_condition_json, invalidate_condition_json, evidence_refs_json
+              FROM scenario_branches
+             WHERE user_id = ?
+               AND symbol = ?
+               AND context_id = ?
+               AND status = 'ACTIVE'
+             ORDER BY
+               CASE branch_type
+                 WHEN 'observe_breakout' THEN 0
+                 WHEN 'invalidation_watch' THEN 1
+                 WHEN 'holding_defense' THEN 2
+                 ELSE 3
+               END,
+               updated_at DESC,
+               id DESC
+            """,
+            (int(user_id), normalize_symbol(symbol), context_id),
+        ).fetchall()
+        for row in rows:
+            evidence_refs = json.loads(row["evidence_refs_json"] or "[]")
+            if evidence_id not in evidence_refs:
+                continue
+            trigger = json.loads(row["trigger_condition_json"] or "{}")
+            invalid = json.loads(row["invalidate_condition_json"] or "{}")
+            if trigger.get("type") == expected_condition or invalid.get("type") == expected_condition:
+                return row["branch_id"]
+        return ""
+    finally:
+        conn.close()
 
 
 def _num(value) -> float:
