@@ -117,6 +117,40 @@ def get_memory_context_for_chat(*, user_id: int, symbol: str) -> dict[str, Any]:
     }
 
 
+def list_symbol_outcome_reviews(*, user_id: int, symbol: str, limit: int = 50) -> dict[str, Any]:
+    """Return a user-scoped review timeline for one symbol."""
+    canonical = normalize_symbol(symbol)
+    safe_limit = max(1, min(int(limit or 50), 100))
+    profile = get_symbol_memory_profile(user_id=user_id, symbol=canonical)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.*, b.context_id, b.branch_type, b.main_level, b.trigger_level,
+                   b.trigger_condition_json, b.invalidate_condition_json,
+                   b.evidence_refs_json, b.status AS branch_status
+              FROM scenario_outcomes o
+              LEFT JOIN scenario_branches b
+                ON b.branch_id = o.branch_id
+               AND b.user_id = o.user_id
+             WHERE o.user_id = ?
+               AND o.symbol = ?
+             ORDER BY o.checked_at DESC, o.id DESC
+             LIMIT ?
+            """,
+            (int(user_id), canonical, safe_limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    items = [_review_row(row) for row in rows]
+    return {
+        "symbol": canonical,
+        "count": len(items),
+        "items": items,
+        "memory": _review_memory_payload(profile),
+    }
+
+
 def update_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     conn = get_connection()
@@ -307,6 +341,53 @@ def _within_days(value: str | None, *, days: int) -> bool:
 
 def _outcome_row(row) -> dict[str, Any]:
     return dict(row)
+
+
+def _review_row(row) -> dict[str, Any]:
+    data = dict(row)
+    followed = data.get("user_followed_plan")
+    branch = {
+        "branch_id": data["branch_id"],
+        "context_id": data.pop("context_id", "") or "",
+        "branch_type": data.pop("branch_type", "") or "",
+        "main_level": data.pop("main_level", "") or "",
+        "trigger_level": data.pop("trigger_level", "") or "",
+        "status": data.pop("branch_status", "") or "",
+        "trigger_condition": json.loads(data.pop("trigger_condition_json", None) or "{}"),
+        "invalidate_condition": json.loads(data.pop("invalidate_condition_json", None) or "{}"),
+        "evidence_refs": json.loads(data.pop("evidence_refs_json", None) or "[]"),
+    }
+    data["user_followed_plan"] = None if followed is None else bool(followed)
+    data["is_mistake"] = data["outcome"] == "invalidated" and data["user_followed_plan"] is False
+    data["branch"] = branch
+    return data
+
+
+def _review_memory_payload(profile: dict[str, Any] | None) -> dict[str, Any]:
+    if not profile:
+        return {
+            "profile": {
+                "memory_version": "ai_symbol_memory.v1",
+                "mistakes": [],
+                "active_warnings": [],
+                "summary": "暂无复盘记忆。",
+            },
+            "stats": {
+                "total_outcomes": 0,
+                "triggered": 0,
+                "invalidated": 0,
+                "expired": 0,
+                "avg_outcome_score": 0,
+                "plan_follow_rate": None,
+                "mistake_count_30d": 0,
+                "ignored_invalidation_count_30d": 0,
+            },
+        }
+    return {
+        "profile": profile.get("profile") or {},
+        "stats": profile.get("stats") or {},
+        "updated_at": profile.get("updated_at"),
+    }
 
 
 def _num(value) -> float:

@@ -119,6 +119,68 @@ def test_invalidated_unfollowed_plan_enters_mistake_memory(monkeypatch, tmp_path
     assert "没有按计划处理" in memory["profile"]["active_warnings"][0]["text"]
 
 
+def test_outcome_reviews_return_timeline_with_branch_and_memory(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes/sh600519")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["symbol"] == "sh.600519"
+    assert data["count"] == 1
+    item = data["items"][0]
+    assert item["outcome"] == "invalidated"
+    assert item["user_followed_plan"] is False
+    assert item["is_mistake"] is True
+    assert item["branch"]["branch_id"] == branch["branch_id"]
+    assert item["branch"]["context_id"]
+    assert item["branch"]["trigger_condition"]["type"] == "price_above"
+    assert item["branch"]["invalidate_condition"]["type"] == "price_below"
+    assert data["memory"]["stats"]["mistake_count_30d"] == 1
+    assert data["memory"]["profile"]["mistakes"][0]["type"] == "ignored_invalidation"
+
+
+def test_outcome_reviews_are_user_scoped(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches(user_id=1)
+    ensure_user(2)
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes/sh600519", headers=auth_headers(2))
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 0
+    assert data["items"] == []
+    assert data["memory"]["stats"]["total_outcomes"] == 0
+    assert data["memory"]["stats"]["triggered"] == 0
+    assert data["memory"]["stats"]["plan_follow_rate"] is None
+
+
 def test_memory_context_for_chat_is_tiny(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     branches = build_branches()
