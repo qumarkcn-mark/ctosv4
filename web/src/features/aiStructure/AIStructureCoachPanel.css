@@ -142,6 +142,52 @@
   box-shadow: 0 0 0 3px rgba(220,38,38,0.1);
 }
 
+.ai-status-guidance {
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-radius: 6px;
+  background: rgba(255,255,255,0.028);
+}
+
+.ai-status-guidance strong {
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ai-status-guidance p,
+.ai-status-guidance em {
+  margin: 0;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.ai-status-guidance--working,
+.ai-status-guidance--warn,
+.ai-status-guidance--waiting {
+  border-color: rgba(245,158,11,0.2);
+  background: rgba(245,158,11,0.055);
+}
+
+.ai-status-guidance--working strong,
+.ai-status-guidance--warn strong,
+.ai-status-guidance--waiting strong {
+  color: var(--signal-amber, #f59e0b);
+}
+
+.ai-status-guidance--error {
+  border-color: rgba(220,38,38,0.24);
+  background: rgba(220,38,38,0.075);
+}
+
+.ai-status-guidance--error strong {
+  color: var(--warning-red, #dc2626);
+}
+
 .ai-structure-quick {
   display: grid;
   grid-template-columns: 1fr;

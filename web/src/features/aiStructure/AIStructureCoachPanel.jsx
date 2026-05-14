@@ -295,6 +295,12 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
 
       <PipelineStatus items={pipelineItems} />
 
+      <StatusGuidance
+        status={status}
+        canAsk={canAsk}
+        pollingActive={pollingActive}
+      />
+
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
       <OutcomeReviewStatus review={outcomeReview} />
@@ -364,6 +370,18 @@ function PipelineStatus({ items }) {
           <em>{item.detail}</em>
         </div>
       ))}
+    </div>
+  )
+}
+
+function StatusGuidance({ status, canAsk, pollingActive }) {
+  const guidance = buildStatusGuidance(status, { canAsk, pollingActive })
+  if (!guidance) return null
+  return (
+    <div className={`ai-status-guidance ai-status-guidance--${guidance.tone}`}>
+      <strong>{guidance.title}</strong>
+      <p>{guidance.body}</p>
+      {!!guidance.detail && <em>{guidance.detail}</em>}
     </div>
   )
 }
@@ -525,6 +543,73 @@ function emptyText(status, pollingActive) {
   if (pollingActive || status?.status === 'pending') return '结构上下文生成中，完成后就可以继续追问。'
   if (status?.missing_levels?.length) return `等待 ${formatLevels(status.missing_levels)} 的 CZSC 快照。`
   return '当前没有可用结构上下文。'
+}
+
+function buildStatusGuidance(status, flags) {
+  const { canAsk, pollingActive } = flags
+  const reason = statusReason(status)
+  if (!status) {
+    return {
+      tone: 'checking',
+      title: '正在检查结构数据',
+      body: '先确认 K 线、CZSC 快照和 AI 上下文是否已有可用版本。',
+    }
+  }
+  if (pollingActive || status.status === 'pending') {
+    return {
+      tone: 'working',
+      title: '结构正在生成',
+      body: '问题已经可以先排队，后台会先补 K 线和 CZSC 快照，再生成 AI 结构上下文。',
+      detail: '页面请求不会同步重算结构，也不会回退旧结构入口。',
+    }
+  }
+  if (reason === 'NO_DATA') {
+    return {
+      tone: 'error',
+      title: '缺少 K 线数据',
+      body: '当前股票没有足够 K 线，暂时不能生成 CZSC 快照。先换一只有行情的股票，或等待数据同步完成。',
+    }
+  }
+  if (reason === 'CZSC_UNAVAILABLE') {
+    return {
+      tone: 'error',
+      title: 'CZSC 引擎不可用',
+      body: 'V5 只使用 CZSC 结构主线；引擎不可用时不会用旧 radar 或 chan 路径兜底。',
+    }
+  }
+  if (status.status === 'failed') {
+    return {
+      tone: 'error',
+      title: '结构生成失败',
+      body: failureText(status),
+      detail: '可以重新生成上下文；如果连续失败，需要检查 K 线输入和后台 worker。',
+    }
+  }
+  if (status.missing_levels?.length) {
+    return {
+      tone: canAsk ? 'warn' : 'waiting',
+      title: canAsk ? '有旧上下文，可继续问' : '等待多级别快照',
+      body: canAsk
+        ? `缺少 ${formatLevels(status.missing_levels)} 的新快照，回答会基于上一版 AI 上下文。`
+        : `还缺 ${formatLevels(status.missing_levels)} 的 CZSC 快照，生成后才能回答。`,
+      detail: 'V5 只展示当前回答相关的轻量证据，不做旧结构报告回退。',
+    }
+  }
+  if (status.status === 'stale') {
+    return {
+      tone: 'warn',
+      title: '结构待刷新',
+      body: canAsk ? '可以继续提问，但这次回答会使用上一版上下文。' : '需要先生成新的 AI 结构上下文。',
+    }
+  }
+  if (!canAsk) {
+    return {
+      tone: 'waiting',
+      title: '还没有 AI 上下文',
+      body: '可以直接提问，系统会先生成结构上下文，完成后自动回答。',
+    }
+  }
+  return null
 }
 
 function buildPipelineItems(status, flags) {
