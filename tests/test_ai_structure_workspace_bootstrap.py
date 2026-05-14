@@ -202,6 +202,42 @@ def test_workspace_bootstrap_include_can_target_worker_contract(monkeypatch, tmp
     assert set(held) == {"symbol", "name", "sources", "priority", "has_position", "context_status"}
 
 
+def test_workspace_bootstrap_focus_symbol_is_included_before_limit(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_universe()
+    conn = database.get_connection()
+    try:
+        conn.executemany(
+            "INSERT INTO watchlist_items (group_id, symbol, name, sort_order) VALUES (10, ?, ?, ?)",
+            [(f"sh6000{i:02d}", f"样本{i}", i) for i in range(30)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/workspace/bootstrap",
+        json={
+            "sources": ["positions", "watchlist"],
+            "focus_symbols": ["sh600029"],
+            "levels": ["5"],
+            "client": "miniprogram",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    symbols = [item["symbol"] for item in data["symbols"]]
+    assert symbols[0] == "sh.600029"
+    assert "sh.600029" in symbols
+    assert len(symbols) == 3
+    focused = data["symbols"][0]
+    assert "focus" in focused["sources"]
+    assert focused["priority"] == 120
+
+
 def test_workspace_bootstrap_rejects_unknown_include_section(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     seed_universe()

@@ -1,3 +1,4 @@
 {
-  "navigationBarTitleText": "多维推演矩阵"
+  "enablePullDownRefresh": true,
+  "navigationBarTitleText": "AI 结构状态"
 }

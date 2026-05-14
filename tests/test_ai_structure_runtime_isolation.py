@@ -118,3 +118,34 @@ def test_v5_frontend_default_bundle_has_no_legacy_radar_or_chan_refs():
         text = path.read_text()
         for snippet in forbidden:
             assert snippet not in text, f"{path} must not reference legacy frontend path {snippet}"
+
+
+def test_v5_miniprogram_default_pages_have_no_legacy_structure_refs():
+    miniprogram_files = [
+        path
+        for path in Path("miniprogram").rglob("*")
+        if path.is_file() and path.suffix in {".js", ".json", ".wxml", ".wxss"}
+    ]
+    forbidden = (
+        "/api/radar",
+        "/api/chan",
+        "/chan/matrix",
+        "chan/matrix",
+        "matrix_a",
+        "matrix_b",
+        "多维推演矩阵",
+    )
+
+    for path in miniprogram_files:
+        text = path.read_text()
+        for snippet in forbidden:
+            assert snippet not in text, f"{path} must not reference legacy miniprogram path {snippet}"
+
+
+def test_miniprogram_stock_detail_matches_v5_memory_and_symbol_contracts():
+    text = Path("miniprogram/pages/stock_detail/index.js").read_text()
+
+    assert "mistake_count_30d" in text
+    assert "ignored_invalidation_count_30d" in text
+    assert "stats.mistake_outcomes" in text
+    assert "/^[659]/.test(raw) ? 'sh' : 'sz'" in text

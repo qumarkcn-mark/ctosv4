@@ -36,6 +36,7 @@ async def bootstrap_ai_structure_workspace(
     *,
     user_id: int,
     sources: list[str] | None = None,
+    focus_symbols: list[str] | None = None,
     levels: list[str] | None = None,
     compute_profile: str = DEFAULT_COMPUTE_PROFILE,
     limit: int = 20,
@@ -51,7 +52,10 @@ async def bootstrap_ai_structure_workspace(
     normalized_client = _client(client)
     sections = _include_sections(normalized_client, include_sections)
     safe_limit = max(1, min(int(limit or 20), 50))
-    universe = resolve_ai_native_universe(user_id, normalized_sources)[:safe_limit]
+    universe = _merge_focus_symbols(
+        focus_symbols=focus_symbols,
+        universe=resolve_ai_native_universe(user_id, normalized_sources),
+    )[:safe_limit]
     symbols = [item["symbol"] for item in universe]
     ensure_result = None
     if ensure_pipeline and symbols:
@@ -225,6 +229,35 @@ def _status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 def _sources(sources: list[str] | None) -> list[str]:
     selected = [str(item).strip().lower() for item in (sources or list(DEFAULT_SOURCES)) if str(item).strip()]
     return selected or list(DEFAULT_SOURCES)
+
+
+def _merge_focus_symbols(*, focus_symbols: list[str] | None, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_symbol in focus_symbols or []:
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        merged.append({
+            "symbol": symbol,
+            "name": symbol,
+            "sources": ["focus"],
+            "priority": 120,
+            "has_position": False,
+        })
+    for item in universe:
+        symbol = normalize_symbol(item["symbol"])
+        if symbol in seen:
+            existing = next(row for row in merged if row["symbol"] == symbol)
+            existing["name"] = item.get("name") or existing["name"]
+            existing["sources"] = sorted(set(existing.get("sources") or []) | set(item.get("sources") or []))
+            existing["priority"] = max(int(existing.get("priority") or 0), int(item.get("priority") or 0))
+            existing["has_position"] = bool(existing.get("has_position")) or bool(item.get("has_position"))
+            continue
+        seen.add(symbol)
+        merged.append(item)
+    return merged
 
 
 def _client(client: str | None) -> str:

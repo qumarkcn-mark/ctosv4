@@ -1,77 +1,162 @@
+const app = getApp()
+
+const LEVELS = ['week', 'day', '30', '5']
+
 Page({
   data: {
     symbol: '',
-    matrixA: [],
-    matrixB: [],
-    matrixMode: 'A', // A: 30/5, B: 60/15
-    currentMatrix: [],
+    name: '',
     loading: true,
-    adviceText: '等待引擎推算...'
+    refreshing: false,
+    error: '',
+    structureState: null,
+    statusLabel: '检测中',
+    statusTone: 'checking',
+    reminderCount: 0,
+    activeReminderCount: 0,
+    outcomeCount: 0,
+    mistakeCount: 0,
+    memoryNote: '暂无复盘记忆',
   },
 
   onLoad(options) {
-    if (options.symbol) {
-      this.setData({ symbol: options.symbol });
-      this.fetchMatrix(options.symbol);
-    }
+    const symbol = options.symbol || ''
+    this.setData({ symbol })
+    this.runWhenAuthed(() => this.fetchStructureState({ ensurePipeline: true }))
   },
 
-  fetchMatrix(symbol) {
-    const app = getApp();
-    this.setData({ loading: true });
-    
+  onPullDownRefresh() {
+    this.fetchStructureState({ ensurePipeline: true })
+  },
+
+  refreshStructureState() {
+    this.fetchStructureState({ ensurePipeline: true })
+  },
+
+  runWhenAuthed(callback) {
+    if (app.globalData.token) {
+      callback()
+      return
+    }
+    app.loginReadyCallback = callback
+  },
+
+  fetchStructureState({ ensurePipeline = false } = {}) {
+    if (!this.data.symbol) return
+    this.setData({
+      loading: !this.data.structureState,
+      refreshing: Boolean(this.data.structureState),
+      error: '',
+    })
+
     wx.request({
-      url: `${app.globalData.apiBase}/chan/matrix/${symbol}`,
-      method: 'GET',
+      url: `${app.globalData.apiBase}/ai-structure/workspace/bootstrap`,
+      method: 'POST',
       header: {
-        'Authorization': `Bearer ${app.globalData.token}`
+        'Authorization': `Bearer ${app.globalData.token}`,
+        'Content-Type': 'application/json',
+      },
+      data: {
+        sources: ['positions', 'recent_chat', 'watchlist'],
+        focus_symbols: [this.data.symbol],
+        levels: LEVELS,
+        client: 'miniprogram',
+        include: ['context_status', 'reminders', 'outcomes'],
+        ensure_pipeline: ensurePipeline,
+        reason: ensurePipeline ? 'miniprogram_structure_detail_refresh' : 'miniprogram_structure_detail',
       },
       success: (res) => {
-        if (res.statusCode === 200 && res.data.status === 'success') {
-          const data = res.data.data;
-          const current = this.data.matrixMode === 'A' ? data.matrix_a : data.matrix_b;
+        if (res.statusCode !== 200 || !res.data || res.data.status !== 'success') {
           this.setData({
-            matrixA: data.matrix_a,
-            matrixB: data.matrix_b,
-            currentMatrix: current,
-            adviceText: this.computeAdvice(current),
-            loading: false
-          });
+            loading: false,
+            refreshing: false,
+            error: '结构状态读取失败',
+          })
+          return
         }
+        const item = this.findSymbolState(res.data.data)
+        if (!item) {
+          this.setData({
+            loading: false,
+            refreshing: false,
+            error: '当前股票还未进入 AI 结构池',
+          })
+          return
+        }
+        this.applyStructureState(item)
       },
       fail: () => {
-        wx.showToast({ title: '网络异常', icon: 'error' });
-        this.setData({ loading: false });
-      }
-    });
+        this.setData({
+          loading: false,
+          refreshing: false,
+          error: '网络异常',
+        })
+      },
+      complete: () => {
+        wx.stopPullDownRefresh()
+      },
+    })
   },
 
-  switchMode(e) {
-    const mode = e.currentTarget.dataset.mode;
-    const current = mode === 'A' ? this.data.matrixA : this.data.matrixB;
+  findSymbolState(workspace) {
+    const target = normalizeSymbol(this.data.symbol)
+    return ((workspace || {}).symbols || []).find((item) => normalizeSymbol(item.symbol) === target)
+  },
+
+  applyStructureState(item) {
+    const status = item.context_status || {}
+    const reminders = item.reminders || { count: 0, items: [] }
+    const outcomes = item.outcomes || { count: 0, items: [], memory: {} }
+    const memory = outcomes.memory || {}
+    const stats = memory.stats || {}
+    const mistakeCount = Number(
+      stats.mistake_count_30d
+        || stats.ignored_invalidation_count_30d
+        || stats.mistake_outcomes
+        || 0,
+    )
+
     this.setData({
-      matrixMode: mode,
-      currentMatrix: current,
-      adviceText: this.computeAdvice(current)
-    });
+      name: item.name || item.symbol,
+      structureState: item,
+      statusLabel: statusLabel(status),
+      statusTone: statusTone(status),
+      reminderCount: Number(reminders.count || 0),
+      activeReminderCount: (reminders.items || []).filter((row) => row.status === 'ACTIVE').length,
+      outcomeCount: Number(outcomes.count || 0),
+      mistakeCount,
+      memoryNote: mistakeCount > 0
+        ? `已有 ${mistakeCount} 条错误复盘，问 AI 时会优先提醒纪律偏差`
+        : '暂无错误复盘记忆',
+      loading: false,
+      refreshing: false,
+      error: '',
+    })
   },
+})
 
-  computeAdvice(matrix) {
-    if (!matrix || matrix.length < 3) return "数据不足";
-    const [l1, l2] = matrix; 
-    
-    if (l1.state === 'DOWNWARD_LEAVING' && l2.state !== 'THIRD_BUY_CONFIRMED') {
-      return "⚠️ 主级别向下破位中，极度弱势，切勿盲目接飞刀！";
-    }
-    if (l1.state === 'WAITING_FOR_PULLBACK' && l2.state === 'THIRD_BUY_CONFIRMED') {
-      return "🔥 【核弹级信号】主级别完成离开段寻找支撑，次级别已率先确立三买，准备起飞！";
-    }
-    if (l1.state === 'THIRD_BUY_CONFIRMED') {
-      return "🚀 大级别主升浪三买已确立，持单飞翔。";
-    }
-    if (l1.state === 'IN_CENTER_OSC') {
-      return "⚖️ 维持中枢内部震荡中，可贴近 ZD 低吸，靠近 ZG 高抛。";
-    }
-    return "保持观望，等待结构明朗。";
-  }
-});
+function normalizeSymbol(symbol) {
+  const raw = String(symbol || '').trim().replace('.', '').toLowerCase()
+  if (/^(sh|sz)\d{6}$/.test(raw)) return raw
+  if (/^\d{6}$/.test(raw)) return `${/^[659]/.test(raw) ? 'sh' : 'sz'}${raw}`
+  return raw
+}
+
+function statusLabel(status) {
+  const value = status.status || ''
+  if (value === 'fresh') return '结构就绪'
+  if (value === 'stale') return '待复核'
+  if (value === 'pending') return '后台生成中'
+  if (value === 'failed') return '生成失败'
+  if (value === 'no_snapshot') return '等待快照'
+  return '检测中'
+}
+
+function statusTone(status) {
+  const value = status.status || ''
+  if (value === 'fresh') return 'ready'
+  if (value === 'stale') return 'warn'
+  if (value === 'failed') return 'error'
+  if (value === 'pending') return 'working'
+  return 'waiting'
+}

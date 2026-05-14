@@ -96,6 +96,7 @@ Workspace Bootstrap Contract:
 - `workspace/bootstrap` 是 Web / 小程序共用的薄聚合入口，返回 universe、每只票的 context status、latest context 摘要、branches、reminders、outcomes / memory 摘要。
 - 请求必须声明或默认使用 `client` profile：`web` 默认全量首屏读模型；`miniprogram` 默认只返回 `context_status`、`reminders`、`outcomes`；`worker` 默认只返回 `context_status`；`reminder` 默认返回 `context_status`、`reminders`。
 - 客户端可用 `include` 精确裁剪字段，允许值仅限 `context_status`、`latest_context`、`branches`、`reminders`、`outcomes`。禁止通过 bootstrap 暴露 raw context、raw job row 或完整 CZSC 对象。
+- 详情页、小程序或提醒入口可传 `focus_symbols`，后端必须在 universe limit 前把当前股票置顶，避免用户打开合法股票时因为观察池过大而丢失当前票。
 - 默认 `ensure_pipeline=false`，只读已有状态，不触发 K 线网络拉取。
 - 客户端冷启动、手动刷新或小程序进入页面时可传 `ensure_pipeline=true`，后端只允许对最高优先级少量股票执行轻量 K 线 ensure 并入队 snapshot/context job，不得在请求内同步计算 CZSC 结构，也不得一次性拉满整个 watchlist。
 - bootstrap 的 `context_status` 只能返回 status、stale_reason、missing_levels、job summary 等状态摘要；完整 context 和内部 job row 只能通过对应调试/后台 API 获取。
