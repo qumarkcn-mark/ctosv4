@@ -149,6 +149,77 @@ def test_workspace_bootstrap_returns_user_scoped_workspace_state(monkeypatch, tm
     assert [item["symbol"] for item in other.json()["data"]["universe"]] == ["sz.000001"]
 
 
+def test_workspace_bootstrap_miniprogram_profile_is_compact(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_universe()
+    save_snapshot()
+    build_context(user_id=1)
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/workspace/bootstrap",
+        json={
+            "sources": ["positions"],
+            "levels": ["5"],
+            "client": "miniprogram",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["client"] == "miniprogram"
+    assert data["include"] == ["context_status", "reminders", "outcomes"]
+    held = data["symbols"][0]
+    assert held["context_status"]["status"] == "fresh"
+    assert held["reminders"]["count"] == 0
+    assert held["outcomes"]["memory"]["stats"]["total_outcomes"] == 0
+    assert "latest_context" not in held
+    assert "branches" not in held
+
+
+def test_workspace_bootstrap_include_can_target_worker_contract(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_universe()
+    save_snapshot()
+    build_context(user_id=1)
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/workspace/bootstrap",
+        json={
+            "sources": ["positions"],
+            "levels": ["5"],
+            "client": "worker",
+            "include": ["context_status"],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["client"] == "worker"
+    assert data["include"] == ["context_status"]
+    held = data["symbols"][0]
+    assert set(held) == {"symbol", "name", "sources", "priority", "has_position", "context_status"}
+
+
+def test_workspace_bootstrap_rejects_unknown_include_section(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_universe()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/workspace/bootstrap",
+        json={
+            "sources": ["positions"],
+            "levels": ["5"],
+            "include": ["context_status", "raw_context"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "unsupported workspace include section" in response.json()["detail"]
+
+
 def test_workspace_bootstrap_can_enqueue_pipeline_without_inline_structure(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     seed_universe()

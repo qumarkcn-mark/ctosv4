@@ -79,6 +79,8 @@ class WorkspaceBootstrapRequest(BaseModel):
     ensure_pipeline: bool = False
     priority: int = Field(default=85, ge=1, le=100)
     reason: str = "workspace_bootstrap"
+    client: str = Field(default="web", pattern="^(web|miniprogram|worker|reminder)$")
+    include: Optional[list[str]] = Field(default=None, max_length=5)
 
 
 class StructureChatRequest(BaseModel):
@@ -128,6 +130,7 @@ async def workspace_bootstrap(
     """Return a client-ready V5 workspace state without inline CZSC computation."""
     _validate_compute_profile(request.compute_profile)
     levels = [_validate_level(level) for level in request.levels]
+    include_sections = [_validate_workspace_include(item) for item in request.include] if request.include is not None else None
     result = await bootstrap_ai_structure_workspace(
         user_id=current_user_id,
         sources=request.sources,
@@ -137,6 +140,8 @@ async def workspace_bootstrap(
         ensure_pipeline=request.ensure_pipeline,
         priority=request.priority,
         reason=request.reason,
+        client=request.client,
+        include_sections=include_sections,
     )
     return {"status": "success", "data": result}
 
@@ -444,3 +449,11 @@ def _validate_level(level: str) -> str:
     if str(level or "").strip().lower() not in FREQ_ALIASES:
         raise HTTPException(status_code=400, detail=f"unsupported level: {level}")
     return normalize_freq(level)
+
+
+def _validate_workspace_include(section: str) -> str:
+    normalized = str(section or "").strip().lower()
+    allowed = {"context_status", "latest_context", "branches", "reminders", "outcomes"}
+    if normalized not in allowed:
+        raise HTTPException(status_code=400, detail=f"unsupported workspace include section: {section}")
+    return normalized
