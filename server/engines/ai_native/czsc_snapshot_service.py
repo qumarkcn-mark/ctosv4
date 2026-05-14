@@ -25,6 +25,7 @@ ENGINE = "czsc"
 DEFAULT_LEVELS = ("week", "day", "30", "5")
 DEFAULT_COMPUTE_PROFILE = "chart_standard_v1"
 JOB_ACTIVE_STATUSES = {"PENDING", "RUNNING", "FAILED_RETRYABLE"}
+RECOVERABLE_INFRA_ERROR_CODES = ("CZSC_UNAVAILABLE",)
 logger = logging.getLogger(__name__)
 
 
@@ -283,6 +284,87 @@ def get_latest_snapshot(
             (canonical, normalized_level, compute_profile),
         ).fetchone()
         return _snapshot_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def recover_failed_snapshot_jobs(
+    *,
+    error_codes: tuple[str, ...] = RECOVERABLE_INFRA_ERROR_CODES,
+    limit: int = 200,
+    priority: int | None = None,
+    reason: str = "recover_failed_snapshot_jobs",
+) -> dict[str, Any]:
+    """Requeue terminal snapshot jobs that failed for recoverable infrastructure reasons.
+
+    This is intentionally narrow: data-quality failures such as NO_DATA stay
+    terminal, while dependency outages like CZSC_UNAVAILABLE can recover after
+    the runtime is fixed. The worker still performs the actual CZSC computation.
+    """
+    if not error_codes or limit <= 0:
+        return {"count": 0, "items": [], "skipped": True, "reason": "NO_RECOVERABLE_CODES"}
+    if czsc_adapter.get_czsc_engine_version() == "unavailable":
+        return {"count": 0, "items": [], "skipped": True, "reason": "CZSC_UNAVAILABLE"}
+
+    placeholders = ",".join("?" for _ in error_codes)
+    conn = get_connection()
+    try:
+        now = now_text()
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            f"""
+            SELECT *
+              FROM structure_snapshot_jobs
+             WHERE status = 'FAILED_FINAL'
+               AND error_code IN ({placeholders})
+             ORDER BY priority DESC, updated_at ASC, id ASC
+             LIMIT ?
+            """,
+            (*error_codes, int(limit)),
+        ).fetchall()
+        if not rows:
+            conn.commit()
+            return {"count": 0, "items": [], "skipped": False, "reason": "NO_FAILED_JOBS"}
+
+        items = []
+        for row in rows:
+            new_job_id = _new_id("v5snapjob")
+            next_priority = int(priority) if priority is not None else int(row["priority"] or 80)
+            conn.execute(
+                """
+                UPDATE structure_snapshot_jobs
+                   SET job_id = ?,
+                       priority = ?,
+                       status = 'PENDING',
+                       reason = ?,
+                       retry_count = 0,
+                       next_run_at = ?,
+                       locked_by = '',
+                       locked_at = NULL,
+                       started_at = NULL,
+                       finished_at = NULL,
+                       result_snapshot_id = '',
+                       error_code = '',
+                       error_message = '',
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (new_job_id, next_priority, reason, now, now, row["id"]),
+            )
+            items.append({
+                "id": row["id"],
+                "job_id": new_job_id,
+                "symbol": row["symbol"],
+                "level": row["level"],
+                "status": "PENDING",
+                "previous_error_code": row["error_code"],
+                "recovered": True,
+            })
+        conn.commit()
+        return {"count": len(items), "items": items, "skipped": False, "reason": reason}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
