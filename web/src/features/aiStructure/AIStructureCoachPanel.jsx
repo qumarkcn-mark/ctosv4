@@ -30,7 +30,9 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   const [pendingQuestion, setPendingQuestion] = useState('')
   const [reminders, setReminders] = useState([])
   const [outcomeReview, setOutcomeReview] = useState(null)
+  const [activeSessionId, setActiveSessionId] = useState('')
   const mountedRef = useRef(true)
+  const symbolRef = useRef(symbol)
 
   const displayName = symbolName || symbol
   const canAsk = Boolean(status?.context)
@@ -67,8 +69,50 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     }
   }, [symbol])
 
+  const loadChartEvidence = useCallback(async (answer) => {
+    const focus = answer?.chart_focus
+    if (!focus?.context_id || !focus?.level) return
+    const params = new URLSearchParams({
+      context_id: focus.context_id,
+      level: focus.level,
+      evidence_ids: (focus.evidence_ids || []).join(','),
+    })
+    const json = await apiJson(`${API_BASE}/ai-structure/chart-context/${encodeURIComponent(symbol)}?${params}`)
+    if (mountedRef.current && symbolRef.current === symbol) {
+      onEvidenceContext?.(json.data)
+    }
+  }, [symbol, onEvidenceContext])
+
+  const loadChatHistory = useCallback(async () => {
+    if (!symbol) return
+    const requestedSymbol = symbol
+    try {
+      const sessionsJson = await apiJson(`${API_BASE}/ai-structure/chat/sessions/${encodeURIComponent(symbol)}`)
+      const latestSession = sessionsJson.data?.sessions?.[0]
+      if (!latestSession?.session_id) return
+      const messagesJson = await apiJson(
+        `${API_BASE}/ai-structure/chat/messages?session_id=${encodeURIComponent(latestSession.session_id)}`,
+      )
+      const restored = restoreChatMessages(messagesJson.data?.messages || [])
+      if (mountedRef.current && symbolRef.current === requestedSymbol) {
+        setActiveSessionId(latestSession.session_id)
+        setMessages(restored)
+        const lastAnswer = [...restored].reverse().find((item) => item.role === 'assistant')?.answer
+        if (lastAnswer) {
+          await loadChartEvidence(lastAnswer)
+        }
+      }
+    } catch {
+      if (mountedRef.current && symbolRef.current === requestedSymbol) {
+        setActiveSessionId('')
+        setMessages([])
+      }
+    }
+  }, [symbol, loadChartEvidence])
+
   useEffect(() => {
     mountedRef.current = true
+    symbolRef.current = symbol
     setMessages([])
     setInput('')
     setError('')
@@ -77,14 +121,16 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setPendingQuestion('')
     setReminders([])
     setOutcomeReview(null)
+    setActiveSessionId('')
     onEvidenceContext?.(null)
     loadStatus()
     loadReminders()
     loadOutcomeReview()
+    loadChatHistory()
     return () => {
       mountedRef.current = false
     }
-  }, [symbol, loadStatus, loadReminders, loadOutcomeReview, onEvidenceContext])
+  }, [symbol, loadStatus, loadReminders, loadOutcomeReview, loadChatHistory, onEvidenceContext])
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
@@ -125,18 +171,6 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     }
   }, [symbol, booting, pollingActive, loadStatus])
 
-  const loadChartEvidence = useCallback(async (answer) => {
-    const focus = answer?.chart_focus
-    if (!focus?.context_id || !focus?.level) return
-    const params = new URLSearchParams({
-      context_id: focus.context_id,
-      level: focus.level,
-      evidence_ids: (focus.evidence_ids || []).join(','),
-    })
-    const json = await apiJson(`${API_BASE}/ai-structure/chart-context/${encodeURIComponent(symbol)}?${params}`)
-    onEvidenceContext?.(json.data)
-  }, [symbol, onEvidenceContext])
-
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
     if (!question || loading || !symbol) return
@@ -160,9 +194,10 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
       const json = await apiJson(`${API_BASE}/ai-structure/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, question }),
+        body: JSON.stringify({ symbol, question, session_id: activeSessionId || undefined }),
       })
       const answer = json.data
+      setActiveSessionId(answer.session_id || activeSessionId)
       setMessages((prev) => [
         ...prev.filter((item) => !(item.role === 'user' && item.pending && item.text === question)),
         { role: 'user', text: question },
@@ -176,7 +211,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     } finally {
       setLoading(false)
     }
-  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence])
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence, activeSessionId])
 
   useEffect(() => {
     if (!pendingQuestion || loading || !canAsk) return
@@ -463,6 +498,19 @@ function Message({ item, onReminder }) {
       <span>{answer.risk_disclaimer}</span>
     </div>
   )
+}
+
+function restoreChatMessages(rows) {
+  return rows.flatMap((row) => {
+    const items = []
+    if (row.question_text) {
+      items.push({ role: 'user', text: row.question_text })
+    }
+    if (row.answer) {
+      items.push({ role: 'assistant', answer: row.answer })
+    }
+    return items
+  })
 }
 
 function failureText(status) {
