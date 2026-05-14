@@ -73,6 +73,7 @@ class PipelineEnsureRequest(BaseModel):
 
 class WorkspaceBootstrapRequest(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["positions", "recent_chat", "watchlist"], max_length=5)
+    focus_symbols: list[str] = Field(default_factory=list, max_length=5)
     levels: list[str] = Field(default_factory=lambda: list(DEFAULT_LEVELS), max_length=6)
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     limit: int = Field(default=20, ge=1, le=50)
@@ -130,10 +131,12 @@ async def workspace_bootstrap(
     """Return a client-ready V5 workspace state without inline CZSC computation."""
     _validate_compute_profile(request.compute_profile)
     levels = [_validate_level(level) for level in request.levels]
+    focus_symbols = [_validate_symbol(symbol) for symbol in request.focus_symbols]
     include_sections = [_validate_workspace_include(item) for item in request.include] if request.include is not None else None
     result = await bootstrap_ai_structure_workspace(
         user_id=current_user_id,
         sources=request.sources,
+        focus_symbols=focus_symbols,
         levels=levels,
         compute_profile=request.compute_profile,
         limit=request.limit,
@@ -449,6 +452,13 @@ def _validate_level(level: str) -> str:
     if str(level or "").strip().lower() not in FREQ_ALIASES:
         raise HTTPException(status_code=400, detail=f"unsupported level: {level}")
     return normalize_freq(level)
+
+
+def _validate_symbol(symbol: str) -> str:
+    try:
+        return normalize_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _validate_workspace_include(section: str) -> str:

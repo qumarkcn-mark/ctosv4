@@ -1,32 +1,54 @@
 <view class="container">
   <view class="header">
-    <text class="title">{{symbol}} 推演矩阵</text>
+    <view>
+      <text class="title">{{name || symbol}}</text>
+      <text class="code mono">{{symbol}}</text>
+    </view>
+    <button class="refresh-btn" bindtap="refreshStructureState" loading="{{refreshing}}" disabled="{{loading || refreshing}}">
+      刷新
+    </button>
   </view>
 
-  <view class="toggle-group">
-    <view class="toggle-item {{matrixMode === 'A' ? 'active' : ''}}" bindtap="switchMode" data-mode="A">日/30/5 短线</view>
-    <view class="toggle-item {{matrixMode === 'B' ? 'active' : ''}}" bindtap="switchMode" data-mode="B">日/60/15 波段</view>
+  <view class="loading" wx:if="{{loading}}">正在读取 AI 结构状态...</view>
+
+  <view class="error-panel" wx:if="{{!loading && error}}">
+    <text>{{error}}</text>
   </view>
 
-  <view class="advice-panel" wx:if="{{!loading}}">
-    <text class="advice-text">{{adviceText}}</text>
-  </view>
-
-  <view class="loading" wx:if="{{loading}}">引擎推算中...</view>
-
-  <view class="matrix-board" wx:if="{{!loading && currentMatrix.length > 0}}">
-    <view class="level-card" wx:for="{{currentMatrix}}" wx:key="level">
-      <view class="level-header">
-        <text class="level-name">{{item.level}}</text>
-        <view class="status-indicator {{item.state}}">{{item.state}}</view>
+  <block wx:if="{{!loading && !error}}">
+    <view class="status-panel {{statusTone}}">
+      <view class="status-main">
+        <text class="status-label">CZSC 结构</text>
+        <text class="status-value">{{statusLabel}}</text>
       </view>
-      
-      <view class="watermark-container">
-        <view class="zg-line">ZG: {{item.zg}}</view>
-        <view class="center-pool" wx:if="{{item.zd > 0}}"></view>
-        <view class="no-center-msg" wx:else>单边脱离中...</view>
-        <view class="zd-line" wx:if="{{item.zd > 0}}">ZD: {{item.zd}}</view>
+      <text class="status-copy">
+        结构状态由后台快照更新，刷新后会显示最新可用结论。
+      </text>
+    </view>
+
+    <view class="metric-grid">
+      <view class="metric-card">
+        <text class="metric-label">提醒</text>
+        <text class="metric-value mono">{{activeReminderCount}}/{{reminderCount}}</text>
+      </view>
+      <view class="metric-card">
+        <text class="metric-label">复盘</text>
+        <text class="metric-value mono">{{outcomeCount}}</text>
+      </view>
+      <view class="metric-card">
+        <text class="metric-label">错误记忆</text>
+        <text class="metric-value mono {{mistakeCount > 0 ? 'warn' : ''}}">{{mistakeCount}}</text>
       </view>
     </view>
-  </view>
+
+    <view class="memory-panel">
+      <text class="section-title">单票记忆</text>
+      <text class="memory-copy">{{memoryNote}}</text>
+    </view>
+
+    <view class="guardrail-panel">
+      <text class="section-title">教练边界</text>
+      <text class="guardrail-copy">AI 只给条件、风险和提醒建议，不直接给买入、卖出、加仓、清仓指令。仅供参考，不构成投资建议。</text>
+    </view>
+  </block>
 </view>

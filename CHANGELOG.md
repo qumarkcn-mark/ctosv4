@@ -24,6 +24,7 @@
 - Added a shared AI Structure workspace bootstrap API for Web and miniprogram clients to load universe, context status, branches, reminders, and outcome memory in one CZSC-only read model.
 - Wired the Web AI Structure workspace startup path to the shared bootstrap API, reusing the read model for status, reminders, outcome memory, and AI pool health.
 - Added client profiles and include filters to the AI Structure workspace bootstrap contract so Web, miniprogram, worker, and reminder callers can reuse the same API without overfetching.
+- Replaced the miniprogram stock detail legacy Chan matrix entry with a compact V5 AI Structure status surface backed by symbol-focused `workspace/bootstrap`.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.
 - Added the AI Structure background context contract: fundamentals, sector, fund flow, and market context remain context-only while CZSC lines stay the decision boundary.
 - Clarified that background context must not appear as radar status, structure pipeline state, Kline evidence, or reminder triggers; it is reserved for future selection and position background use.
