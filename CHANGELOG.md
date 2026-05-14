@@ -21,6 +21,7 @@
 - Added right-side AI Structure chat session restore so follow-up questions continue the latest user-scoped coaching conversation.
 - Added session-aware AI Structure follow-up understanding for ellipsis questions like “那跌破呢？” and “那帮我盯一下”.
 - Added guarded AI Structure chat degradation for stale contexts and out-of-scope questions such as target price, stock recommendations, or fundamental buy/sell conclusions.
+- Added no-context AI Structure chat degradation so first-time questions return a coachable data-status answer instead of a raw 404.
 - Added a shared AI Structure workspace bootstrap API for Web and miniprogram clients to load universe, context status, branches, reminders, and outcome memory in one CZSC-only read model.
 - Wired the Web AI Structure workspace startup path to the shared bootstrap API, reusing the read model for status, reminders, outcome memory, and AI pool health.
 - Added client profiles and include filters to the AI Structure workspace bootstrap contract so Web, miniprogram, worker, and reminder callers can reuse the same API without overfetching.

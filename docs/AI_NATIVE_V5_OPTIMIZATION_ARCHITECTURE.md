@@ -454,6 +454,7 @@ GET /api/ai-structure/chat/messages?session_id=...
 - 可以引用基本面/板块/资金流背景，但必须声明背景层不能替代 CZSC 触发线和失败线。
 - 右侧 AI Chat 不应把基本面做成雷达卡片或结构状态卡；它只能在回答中作为一句背景说明出现。
 - 当 context 已 stale 时，Chat 可以使用上一版结构继续回答，但必须声明“结构快照待刷新，当前基于上一版数据”，并返回 `data_status`。
+- 当 context 不存在、结构任务仍在 pending、或快照生成失败时，Chat 不返回裸 404 给正常用户问题；必须返回受控降级答案、空 `chart_focus`、空 `suggested_reminders` 和 `data_status`，引导用户等待/刷新结构生成。跨用户或非法 `session_id` 仍固定返回 `404`。
 - 当用户询问目标价、荐股、收益预测、基本面买卖结论时，Chat 必须归类为 `out_of_scope`，不生成提醒候选，只把回答拉回 CZSC 条件边界。
 
 Answer Policy:

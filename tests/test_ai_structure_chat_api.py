@@ -480,9 +480,16 @@ def test_chat_rejects_cross_user_session(monkeypatch, tmp_path):
     assert other.status_code == 404
 
 
-def test_chat_404_without_context(monkeypatch, tmp_path):
+def test_chat_degrades_without_context(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     ensure_user()
+    called = {"snapshot": 0}
+
+    def forbidden(*args, **kwargs):
+        called["snapshot"] += 1
+        raise AssertionError("chat must not compute CZSC without context")
+
+    monkeypatch.setattr(snapshot_service.czsc_adapter, "analyze_czsc_structure_sync", forbidden)
     client = make_client()
 
     response = client.post(
@@ -490,4 +497,41 @@ def test_chat_404_without_context(monkeypatch, tmp_path):
         json={"symbol": "sh600519", "question": "我现在能买吗？"},
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert called["snapshot"] == 0
+    assert data["context_id"] == ""
+    assert data["data_status"]["status"] == "no_snapshot"
+    assert data["data_status"]["stale_reason"] == "NO_SNAPSHOT"
+    assert data["chart_focus"]["evidence_ids"] == []
+    assert data["suggested_reminders"] == []
+    assert "还没有可用的 CZSC 结构快照" in data["coach_answer"]
+    assert "不能回答“能不能买/要不要卖”" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+    messages = client.get(f"/api/ai-structure/chat/messages?session_id={data['session_id']}")
+    assert messages.status_code == 200
+    assert messages.json()["data"]["messages"][0]["answer"]["data_status"]["status"] == "no_snapshot"
+
+
+def test_chat_degrades_while_context_job_is_pending(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    save_snapshot()
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["context_id"] == ""
+    assert data["intent_type"] == "invalidation"
+    assert data["data_status"]["status"] == "pending"
+    assert data["suggested_reminders"] == []
+    assert data["referenced_boundaries"] == []
+    assert "CZSC 结构上下文正在生成" in data["coach_answer"]
+    assert "触发线和失败线" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
