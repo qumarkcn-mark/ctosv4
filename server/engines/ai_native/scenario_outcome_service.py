@@ -117,6 +117,57 @@ def get_memory_context_for_chat(*, user_id: int, symbol: str) -> dict[str, Any]:
     }
 
 
+def list_user_outcome_review_feed(
+    *,
+    user_id: int,
+    symbol_items: list[dict[str, Any]] | None = None,
+    limit: int = 30,
+    compact: bool = True,
+) -> dict[str, Any]:
+    """Return a user-scoped outcome review feed for mobile/background clients."""
+    safe_limit = max(1, min(int(limit or 30), 100))
+    selected_symbols = _selected_symbols(symbol_items)
+    if symbol_items is not None and not selected_symbols:
+        return {"count": 0, "items": [], "symbols": []}
+    clauses = ["o.user_id = ?"]
+    params: list[Any] = [int(user_id)]
+    if selected_symbols:
+        placeholders = ",".join("?" for _ in selected_symbols)
+        clauses.append(f"o.symbol IN ({placeholders})")
+        params.extend(selected_symbols)
+    params.append(safe_limit)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT o.*, b.context_id, b.branch_type, b.main_level, b.trigger_level,
+                   b.trigger_condition_json, b.invalidate_condition_json,
+                   b.evidence_refs_json, b.status AS branch_status
+              FROM scenario_outcomes o
+              LEFT JOIN scenario_branches b
+                ON b.branch_id = o.branch_id
+               AND b.user_id = o.user_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY o.checked_at DESC, o.id DESC
+             LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    items = [_compact_review_row(row) if compact else _review_row(row) for row in rows]
+    summary_symbols = selected_symbols or _unique([item["symbol"] for item in items])
+    return {
+        "count": len(items),
+        "items": items,
+        "symbols": _symbol_review_summaries(
+            user_id=user_id,
+            symbol_items=symbol_items,
+            symbols=summary_symbols,
+        ),
+    }
+
+
 def list_symbol_outcome_reviews(*, user_id: int, symbol: str, limit: int = 50) -> dict[str, Any]:
     """Return a user-scoped review timeline for one symbol."""
     canonical = normalize_symbol(symbol)
@@ -361,6 +412,84 @@ def _review_row(row) -> dict[str, Any]:
     data["is_mistake"] = data["outcome"] == "invalidated" and data["user_followed_plan"] is False
     data["branch"] = branch
     return data
+
+
+def _compact_review_row(row) -> dict[str, Any]:
+    data = _review_row(row)
+    branch = data.get("branch") or {}
+    return {
+        "outcome_id": data["outcome_id"],
+        "symbol": data["symbol"],
+        "checked_at": data["checked_at"],
+        "outcome": data["outcome"],
+        "settlement_window": data["settlement_window"],
+        "trigger_price": data["trigger_price"],
+        "triggered_price": data["triggered_price"],
+        "invalidated_price": data["invalidated_price"],
+        "user_followed_plan": data["user_followed_plan"],
+        "is_mistake": data["is_mistake"],
+        "branch": {
+            "branch_id": branch.get("branch_id") or "",
+            "context_id": branch.get("context_id") or "",
+            "branch_type": branch.get("branch_type") or "",
+            "main_level": branch.get("main_level") or "",
+            "trigger_level": branch.get("trigger_level") or "",
+            "status": branch.get("status") or "",
+            "trigger_condition": branch.get("trigger_condition") or {},
+            "invalidate_condition": branch.get("invalidate_condition") or {},
+        },
+    }
+
+
+def _symbol_review_summaries(
+    *,
+    user_id: int,
+    symbol_items: list[dict[str, Any]] | None,
+    symbols: list[str],
+) -> list[dict[str, Any]]:
+    item_by_symbol = {
+        normalize_symbol(item["symbol"]): item
+        for item in (symbol_items or [])
+        if item.get("symbol")
+    }
+    summaries = []
+    for symbol in symbols:
+        canonical = normalize_symbol(symbol)
+        item = item_by_symbol.get(canonical) or {}
+        memory = _review_memory_payload(get_symbol_memory_profile(user_id=user_id, symbol=canonical))
+        stats = memory.get("stats") or {}
+        warnings = (memory.get("profile") or {}).get("active_warnings") or []
+        summaries.append({
+            "symbol": canonical,
+            "name": item.get("name") or canonical,
+            "sources": item.get("sources") or [],
+            "has_position": bool(item.get("has_position", False)),
+            "outcome_count": int(stats.get("total_outcomes") or 0),
+            "mistake_count_30d": int(stats.get("mistake_count_30d") or 0),
+            "latest_warning": warnings[0] if warnings else None,
+            "memory": memory,
+        })
+    return summaries
+
+
+def _selected_symbols(symbol_items: list[dict[str, Any]] | None) -> list[str]:
+    return _unique([
+        normalize_symbol(item["symbol"])
+        for item in (symbol_items or [])
+        if item.get("symbol")
+    ])
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in values:
+        value = normalize_symbol(raw)
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _review_memory_payload(profile: dict[str, Any] | None) -> dict[str, Any]:
