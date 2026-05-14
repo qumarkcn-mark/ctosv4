@@ -11,6 +11,7 @@
 - Added the AI Structure reminder loop: user-scoped reminder listing, price-monitor triggering, coach-event logging, and right-side reminder status chips.
 - Added mistake-only AI Structure memory: only ignored invalidations enter daily chat memory, capped to a tiny warning context.
 - Added automatic scenario outcome settlement when AI Structure reminders trigger, without marking user behavior as a mistake until follow-up confirms it.
+- Added triggered reminder follow-up: users can mark reminders as handled, continue watching, or ignored; ignored invalidations now feed mistake memory.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
 - Removed legacy frontend radar/Kline/chan/scanner/AI-training surfaces from the default bundle.
@@ -22,4 +23,5 @@
 - `.venv312/bin/python -m pytest tests -q`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_*.py tests/test_czsc_adapter_contract.py -q`
 - `npm run build`
+- `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_reminder_bridge.py -q`
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.

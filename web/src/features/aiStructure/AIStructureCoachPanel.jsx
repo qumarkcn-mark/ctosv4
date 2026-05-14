@@ -192,6 +192,27 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     }
   }, [loadReminders])
 
+  const ackReminder = useCallback(async (reminder, action) => {
+    if (!reminder?.id) return
+    const labels = {
+      handled: '已标记处理',
+      continue_watch: '继续观察',
+      ignored: '已忽略，后续会进入复盘',
+    }
+    setError('')
+    try {
+      await apiJson(`${API_BASE}/ai-structure/reminders/${reminder.id}/ack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      setMessages((prev) => [...prev, { role: 'system', text: labels[action] || '提醒已更新' }])
+      await loadReminders()
+    } catch (err) {
+      setError(err?.message || '提醒状态更新失败')
+    }
+  }, [loadReminders])
+
   const statusLabel = useMemo(() => {
     if (pollingActive) return '生成中'
     if (!status) return '检测中'
@@ -224,7 +245,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
 
       <PipelineStatus items={pipelineItems} />
 
-      <ReminderStatus reminders={reminders} />
+      <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
       <div className="ai-structure-quick">
         {QUICK_QUESTIONS.map((item) => (
@@ -295,7 +316,7 @@ function PipelineStatus({ items }) {
   )
 }
 
-function ReminderStatus({ reminders }) {
+function ReminderStatus({ reminders, onAck }) {
   if (!reminders?.length) return null
   const active = reminders.filter((item) => item.status === 'ACTIVE')
   const triggered = reminders.filter((item) => item.status === 'TRIGGERED')
@@ -308,13 +329,30 @@ function ReminderStatus({ reminders }) {
       <div className="ai-reminder-status-list">
         {reminders.slice(0, 4).map((item) => (
           <div key={item.dedupe_key} className={`ai-reminder-chip ai-reminder-chip--${item.status.toLowerCase()}`}>
-            <span>{item.direction === 'ABOVE' ? '上破' : '跌破'} {Number(item.trigger_price || 0).toFixed(2)}</span>
-            <em>{item.status === 'TRIGGERED' ? '已触发' : '盯盘中'}</em>
+            <div className="ai-reminder-chip-main">
+              <span>{item.direction === 'ABOVE' ? '上破' : '跌破'} {Number(item.trigger_price || 0).toFixed(2)}</span>
+              <em>{reminderStatusLabel(item.status)}</em>
+            </div>
+            {item.status === 'TRIGGERED' && (
+              <div className="ai-reminder-actions" aria-label="提醒后续处理">
+                <button type="button" onClick={() => onAck(item, 'handled')}>已处理</button>
+                <button type="button" onClick={() => onAck(item, 'continue_watch')}>继续观察</button>
+                <button type="button" onClick={() => onAck(item, 'ignored')}>忽略</button>
+              </div>
+            )}
           </div>
         ))}
       </div>
     </div>
   )
+}
+
+function reminderStatusLabel(status) {
+  if (status === 'TRIGGERED') return '已触发'
+  if (status === 'ACKED_HANDLED') return '已处理'
+  if (status === 'ACKED_CONTINUE_WATCH') return '继续观察'
+  if (status === 'ACKED_IGNORED') return '已忽略'
+  return '盯盘中'
 }
 
 function Message({ item, onReminder }) {

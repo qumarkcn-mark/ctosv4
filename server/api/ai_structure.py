@@ -34,6 +34,7 @@ from server.engines.ai_native.structure_context_service import (
 )
 from server.engines.ai_native.structure_evidence_service import get_chart_context
 from server.engines.ai_native.structure_reminder_service import (
+    ack_structure_reminder,
     create_reminder_from_chat_evidence,
     list_structure_reminders,
 )
@@ -78,6 +79,10 @@ class ReminderCreateRequest(BaseModel):
     session_id: str
     message_id: str
     evidence_id: str
+
+
+class ReminderAckRequest(BaseModel):
+    action: str = Field(pattern="^(handled|continue_watch|ignored)$")
 
 
 class OutcomeSettleRequest(BaseModel):
@@ -333,6 +338,25 @@ def list_reminders(symbol: str, current_user_id: int = Depends(get_current_user_
             symbol=normalize_symbol(symbol),
         ),
     }
+
+
+@router.post("/reminders/{reminder_id}/ack")
+def ack_reminder(
+    reminder_id: int,
+    request: ReminderAckRequest,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    try:
+        result = ack_structure_reminder(
+            user_id=current_user_id,
+            reminder_id=reminder_id,
+            action=request.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="reminder not found")
+    return {"status": "success", "data": result}
 
 
 @router.post("/branches/settle")
