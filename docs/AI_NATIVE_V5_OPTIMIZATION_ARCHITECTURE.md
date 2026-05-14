@@ -63,7 +63,8 @@ resolve_ai_native_universe(user_id, sources=["positions", "recent_chat", "watchl
 API:
 
 ```http
-GET /api/ai-native/universe?sources=positions,watchlist
+GET /api/ai-structure/universe?sources=positions,watchlist
+POST /api/ai-structure/workspace/bootstrap
 ```
 
 返回：
@@ -89,6 +90,14 @@ GET /api/ai-native/universe?sources=positions,watchlist
 - 持仓：`100`
 - 最近聊过：`80`
 - 自选：`60`
+
+Workspace Bootstrap Contract:
+
+- `workspace/bootstrap` 是 Web / 小程序共用的薄聚合入口，返回 universe、每只票的 context status、latest context 摘要、branches、reminders、outcomes / memory 摘要。
+- 默认 `ensure_pipeline=false`，只读已有状态，不触发 K 线网络拉取。
+- 客户端冷启动、手动刷新或小程序进入页面时可传 `ensure_pipeline=true`，后端只允许对最高优先级少量股票执行轻量 K 线 ensure 并入队 snapshot/context job，不得在请求内同步计算 CZSC 结构，也不得一次性拉满整个 watchlist。
+- bootstrap 的 `context_status` 只能返回 status、stale_reason、missing_levels、job summary 等状态摘要；完整 context 和内部 job row 只能通过对应调试/后台 API 获取。
+- bootstrap 不保存新的业务状态，不替代 chat、chart-context、reminder、outcome API，只减少客户端首屏拼装成本。
 
 ## 模块 2：Market Data Layer
 
