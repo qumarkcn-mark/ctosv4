@@ -20,6 +20,7 @@
 - Added review-aware AI Structure chat answers for questions like “我上次错在哪里？”, grounded in outcome timeline and mistake memory.
 - Added right-side AI Structure chat session restore so follow-up questions continue the latest user-scoped coaching conversation.
 - Added session-aware AI Structure follow-up understanding for ellipsis questions like “那跌破呢？” and “那帮我盯一下”.
+- Added guarded AI Structure chat degradation for stale contexts and out-of-scope questions such as target price, stock recommendations, or fundamental buy/sell conclusions.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.
 - Added the AI Structure background context contract: fundamentals, sector, fund flow, and market context remain context-only while CZSC lines stay the decision boundary.
 - Clarified that background context must not appear as radar status, structure pipeline state, Kline evidence, or reminder triggers; it is reserved for future selection and position background use.
