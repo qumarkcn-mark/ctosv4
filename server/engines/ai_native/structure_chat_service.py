@@ -306,6 +306,7 @@ def _build_answer(
     center = (((boundary.get("levels") or {}).get(level) or {}).get("active_center") or {})
     zg = _num(center.get("zg"))
     zd = _num(center.get("zd"))
+    background_note = _background_note(context)
     position = (context.get("raw_context") or {}).get("position_context") or {}
     holding_text = "你现在有持仓，先把防守线看清楚" if position.get("has_position") else "你现在是空仓，重点是等触发条件而不是追问结论"
     if zg <= 0 or zd <= 0:
@@ -329,7 +330,8 @@ def _build_answer(
     elif intent_type == "explain_structure":
         coach = (
             f"当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
-            f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。{RISK_DISCLAIMER}"
+            f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。"
+            f"{background_note}{RISK_DISCLAIMER}"
         )
     elif intent_type == "review":
         coach = _review_answer(symbol=symbol, review_context=review_context, memory_context=memory_context)
@@ -337,7 +339,7 @@ def _build_answer(
         coach = (
             f"不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
-            f"{RISK_DISCLAIMER}"
+            f"{background_note}{RISK_DISCLAIMER}"
         )
     if intent_type != "review":
         coach = _apply_memory_warning(coach, memory_context)
@@ -400,6 +402,24 @@ def _branch_type_text(branch_type: str) -> str:
         "invalidation_watch": "失效观察分支",
         "holding_defense": "持仓防守分支",
     }.get(branch_type, branch_type or "结构分支")
+
+
+def _background_note(context: dict[str, Any]) -> str:
+    background = context.get("background") or {}
+    fundamental = background.get("fundamental") or {}
+    if fundamental.get("status") != "available":
+        return ""
+    summary = str(fundamental.get("summary") or "").strip()
+    verdict = str(fundamental.get("verdict") or "").strip()
+    parts = []
+    if verdict:
+        parts.append(f"基本面背景为{verdict}")
+    if summary:
+        parts.append(summary)
+    if not parts:
+        return ""
+    text = "，".join(parts)
+    return f"背景层只作观察背景：{text}；它不能替代 CZSC 触发线和失败线。"
 
 
 def _followup_intent(text: str, conversation_context: dict[str, Any] | None) -> str | None:

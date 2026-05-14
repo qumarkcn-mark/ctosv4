@@ -248,6 +248,7 @@ Evidence Contract:
 - structure snapshot
 - raw BI context
 - 用户持仓上下文
+- 背景上下文：基本面、板块、资金流、大盘环境
 
 使用：
 
@@ -256,9 +257,11 @@ Evidence Contract:
 E1 约束：
 
 - E1 是 CZSC snapshot 的纯下游 reasoning layer，不是第二结构引擎。
-- E1 只能消费 CZSC snapshot、CZSC raw BI context、用户持仓上下文和用户长期记忆。
+- E1 只能消费 CZSC snapshot、CZSC raw BI context、用户持仓上下文、背景上下文和用户长期记忆。
 - E1 禁止调用旧 radar、旧 matrix、旧结构服务、旧结构缓存或历史结构验证逻辑。
 - E1 输出只能作为 AI Structure Context，不得反向覆盖 CZSC snapshot。
+- 背景上下文只能作为 `context_only`，不得覆盖 `decision_boundary`。
+- 当基本面/资金/板块背景与 CZSC 结构边界冲突时，纪律优先，结构触发线和失败线优先。
 
 输出：
 
@@ -268,6 +271,40 @@ E1 约束：
 - 关键边界
 - 分支假设
 - 背景摘要
+
+Background Contract:
+
+```json
+{
+  "background": {
+    "fundamental": {
+      "status": "available",
+      "role": "context_only",
+      "verdict": "支持",
+      "summary": "长期背景较强，但短线仍需结构确认"
+    },
+    "market": {
+      "fund_flow": {},
+      "sector_context": {},
+      "index_background": {}
+    },
+    "rules": {
+      "structure_source": "czsc_snapshot_only",
+      "background_role": "context_only",
+      "structure_role": "decision_boundary",
+      "conflict_policy": "structure_discipline_first",
+      "no_direct_trade_instruction": true
+    }
+  }
+}
+```
+
+关键规则：
+
+- 背景层可以解释“为什么这只票值得观察”，但不能回答“所以可以买”。
+- Chat 引用背景时必须回到 CZSC 触发线、失败线、当前价线和提醒条件。
+- 基本面较强但结构未触发时，只能回答“继续等待结构确认”。
+- 基本面较强但结构失效时，必须优先提示纪律复核，不能用故事替代失败线。
 
 Service:
 
@@ -399,6 +436,7 @@ GET /api/ai-structure/chat/messages?session_id=...
 - 每次回答必须包含“仅供参考，不构成投资建议”。
 - 意图识别至少覆盖：`buy_window` / `hold_or_exit` / `invalidation` / `reminder` / `explain_structure` / `review`。
 - 无法确认的问题必须明确说“不足以判断”，并给出需要等待的结构条件或数据刷新状态。
+- 可以引用基本面/板块/资金流背景，但必须声明背景层不能替代 CZSC 触发线和失败线。
 
 Answer Policy:
 
