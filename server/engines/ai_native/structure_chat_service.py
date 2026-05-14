@@ -18,6 +18,7 @@ from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
 )
+from server.engines.ai_native.scenario_outcome_service import get_memory_context_for_chat
 
 
 RISK_DISCLAIMER = "仅供参考，不构成投资建议"
@@ -38,6 +39,7 @@ def answer_structure_question(
     chart_focus = chart_focus_for_intent(context, intent_type)
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
+    memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     session = upsert_chat_session(
         user_id=user_id,
         symbol=canonical,
@@ -46,7 +48,13 @@ def answer_structure_question(
     )
     if not session:
         return None
-    answer = _build_answer(question=question, intent_type=intent_type, context=context, chart_focus=chart_focus)
+    answer = _build_answer(
+        question=question,
+        intent_type=intent_type,
+        context=context,
+        chart_focus=chart_focus,
+        memory_context=memory_context,
+    )
     reminder_candidates = _reminder_candidates(intent_type=intent_type, context=context, chart_focus=chart_focus)
     payload = {
         "session_id": session["session_id"],
@@ -57,6 +65,7 @@ def answer_structure_question(
         "referenced_boundaries": answer["referenced_boundaries"],
         "chart_focus": chart_focus,
         "suggested_reminders": reminder_candidates,
+        "memory_context": memory_context,
         "risk_disclaimer": RISK_DISCLAIMER,
     }
     message = save_chat_message(
@@ -243,7 +252,14 @@ def save_chat_message(
         conn.close()
 
 
-def _build_answer(*, question: str, intent_type: str, context: dict[str, Any], chart_focus: dict[str, Any]) -> dict[str, Any]:
+def _build_answer(
+    *,
+    question: str,
+    intent_type: str,
+    context: dict[str, Any],
+    chart_focus: dict[str, Any],
+    memory_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     symbol = context["symbol"]
     boundary = context.get("boundary") or {}
     level = chart_focus.get("level") or ""
@@ -281,6 +297,7 @@ def _build_answer(*, question: str, intent_type: str, context: dict[str, Any], c
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
             f"{RISK_DISCLAIMER}"
         )
+    coach = _apply_memory_warning(coach, memory_context)
     return {
         "coach_answer": coach,
         "referenced_boundaries": [
@@ -288,6 +305,19 @@ def _build_answer(*, question: str, intent_type: str, context: dict[str, Any], c
             {"role": "invalidation", "level": level, "price": zd},
         ],
     }
+
+
+def _apply_memory_warning(coach: str, memory_context: dict[str, Any] | None) -> str:
+    warnings = (memory_context or {}).get("active_warnings") or []
+    if not warnings:
+        return coach
+    text = str(warnings[0].get("text") or "").strip()
+    if not text:
+        return coach
+    warning = f"历史纪律提示：{text}"
+    if coach.endswith(RISK_DISCLAIMER):
+        return f"{coach[:-len(RISK_DISCLAIMER)]}{warning}。{RISK_DISCLAIMER}"
+    return f"{coach}\n\n{warning}"
 
 
 def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_focus: dict[str, Any]) -> list[dict[str, Any]]:

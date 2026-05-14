@@ -129,6 +129,40 @@ def test_chat_answers_invalidation_question(monkeypatch, tmp_path):
     assert any(item["role"] == "invalidation" for item in data["referenced_boundaries"])
 
 
+def test_chat_includes_only_mistake_memory_warning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    conn = database.get_connection()
+    try:
+        branch = conn.execute(
+            "SELECT * FROM scenario_branches WHERE user_id = 1 AND symbol = 'sh.600519' AND branch_type = 'observe_breakout' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "历史纪律提示" in data["coach_answer"]
+    assert data["memory_context"]["mistakes"][0]["type"] == "ignored_invalidation"
+    assert len(data["memory_context"]["active_warnings"]) == 1
+
+
 def test_chat_sessions_and_messages_are_user_scoped(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     build_context(user_id=1)
