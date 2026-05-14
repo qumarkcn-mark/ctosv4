@@ -72,6 +72,7 @@
 
 .review-training-body--ai-review {
   overflow: auto;
+  margin-bottom: var(--space-5);
 }
 
 .review-training-body--ai-training {

@@ -99,7 +99,12 @@ function App() {
             onSymbolChange={setGlobalSymbol}
           />
         )}
-        {page === 'review' && <ReviewTrainingPage />}
+        {page === 'review' && (
+          <ReviewTrainingPage
+            activeSymbol={activeSymbol}
+            activeSymbolName={activeSymbolName}
+          />
+        )}
       </main>
 
       {/* 模态框层 */}
