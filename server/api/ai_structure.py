@@ -24,6 +24,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
 from server.engines.ai_native.scenario_branch_service import list_scenario_branches
 from server.engines.ai_native.scenario_outcome_service import (
     get_symbol_memory_profile,
+    list_user_outcome_review_feed,
     list_symbol_outcome_reviews,
     settle_scenario_branch,
 )
@@ -427,6 +428,36 @@ def memory_profile(symbol: str, current_user_id: int = Depends(get_current_user_
     return {"status": "success", "data": profile}
 
 
+@router.get("/outcomes")
+def outcome_review_feed(
+    sources: str = Query(default="positions,recent_chat,watchlist"),
+    symbols: str = Query(default=""),
+    client: str = Query(default="web", pattern="^(web|miniprogram|worker|reminder)$"),
+    limit: int = Query(default=30, ge=1, le=100),
+    symbol_limit: int = Query(default=20, ge=1, le=50),
+    current_user_id: int = Depends(get_current_user_id),
+):
+    requested_symbols = [_validate_symbol(item.strip()) for item in symbols.split(",") if item.strip()]
+    source_list = [item.strip() for item in sources.split(",") if item.strip()]
+    if requested_symbols:
+        symbol_items = _focused_symbol_items(
+            user_id=current_user_id,
+            symbols=requested_symbols[:symbol_limit],
+            sources=source_list,
+        )
+    else:
+        symbol_items = resolve_ai_native_universe(current_user_id, source_list)[:symbol_limit]
+    return {
+        "status": "success",
+        "data": list_user_outcome_review_feed(
+            user_id=current_user_id,
+            symbol_items=symbol_items,
+            limit=limit,
+            compact=client != "web",
+        ),
+    }
+
+
 @router.get("/outcomes/{symbol}")
 def outcome_reviews(
     symbol: str,
@@ -467,3 +498,26 @@ def _validate_workspace_include(section: str) -> str:
     if normalized not in allowed:
         raise HTTPException(status_code=400, detail=f"unsupported workspace include section: {section}")
     return normalized
+
+
+def _focused_symbol_items(*, user_id: int, symbols: list[str], sources: list[str]) -> list[dict]:
+    universe_by_symbol = {
+        normalize_symbol(item["symbol"]): item
+        for item in resolve_ai_native_universe(user_id, sources)
+    }
+    items = []
+    for symbol in symbols:
+        item = dict(universe_by_symbol.get(symbol) or {})
+        if item:
+            item["sources"] = sorted(set(item.get("sources") or []) | {"focus"})
+            item["priority"] = max(int(item.get("priority") or 0), 120)
+        else:
+            item = {
+                "symbol": symbol,
+                "name": symbol,
+                "sources": ["focus"],
+                "priority": 120,
+                "has_position": False,
+            }
+        items.append(item)
+    return items

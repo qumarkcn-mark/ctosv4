@@ -563,6 +563,7 @@ GET /api/ai-structure/outcomes/{symbol}
 - `outcome_score` 记录分支质量，区分“方向正确但过早”“边界正确但触发太宽”“完全失效”。
 - `user_followed_plan` 记录用户是否按提醒或计划执行，用于交易纪律记忆。
 - outcome review API 返回 user-scoped timeline，并带上 branch contract、mistake 标记和 memory 摘要，供 Web、小程序、复盘页复用。
+- `GET /api/ai-structure/outcomes` 返回用户观察池级复盘 feed，默认由 positions/recent_chat/watchlist 驱动，可用 `symbols` 聚焦单票；小程序、提醒 follow-up、后台 worker 应优先使用该轻量 feed，避免逐票拼装和暴露完整结构对象。
 
 ## 建议数据库表
 

@@ -61,6 +61,22 @@ def build_branches(user_id=1):
     return latest["branches"]
 
 
+def seed_position(user_id=1, symbol="sh600519", name="贵州茅台"):
+    ensure_user(user_id)
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO positions (user_id, symbol, name, quantity, avg_cost)
+            VALUES (?, ?, ?, 100, 100.0)
+            """,
+            (user_id, symbol, name),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_settle_branch_updates_memory(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     branches = build_branches()
@@ -153,6 +169,125 @@ def test_outcome_reviews_return_timeline_with_branch_and_memory(monkeypatch, tmp
     assert data["memory"]["profile"]["mistakes"][0]["type"] == "ignored_invalidation"
 
 
+def test_outcome_review_feed_returns_compact_universe_summary_for_miniprogram(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_position()
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes?client=miniprogram&limit=5")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 1
+    assert data["items"][0]["symbol"] == "sh.600519"
+    assert data["items"][0]["is_mistake"] is True
+    assert set(data["items"][0]["branch"]) == {
+        "branch_id",
+        "context_id",
+        "branch_type",
+        "main_level",
+        "trigger_level",
+        "status",
+        "trigger_condition",
+        "invalidate_condition",
+    }
+    assert data["symbols"][0]["symbol"] == "sh.600519"
+    assert data["symbols"][0]["name"] == "贵州茅台"
+    assert data["symbols"][0]["has_position"] is True
+    assert data["symbols"][0]["outcome_count"] == 1
+    assert data["symbols"][0]["mistake_count_30d"] == 1
+    assert data["symbols"][0]["latest_warning"]["type"] == "ignored_invalidation"
+
+
+def test_outcome_review_feed_accepts_focus_symbols_without_universe_membership(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 11.2,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": True,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes?client=miniprogram&symbols=600519&limit=5")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 1
+    assert data["symbols"][0]["symbol"] == "sh.600519"
+    assert data["symbols"][0]["sources"] == ["focus"]
+
+
+def test_outcome_review_feed_merges_focus_symbols_with_universe_metadata(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_position()
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 11.2,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": True,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes?client=miniprogram&symbols=600519&limit=5")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["symbols"][0]["symbol"] == "sh.600519"
+    assert data["symbols"][0]["name"] == "贵州茅台"
+    assert data["symbols"][0]["has_position"] is True
+    assert set(data["symbols"][0]["sources"]) == {"focus", "positions"}
+
+
+def test_outcome_review_feed_preserves_empty_requested_universe(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 11.2,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": True,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes?client=miniprogram&sources=positions")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 0
+    assert data["items"] == []
+    assert data["symbols"] == []
+
+
 def test_outcome_reviews_are_user_scoped(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     branches = build_branches(user_id=1)
@@ -179,6 +314,34 @@ def test_outcome_reviews_are_user_scoped(monkeypatch, tmp_path):
     assert data["memory"]["stats"]["total_outcomes"] == 0
     assert data["memory"]["stats"]["triggered"] == 0
     assert data["memory"]["stats"]["plan_follow_rate"] is None
+
+
+def test_outcome_review_feed_is_user_scoped(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_position(user_id=1)
+    branches = build_branches(user_id=1)
+    seed_position(user_id=2, symbol="sh600519", name="贵州茅台")
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    response = client.get("/api/ai-structure/outcomes?client=miniprogram", headers=auth_headers(2))
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 0
+    assert data["items"] == []
+    assert data["symbols"][0]["symbol"] == "sh.600519"
+    assert data["symbols"][0]["outcome_count"] == 0
 
 
 def test_memory_context_for_chat_is_tiny(monkeypatch, tmp_path):
