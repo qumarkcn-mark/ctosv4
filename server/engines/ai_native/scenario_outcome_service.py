@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from typing import Any
 
 from server.db.database import get_connection
@@ -97,15 +98,36 @@ def get_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any] | 
         conn.close()
 
 
+def get_memory_context_for_chat(*, user_id: int, symbol: str) -> dict[str, Any]:
+    """Return the tiny mistake-only memory object allowed into chat prompts."""
+    profile = get_symbol_memory_profile(user_id=user_id, symbol=symbol)
+    if not profile:
+        return {
+            "memory_version": "ai_symbol_memory.v1",
+            "mistakes": [],
+            "active_warnings": [],
+        }
+    payload = profile.get("profile") or {}
+    mistakes = (payload.get("mistakes") or [])[:1]
+    warnings = (payload.get("active_warnings") or [])[:1]
+    return {
+        "memory_version": payload.get("memory_version") or "ai_symbol_memory.v1",
+        "mistakes": mistakes,
+        "active_warnings": warnings,
+    }
+
+
 def update_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     conn = get_connection()
     try:
         rows = conn.execute(
             """
-            SELECT outcome, outcome_score, user_followed_plan
+            SELECT outcome_id, outcome, outcome_score, user_followed_plan,
+                   invalidated_price, checked_at
               FROM scenario_outcomes
              WHERE user_id = ? AND symbol = ?
+             ORDER BY checked_at DESC, id DESC
             """,
             (int(user_id), canonical),
         ).fetchall()
@@ -114,6 +136,7 @@ def update_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any]
         followed = 0
         followed_known = 0
         score_total = 0.0
+        ignored_invalidations: list[dict[str, Any]] = []
         for row in rows:
             outcome = row["outcome"]
             counts[outcome] = counts.get(outcome, 0) + 1
@@ -121,6 +144,18 @@ def update_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any]
             if row["user_followed_plan"] is not None:
                 followed_known += 1
                 followed += int(row["user_followed_plan"] or 0)
+            if outcome == "invalidated" and row["user_followed_plan"] == 0:
+                ignored_invalidations.append({
+                    "outcome_id": row["outcome_id"],
+                    "checked_at": row["checked_at"],
+                    "price": row["invalidated_price"],
+                })
+        ignored_30d = [
+            item for item in ignored_invalidations
+            if _within_days(item.get("checked_at"), days=30)
+        ]
+        mistakes = _mistakes_payload(canonical, ignored_30d)
+        active_warnings = _active_warnings_payload(mistakes)
         stats = {
             "total_outcomes": total,
             "triggered": counts.get("triggered", 0),
@@ -128,11 +163,15 @@ def update_symbol_memory_profile(*, user_id: int, symbol: str) -> dict[str, Any]
             "expired": counts.get("expired", 0),
             "avg_outcome_score": round(score_total / total, 4) if total else 0,
             "plan_follow_rate": round(followed / followed_known, 4) if followed_known else None,
+            "mistake_count_30d": len(ignored_30d),
+            "ignored_invalidation_count_30d": len(ignored_30d),
         }
         profile = {
             "symbol": canonical,
             "memory_version": "ai_symbol_memory.v1",
             "summary": _memory_summary(stats),
+            "mistakes": mistakes,
+            "active_warnings": active_warnings,
         }
         now = now_text()
         conn.execute(
@@ -218,10 +257,52 @@ def _notes(branch: dict[str, Any], outcome: str, price: float) -> str:
 
 
 def _memory_summary(stats: dict[str, Any]) -> str:
-    total = stats.get("total_outcomes") or 0
-    if total <= 0:
-        return "暂无可用结构复盘样本。"
-    return f"已记录 {total} 次结构分支复盘，触发 {stats.get('triggered', 0)} 次，失效 {stats.get('invalidated', 0)} 次。"
+    mistakes = stats.get("mistake_count_30d") or 0
+    if mistakes <= 0:
+        return "暂无需要进入日常问答的纪律偏差记忆。"
+    return f"最近 30 天记录 {mistakes} 次需要纠偏的结构纪律偏差。"
+
+
+def _mistakes_payload(symbol: str, ignored_invalidations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not ignored_invalidations:
+        return []
+    latest = ignored_invalidations[0]
+    count = len(ignored_invalidations)
+    severity = "high" if count >= 3 else "medium" if count >= 2 else "low"
+    price = _num(latest.get("price"))
+    price_text = f"{price:.2f}" if price > 0 else "失败线"
+    return [{
+        "type": "ignored_invalidation",
+        "symbol": symbol,
+        "count_30d": count,
+        "severity": severity,
+        "last_seen": latest.get("checked_at") or "",
+        "evidence_outcome_ids": [item["outcome_id"] for item in ignored_invalidations[:5] if item.get("outcome_id")],
+        "coach_text": f"这只票最近 {count} 次结构失效后没有按计划处理，最新一次在 {price_text} 附近。",
+    }]
+
+
+def _active_warnings_payload(mistakes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    warnings = []
+    for mistake in mistakes[:1]:
+        warnings.append({
+            "type": mistake["type"],
+            "severity": mistake["severity"],
+            "text": mistake["coach_text"],
+            "evidence_outcome_ids": mistake.get("evidence_outcome_ids") or [],
+        })
+    return warnings
+
+
+def _within_days(value: str | None, *, days: int) -> bool:
+    if not value:
+        return False
+    try:
+        checked = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = datetime.now(checked.tzinfo) if checked.tzinfo else datetime.now()
+    return checked >= now - timedelta(days=days)
 
 
 def _outcome_row(row) -> dict[str, Any]:

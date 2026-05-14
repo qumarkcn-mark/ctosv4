@@ -7,6 +7,7 @@ from server.api.auth import ALGORITHM, JWT_SECRET
 from server.db import database
 from server.engines.ai_native import czsc_snapshot_service as snapshot_service
 from server.engines.ai_native import structure_context_service as context_service
+from server.engines.ai_native import scenario_outcome_service as outcome_service
 
 
 def reset_db(monkeypatch, tmp_path):
@@ -86,6 +87,59 @@ def test_settle_branch_updates_memory(monkeypatch, tmp_path):
     assert memory.status_code == 200
     assert memory.json()["data"]["stats"]["total_outcomes"] == 1
     assert memory.json()["data"]["stats"]["triggered"] == 1
+    assert memory.json()["data"]["profile"]["mistakes"] == []
+    assert memory.json()["data"]["profile"]["active_warnings"] == []
+
+
+def test_invalidated_unfollowed_plan_enters_mistake_memory(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    assert response.status_code == 200
+    outcome = response.json()["data"]
+    assert outcome["outcome"] == "invalidated"
+    memory = client.get("/api/ai-structure/memory/sh600519").json()["data"]
+    assert memory["stats"]["ignored_invalidation_count_30d"] == 1
+    assert memory["stats"]["mistake_count_30d"] == 1
+    assert memory["profile"]["mistakes"][0]["type"] == "ignored_invalidation"
+    assert memory["profile"]["mistakes"][0]["count_30d"] == 1
+    assert "没有按计划处理" in memory["profile"]["active_warnings"][0]["text"]
+
+
+def test_memory_context_for_chat_is_tiny(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = next(item for item in branches if item["branch_type"] == "observe_breakout")
+    client = make_client()
+    client.post(
+        "/api/ai-structure/branches/settle",
+        json={
+            "branch_id": branch["branch_id"],
+            "current_price": 9.8,
+            "settlement_window": "same_day",
+            "checked_at": "2026-05-12T15:00:00+08:00",
+            "user_followed_plan": False,
+        },
+    )
+
+    memory = outcome_service.get_memory_context_for_chat(user_id=1, symbol="sh600519")
+
+    assert list(memory.keys()) == ["memory_version", "mistakes", "active_warnings"]
+    assert len(memory["mistakes"]) == 1
+    assert len(memory["active_warnings"]) == 1
 
 
 def test_settle_branch_is_user_scoped(monkeypatch, tmp_path):
