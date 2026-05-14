@@ -360,6 +360,111 @@
   background: rgba(34,197,94,0.08);
 }
 
+.ai-outcome-review {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(6,182,212,0.16);
+  border-radius: 6px;
+  background: rgba(6,182,212,0.045);
+}
+
+.ai-outcome-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-outcome-review-head strong {
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-size: 12px;
+}
+
+.ai-outcome-review-head span {
+  overflow: hidden;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-outcome-warning {
+  padding: 6px 7px;
+  border: 1px solid rgba(245,158,11,0.2);
+  border-radius: 4px;
+  background: rgba(245,158,11,0.07);
+  color: var(--signal-amber, #f59e0b);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-outcome-list {
+  display: grid;
+  gap: 5px;
+}
+
+.ai-outcome-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.03);
+}
+
+.ai-outcome-main,
+.ai-outcome-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-outcome-main span {
+  overflow: hidden;
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-outcome-main em,
+.ai-outcome-meta span {
+  overflow: hidden;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-outcome-meta span:last-child {
+  flex: 0 0 auto;
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-family: var(--font-mono, monospace);
+}
+
+.ai-outcome-item--triggered {
+  border-color: rgba(34,197,94,0.18);
+}
+
+.ai-outcome-item--triggered .ai-outcome-main span {
+  color: var(--agent-clear, #22c55e);
+}
+
+.ai-outcome-item--invalidated {
+  border-color: rgba(220,38,38,0.22);
+}
+
+.ai-outcome-item--invalidated .ai-outcome-main span {
+  color: var(--warning-red, #dc2626);
+}
+
 .ai-structure-error {
   color: var(--warning-red, #dc2626);
   border: 1px solid rgba(220,38,38,0.24);

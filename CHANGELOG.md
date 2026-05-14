@@ -14,6 +14,7 @@
 - Added triggered reminder follow-up: users can mark reminders as handled, continue watching, or ignored; ignored invalidations now feed mistake memory.
 - Added scheduled AI Structure outcome settlement worker for due `same_day` / `next_day` / `3d` / `5d` branch reviews.
 - Added AI Structure outcome review API so Web and miniprogram clients can render user-scoped branch review timelines with mistake memory.
+- Added the AI Structure outcome timeline to the right-side coach panel, including recent branch reviews and mistake-memory warnings.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
 - Removed legacy frontend radar/Kline/chan/scanner/AI-training surfaces from the default bundle.
@@ -28,4 +29,5 @@
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_reminder_bridge.py -q`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_outcome_worker.py tests/test_ai_structure_outcome_settlement.py -q`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_no_legacy_calls.py tests/test_ai_structure_outcome_settlement.py -q`
+- Playwright screenshot smoke for AI Structure outcome timeline at desktop and mobile widths.
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.

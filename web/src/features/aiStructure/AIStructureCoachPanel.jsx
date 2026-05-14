@@ -28,6 +28,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   const [error, setError] = useState('')
   const [pendingQuestion, setPendingQuestion] = useState('')
   const [reminders, setReminders] = useState([])
+  const [outcomeReview, setOutcomeReview] = useState(null)
   const mountedRef = useRef(true)
 
   const displayName = symbolName || symbol
@@ -55,6 +56,16 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     }
   }, [symbol])
 
+  const loadOutcomeReview = useCallback(async () => {
+    if (!symbol) return
+    try {
+      const json = await apiJson(`${API_BASE}/ai-structure/outcomes/${encodeURIComponent(symbol)}?limit=8`)
+      if (mountedRef.current) setOutcomeReview(json.data)
+    } catch {
+      if (mountedRef.current) setOutcomeReview(null)
+    }
+  }, [symbol])
+
   useEffect(() => {
     mountedRef.current = true
     setMessages([])
@@ -64,13 +75,15 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setPollUntil(0)
     setPendingQuestion('')
     setReminders([])
+    setOutcomeReview(null)
     onEvidenceContext?.(null)
     loadStatus()
     loadReminders()
+    loadOutcomeReview()
     return () => {
       mountedRef.current = false
     }
-  }, [symbol, loadStatus, loadReminders, onEvidenceContext])
+  }, [symbol, loadStatus, loadReminders, loadOutcomeReview, onEvidenceContext])
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
@@ -208,10 +221,11 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
       })
       setMessages((prev) => [...prev, { role: 'system', text: labels[action] || '提醒已更新' }])
       await loadReminders()
+      await loadOutcomeReview()
     } catch (err) {
       setError(err?.message || '提醒状态更新失败')
     }
-  }, [loadReminders])
+  }, [loadReminders, loadOutcomeReview])
 
   const statusLabel = useMemo(() => {
     if (pollingActive) return '生成中'
@@ -246,6 +260,8 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
       <PipelineStatus items={pipelineItems} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
+
+      <OutcomeReviewStatus review={outcomeReview} />
 
       <div className="ai-structure-quick">
         {QUICK_QUESTIONS.map((item) => (
@@ -314,6 +330,66 @@ function PipelineStatus({ items }) {
       ))}
     </div>
   )
+}
+
+function OutcomeReviewStatus({ review }) {
+  const items = review?.items || []
+  const stats = review?.memory?.stats || {}
+  if (!items.length && !stats.total_outcomes) return null
+  return (
+    <div className="ai-outcome-review" aria-label="AI 结构复盘">
+      <div className="ai-outcome-review-head">
+        <strong>复盘</strong>
+        <span>{stats.total_outcomes || items.length} 次 / {stats.mistake_count_30d || 0} 个纪律问题</span>
+      </div>
+      {!!review?.memory?.profile?.active_warnings?.length && (
+        <div className="ai-outcome-warning">
+          {review.memory.profile.active_warnings[0].text}
+        </div>
+      )}
+      <div className="ai-outcome-list">
+        {items.slice(0, 4).map((item) => (
+          <div key={item.outcome_id} className={`ai-outcome-item ai-outcome-item--${item.outcome}`}>
+            <div className="ai-outcome-main">
+              <span>{outcomeLabel(item)}</span>
+              <em>{formatOutcomeTime(item.checked_at)}</em>
+            </div>
+            <div className="ai-outcome-meta">
+              <span>{branchTypeLabel(item.branch?.branch_type)}</span>
+              <span>{item.settlement_window || 'manual'}</span>
+              <span>{outcomePrice(item)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function outcomeLabel(item) {
+  if (item.is_mistake) return '失效未处理'
+  if (item.outcome === 'triggered') return '触发'
+  if (item.outcome === 'invalidated') return '失效'
+  if (item.outcome === 'expired') return '过期'
+  return '观察中'
+}
+
+function branchTypeLabel(type) {
+  if (type === 'observe_breakout') return '突破观察'
+  if (type === 'invalidation_watch') return '失效观察'
+  if (type === 'holding_defense') return '持仓防守'
+  return type || '结构分支'
+}
+
+function outcomePrice(item) {
+  const price = item.triggered_price || item.invalidated_price || item.trigger_price
+  return Number(price || 0) > 0 ? Number(price).toFixed(2) : '--'
+}
+
+function formatOutcomeTime(value) {
+  if (!value) return ''
+  const text = String(value)
+  return text.slice(5, 16).replace('T', ' ')
 }
 
 function ReminderStatus({ reminders, onAck }) {
