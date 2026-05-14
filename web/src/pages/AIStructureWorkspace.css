@@ -55,6 +55,53 @@
   font-size: 12px;
 }
 
+.ai-workspace-bootstrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 11px;
+}
+
+.ai-workspace-bootstrap span,
+.ai-workspace-bootstrap em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-workspace-bootstrap em {
+  max-width: 220px;
+  color: var(--warning-red, #dc2626);
+  font-style: normal;
+}
+
+.ai-workspace-bootstrap button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  background: var(--surface-2, #111115);
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-workspace-bootstrap button:hover {
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  border-color: rgba(6,182,212,0.36);
+  background: rgba(6,182,212,0.06);
+}
+
+.ai-workspace-bootstrap button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .ai-workspace-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
@@ -104,6 +151,12 @@
 
   .ai-workspace-search {
     width: 100%;
+  }
+
+  .ai-workspace-bootstrap {
+    width: 100%;
+    margin-left: 0;
+    justify-content: space-between;
   }
 
   .ai-workspace-body {

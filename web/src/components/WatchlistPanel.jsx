@@ -2,7 +2,13 @@ import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useR
 import { apiFetch } from '../api/client.js'
 import './WatchlistPanel.css'
 
-const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSelect }, ref) {
+const WatchlistPanel = forwardRef(function WatchlistPanel({
+  activeSymbol,
+  onSelect,
+  workspace,
+  workspaceLoading = false,
+  onWorkspaceRefresh,
+}, ref) {
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
   const [collapsed, setCollapsed] = useState({})
@@ -38,9 +44,31 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
     fetchWatchlist()
   }, [])
 
+  const applyWorkspaceHealth = useCallback((data) => {
+    const symbols = data?.symbols || []
+    const needsRefresh = symbols.filter((item) => {
+      const status = item.context_status?.status
+      return status && !['fresh'].includes(status)
+    })
+    setHealth({
+      count: data?.universe?.length || symbols.length,
+      stale_count: needsRefresh.length,
+      checked_at: new Date().toISOString(),
+    })
+  }, [])
+
+  useEffect(() => {
+    if (workspace) applyWorkspaceHealth(workspace)
+  }, [workspace, applyWorkspaceHealth])
+
   const fetchDataHealth = async () => {
     setHealthLoading(true)
     try {
+      if (onWorkspaceRefresh) {
+        const data = await onWorkspaceRefresh({ ensurePipeline: true })
+        if (data) applyWorkspaceHealth(data)
+        return
+      }
       const resp = await apiFetch('/api/ai-structure/universe?sources=watchlist')
       if (resp.ok) {
         const json = await resp.json()
@@ -191,9 +219,9 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({ activeSymbol, onSele
             className={`watchlist-health-btn ${health?.stale_count ? 'is-stale' : ''}`}
             onClick={fetchDataHealth}
             title="检查 AI 结构股票池"
-            disabled={healthLoading}
+            disabled={healthLoading || workspaceLoading}
           >
-            {healthLoading ? '…' : health ? `${health.stale_count}/${health.count}` : '检'}
+            {healthLoading || workspaceLoading ? '…' : health ? `${health.stale_count}/${health.count}` : '检'}
           </button>
           <button
             className="watchlist-add-group-btn"

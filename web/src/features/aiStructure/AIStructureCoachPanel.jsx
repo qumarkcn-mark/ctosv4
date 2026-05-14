@@ -19,7 +19,14 @@ const LEVEL_LABELS = {
   5: '5分',
 }
 
-export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceContext }) {
+export default function AIStructureCoachPanel({
+  symbol,
+  symbolName,
+  workspaceSymbolState,
+  workspaceLoading = false,
+  onWorkspaceRefresh,
+  onEvidenceContext,
+}) {
   const [status, setStatus] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -37,6 +44,18 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   const displayName = symbolName || symbol
   const canAsk = Boolean(status?.context)
   const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
+
+  const applyWorkspaceSymbolState = useCallback((state) => {
+    if (!state || !sameSymbol(state.symbol, symbolRef.current)) return
+    setStatus(normalizeWorkspaceStatus(state))
+    setReminders(state.reminders?.items || [])
+    setOutcomeReview({
+      symbol: state.symbol,
+      count: state.outcomes?.count || 0,
+      items: state.outcomes?.items || [],
+      memory: state.outcomes?.memory || {},
+    })
+  }, [])
 
   const loadStatus = useCallback(async () => {
     if (!symbol) return
@@ -123,14 +142,31 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setOutcomeReview(null)
     setActiveSessionId('')
     onEvidenceContext?.(null)
-    loadStatus()
-    loadReminders()
-    loadOutcomeReview()
+    if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
+      applyWorkspaceSymbolState(workspaceSymbolState)
+    } else {
+      loadStatus()
+      loadReminders()
+      loadOutcomeReview()
+    }
     loadChatHistory()
     return () => {
       mountedRef.current = false
     }
-  }, [symbol, loadStatus, loadReminders, loadOutcomeReview, loadChatHistory, onEvidenceContext])
+  }, [
+    symbol,
+    loadStatus,
+    loadReminders,
+    loadOutcomeReview,
+    loadChatHistory,
+    onEvidenceContext,
+  ])
+
+  useEffect(() => {
+    if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
+      applyWorkspaceSymbolState(workspaceSymbolState)
+    }
+  }, [symbol, workspaceSymbolState, applyWorkspaceSymbolState])
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
@@ -162,6 +198,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
       })
+      onWorkspaceRefresh?.({ ensurePipeline: true })
       setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
       await loadStatus()
     } catch (err) {
@@ -169,7 +206,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     } finally {
       setBooting(false)
     }
-  }, [symbol, booting, pollingActive, loadStatus])
+  }, [symbol, booting, pollingActive, loadStatus, onWorkspaceRefresh])
 
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
@@ -264,6 +301,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   }, [loadReminders, loadOutcomeReview])
 
   const statusLabel = useMemo(() => {
+    if (workspaceLoading && !status) return '启动中'
     if (pollingActive) return '生成中'
     if (!status) return '检测中'
     if (status.status === 'fresh') return '结构就绪'
@@ -272,14 +310,14 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     if (status.status === 'failed') return '生成失败'
     if (status.status === 'no_snapshot') return '待生成'
     return status.status || '未知'
-  }, [status, pollingActive])
+  }, [status, pollingActive, workspaceLoading])
 
   const pipelineItems = useMemo(() => buildPipelineItems(status, {
-    booting,
+    booting: booting || (workspaceLoading && !status),
     canAsk,
     pendingQuestion,
     pollingActive,
-  }), [status, booting, canAsk, pendingQuestion, pollingActive])
+  }), [status, booting, workspaceLoading, canAsk, pendingQuestion, pollingActive])
 
   return (
     <section className="ai-structure-panel">
@@ -524,6 +562,25 @@ function restoreChatMessages(rows) {
     }
     return items
   })
+}
+
+function normalizeWorkspaceStatus(state) {
+  const contextStatus = state?.context_status || {}
+  const latestContext = state?.latest_context || null
+  return {
+    ...contextStatus,
+    context: latestContext,
+    symbol: contextStatus.symbol || state?.symbol,
+    status: contextStatus.status || (latestContext ? 'fresh' : 'no_snapshot'),
+    stale_reason: contextStatus.stale_reason || latestContext?.stale_reason || '',
+    missing_levels: contextStatus.missing_levels || [],
+    job: contextStatus.job || null,
+  }
+}
+
+function sameSymbol(left, right) {
+  if (!left || !right) return false
+  return String(left).replace('.', '').toLowerCase() === String(right).replace('.', '').toLowerCase()
 }
 
 function failureText(status) {
