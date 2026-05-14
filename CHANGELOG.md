@@ -9,6 +9,7 @@
 - Added multi-user follow-up context dispatch when a shared symbol snapshot becomes fresh.
 - Added startup recovery for CZSC snapshot jobs that previously failed because the CZSC dependency was unavailable.
 - Added AI Structure universe priority scheduling so held symbols, recently chatted symbols, and watchlist symbols are warmed in that order.
+- Polished AI Structure workspace status copy for stale, no-data, failed, CZSC-unavailable, and pending states.
 - Added the AI Structure reminder loop: user-scoped reminder listing, price-monitor triggering, coach-event logging, and right-side reminder status chips.
 - Added mistake-only AI Structure memory: only ignored invalidations enter daily chat memory, capped to a tiny warning context.
 - Added automatic scenario outcome settlement when AI Structure reminders trigger, without marking user behavior as a mistake until follow-up confirms it.

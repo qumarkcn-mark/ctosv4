@@ -295,6 +295,8 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
 
       <PipelineStatus items={pipelineItems} />
 
+      <StatusNotice status={status} pollingActive={pollingActive} />
+
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
       <OutcomeReviewStatus review={outcomeReview} />
@@ -364,6 +366,17 @@ function PipelineStatus({ items }) {
           <em>{item.detail}</em>
         </div>
       ))}
+    </div>
+  )
+}
+
+function StatusNotice({ status, pollingActive }) {
+  const notice = statusNotice(status, pollingActive)
+  if (!notice) return null
+  return (
+    <div className={`ai-status-notice ai-status-notice--${notice.tone}`}>
+      <strong>{notice.title}</strong>
+      <span>{notice.text}</span>
     </div>
   )
 }
@@ -515,16 +528,73 @@ function restoreChatMessages(rows) {
 
 function failureText(status) {
   const reason = status?.stale_reason || status?.job?.error_code || 'UNKNOWN'
-  if (reason === 'CZSC_UNAVAILABLE') return 'CZSC 结构引擎未安装或不可用，暂时无法生成结构上下文。'
-  if (reason === 'NO_DATA') return '当前缺少可用 K 线数据，暂时无法生成结构上下文。'
+  if (reason === 'CZSC_UNAVAILABLE') return 'CZSC 结构引擎不可用。先检查依赖或 worker 配置。'
+  if (reason === 'NO_DATA') return '缺少可用 K 线。先同步数据，再生成结构上下文。'
+  if (reason === 'TIMEOUT') return '结构任务超时。后台会重试，稍后再问。'
+  if (reason === 'SOURCE_SNAPSHOT_CHANGED') return '结构快照已更新，AI 上下文待刷新。'
   return `结构上下文生成失败：${reason}`
 }
 
 function emptyText(status, pollingActive) {
   if (status?.status === 'failed') return failureText(status)
-  if (pollingActive || status?.status === 'pending') return '结构上下文生成中，完成后就可以继续追问。'
-  if (status?.missing_levels?.length) return `等待 ${formatLevels(status.missing_levels)} 的 CZSC 快照。`
-  return '当前没有可用结构上下文。'
+  if (pollingActive || status?.status === 'pending') return '后台正在生成结构上下文，完成后会自动回答已排队的问题。'
+  if (status?.missing_levels?.length) return `缺少 ${formatLevels(status.missing_levels)} 的 CZSC 快照。可以先生成上下文，后台会补齐。`
+  return '还没有结构上下文。可以直接提问，我会先生成再回答。'
+}
+
+function statusNotice(status, pollingActive) {
+  if (!status && !pollingActive) return null
+  const reason = statusReason(status)
+  if (reason === 'NO_DATA') {
+    return {
+      tone: 'error',
+      title: '缺少 K 线',
+      text: '当前级别没有可用 K 线，先同步数据，暂时不做结构判断。',
+    }
+  }
+  if (reason === 'CZSC_UNAVAILABLE') {
+    return {
+      tone: 'error',
+      title: 'CZSC 不可用',
+      text: '结构引擎或 worker 未就绪，页面不会回退到旧 radar。',
+    }
+  }
+  if (status?.status === 'stale') {
+    return {
+      tone: 'warn',
+      title: '基于上一版结构',
+      text: 'K 线或 CZSC 快照已有变化，当前回答会先引用上一版上下文；刷新完成后再复核触发线和失败线。',
+    }
+  }
+  if (status?.status === 'failed') {
+    return {
+      tone: 'error',
+      title: '结构生成失败',
+      text: failureText(status),
+    }
+  }
+  if (pollingActive || status?.status === 'pending') {
+    return {
+      tone: 'working',
+      title: '后台生成中',
+      text: 'K 线、CZSC 快照和 AI 上下文正在排队生成，页面请求不会同步跑重型结构计算。',
+    }
+  }
+  if (status?.missing_levels?.length && status?.context) {
+    return {
+      tone: 'warn',
+      title: '部分级别缺失',
+      text: `缺少 ${formatLevels(status.missing_levels)} 的 CZSC 快照，当前回答只基于已生成级别；补齐后再复核结构边界。`,
+    }
+  }
+  if (status?.status === 'no_snapshot' || status?.missing_levels?.length) {
+    return {
+      tone: 'warn',
+      title: '等待结构快照',
+      text: `缺少 ${formatLevels(status?.missing_levels || []) || '目标级别'} 的 CZSC 快照，生成后才能回答结构问题。`,
+    }
+  }
+  return null
 }
 
 function buildPipelineItems(status, flags) {
@@ -577,7 +647,7 @@ function snapshotStatusDetail(status, flags) {
   const { hasMissingLevels, isCzscUnavailable, isFailed, isNoData, isWorking } = flags
   if (!status) return '检测中'
   if (isCzscUnavailable) return '不可用'
-  if (isNoData) return '等K线'
+  if (isNoData) return '缺K线'
   if (isFailed) return '失败'
   if (isWorking) return '生成中'
   if (hasMissingLevels) return `缺${formatLevels(status.missing_levels)}`
