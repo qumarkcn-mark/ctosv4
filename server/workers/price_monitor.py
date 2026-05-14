@@ -12,6 +12,10 @@ from server.engines.decision.push_rules import (
     build_alert_strategy_contract as _build_alert_strategy_contract,
     evaluate_price_alerts,
 )
+from server.engines.ai_native.structure_reminder_service import (
+    list_active_reminder_symbols,
+    scan_structure_reminders,
+)
 from server.services.price_service import get_batch_prices
 from server.services.push_service import send_stop_loss_alert
 
@@ -103,17 +107,23 @@ class PriceMonitor:
     async def _check_stop_losses(self):
         """核心监控逻辑：扫描设置了止损的持仓，对比现价，触发提醒"""
         positions = await run_in_threadpool(self._db_get_positions)
-        if not positions:
+        ai_reminder_symbols = await run_in_threadpool(list_active_reminder_symbols)
+        if not positions and not ai_reminder_symbols:
             return
 
-        symbols = list(set(p["symbol"] for p in positions))
+        symbols = list(set([p["symbol"] for p in positions] + ai_reminder_symbols))
         
         # 批量获取最新价格
         prices = await get_batch_prices(symbols)
         if not prices:
             return
             
-        alerts_to_send = await run_in_threadpool(self._db_update_and_alert, positions, prices)
+        alerts_to_send = []
+        if positions:
+            alerts_to_send.extend(await run_in_threadpool(self._db_update_and_alert, positions, prices))
+        ai_result = await run_in_threadpool(scan_structure_reminders, prices)
+        for item in ai_result.get("items", []):
+            alerts_to_send.append((item["user_id"], item["message"]))
         
         for user_id, msg in alerts_to_send:
             # 安全地在主事件循环内创建后台发送任务

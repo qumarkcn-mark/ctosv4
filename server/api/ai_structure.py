@@ -33,7 +33,10 @@ from server.engines.ai_native.structure_context_service import (
     prewarm_ai_structure_contexts,
 )
 from server.engines.ai_native.structure_evidence_service import get_chart_context
-from server.engines.ai_native.structure_reminder_service import create_reminder_from_chat_evidence
+from server.engines.ai_native.structure_reminder_service import (
+    create_reminder_from_chat_evidence,
+    list_structure_reminders,
+)
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
 
@@ -319,6 +322,17 @@ def create_reminder(
     if not reminder:
         raise HTTPException(status_code=404, detail="message not found")
     return {"status": "success", "data": reminder}
+
+
+@router.get("/reminders/{symbol}")
+def list_reminders(symbol: str, current_user_id: int = Depends(get_current_user_id)):
+    return {
+        "status": "success",
+        "data": list_structure_reminders(
+            user_id=current_user_id,
+            symbol=normalize_symbol(symbol),
+        ),
+    }
 
 
 @router.post("/branches/settle")
