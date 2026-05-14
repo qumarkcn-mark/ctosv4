@@ -279,30 +279,41 @@ def prewarm_ai_structure_universe_for_tracked_users(
     total_context_items = 0
 
     for user_id in user_ids:
-        universe = resolve_ai_native_universe(user_id, ["positions", "watchlist"])
-        symbols = [item["symbol"] for item in universe[:max_symbols_per_user]]
+        universe = resolve_ai_native_universe(user_id, ["positions", "recent_chat", "watchlist"])
+        selected_items = universe[:max_symbols_per_user]
+        symbols = [item["symbol"] for item in selected_items]
         if not symbols:
             continue
 
-        snapshot_result = prewarm_structure_snapshots(
-            symbols=symbols,
-            levels=list(DEFAULT_LEVELS),
-            priority=priority,
-            reason=reason,
-            requested_by_user_id=user_id,
-        )
-        context_result = prewarm_ai_structure_contexts(
-            user_id=user_id,
-            symbols=symbols,
-            levels=list(DEFAULT_LEVELS),
-            priority=max(1, priority - 10),
-            reason=reason,
-        )
+        snapshot_result = {"items": []}
+        context_result = {"items": []}
+        for item_priority, priority_items in _group_universe_by_priority(selected_items, default_priority=priority):
+            priority_symbols = [item["symbol"] for item in priority_items]
+            batch_snapshot = prewarm_structure_snapshots(
+                symbols=priority_symbols,
+                levels=list(DEFAULT_LEVELS),
+                priority=item_priority,
+                reason=reason,
+                requested_by_user_id=user_id,
+            )
+            batch_context = prewarm_ai_structure_contexts(
+                user_id=user_id,
+                symbols=priority_symbols,
+                levels=list(DEFAULT_LEVELS),
+                priority=max(1, item_priority - 10),
+                reason=reason,
+            )
+            snapshot_result["items"].extend(batch_snapshot.get("items", []))
+            context_result["items"].extend(batch_context.get("items", []))
         total_snapshot_items += _active_item_count(snapshot_result.get("items", []))
         total_context_items += _active_item_count(context_result.get("items", []))
         users.append({
             "user_id": user_id,
             "symbols": len(symbols),
+            "priority_buckets": [
+                {"priority": bucket_priority, "symbols": [item["symbol"] for item in bucket_items]}
+                for bucket_priority, bucket_items in _group_universe_by_priority(selected_items, default_priority=priority)
+            ],
             "snapshot_jobs": _active_item_count(snapshot_result.get("items", [])),
             "context_jobs": _active_item_count(context_result.get("items", [])),
         })
@@ -334,6 +345,14 @@ def _structure_levels_from_changes(changes: list[dict]) -> dict[str, list[str]]:
         symbol: sorted(levels, key=lambda level: order.get(level, 999))
         for symbol, levels in levels_by_symbol.items()
     }
+
+
+def _group_universe_by_priority(items: list[dict[str, Any]], *, default_priority: int) -> list[tuple[int, list[dict[str, Any]]]]:
+    buckets: dict[int, list[dict[str, Any]]] = {}
+    for item in items:
+        item_priority = int(item.get("priority") or default_priority)
+        buckets.setdefault(item_priority, []).append(item)
+    return [(item_priority, buckets[item_priority]) for item_priority in sorted(buckets.keys(), reverse=True)]
 
 
 def _active_item_count(items: list[dict]) -> int:

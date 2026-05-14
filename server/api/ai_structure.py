@@ -97,7 +97,7 @@ class OutcomeSettleRequest(BaseModel):
 
 @router.get("/universe")
 def get_ai_native_universe(
-    sources: str = Query(default="positions,watchlist"),
+    sources: str = Query(default="positions,recent_chat,watchlist"),
     current_user_id: int = Depends(get_current_user_id),
 ):
     source_list = [item.strip() for item in sources.split(",") if item.strip()]

@@ -259,3 +259,60 @@ def test_enqueue_structure_jobs_for_changes_does_not_count_completed_jobs(monkey
 
     assert result["count"] == 0
     assert result["items"][0]["status"] == "SUCCESS"
+
+
+def test_prewarm_ai_structure_universe_groups_jobs_by_symbol_priority(monkeypatch):
+    snapshot_calls = []
+    context_calls = []
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.list_ai_native_user_ids",
+        lambda limit=None: [1],
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.resolve_ai_native_universe",
+        lambda user_id, sources: [
+            {"symbol": "sh.600519", "priority": 100, "sources": ["positions"], "has_position": True},
+            {"symbol": "sz.000001", "priority": 80, "sources": ["recent_chat"], "has_position": False},
+            {"symbol": "sh.600000", "priority": 60, "sources": ["watchlist"], "has_position": False},
+        ],
+    )
+
+    def fake_snapshot_prewarm(**kwargs):
+        snapshot_calls.append(kwargs)
+        return {
+            "items": [
+                {"symbol": symbol, "status": "PENDING", "enqueued": True}
+                for symbol in kwargs["symbols"]
+            ]
+        }
+
+    def fake_context_prewarm(**kwargs):
+        context_calls.append(kwargs)
+        return {
+            "items": [
+                {"symbol": symbol, "status": "PENDING", "enqueued": True}
+                for symbol in kwargs["symbols"]
+            ]
+        }
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
+        fake_snapshot_prewarm,
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.structure_context_service.prewarm_ai_structure_contexts",
+        fake_context_prewarm,
+    )
+
+    result = kline_sync_worker.prewarm_ai_structure_universe_for_tracked_users(priority=70)
+
+    assert [call["priority"] for call in snapshot_calls] == [100, 80, 60]
+    assert [call["symbols"] for call in snapshot_calls] == [["sh.600519"], ["sz.000001"], ["sh.600000"]]
+    assert [call["priority"] for call in context_calls] == [90, 70, 50]
+    assert result["count"] == 6
+    assert result["users"][0]["priority_buckets"] == [
+        {"priority": 100, "symbols": ["sh.600519"]},
+        {"priority": 80, "symbols": ["sz.000001"]},
+        {"priority": 60, "symbols": ["sh.600000"]},
+    ]

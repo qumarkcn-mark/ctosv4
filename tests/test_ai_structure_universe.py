@@ -83,3 +83,45 @@ def test_universe_lists_interested_users_by_normalized_symbol(monkeypatch, tmp_p
     assert list_ai_native_user_ids() == [1, 2, 3]
     assert list_interested_user_ids_for_symbol("sh.600519") == [1, 2]
     assert has_active_position_for_symbol("sh600519") is True
+
+
+def test_universe_prioritizes_recent_chat_before_watchlist(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, openid, nickname) VALUES (1, 'u1', 'U1'), (2, 'u2', 'U2')"
+        )
+        conn.execute(
+            "INSERT INTO watchlist_groups (id, user_id, name, sort_order) VALUES (10, 1, '观察', 0)"
+        )
+        conn.execute(
+            """
+            INSERT INTO watchlist_items (group_id, symbol, name, sort_order)
+            VALUES (10, 'sz000988', '华工科技', 0),
+                   (10, 'sh600000', '浦发银行', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_structure_chat_sessions (
+                session_id, user_id, symbol, latest_context_id, status, created_at, updated_at
+            )
+            VALUES ('s1', 1, 'sh600519', 'ctx1', 'ACTIVE', '2099-05-12T10:00:00+08:00', '2099-05-12T10:00:00+08:00'),
+                   ('s2', 2, 'sz000001', 'ctx2', 'ACTIVE', '2099-05-12T10:00:00+08:00', '2099-05-12T10:00:00+08:00'),
+                   ('s3', 1, 'sh601398', 'ctx3', 'ACTIVE', '2000-01-01T10:00:00+08:00', '2000-01-01T10:00:00+08:00')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    items = resolve_ai_native_universe(1, ["recent_chat", "watchlist"])
+
+    assert [item["symbol"] for item in items] == ["sh.600519", "sh.600000", "sz.000988"]
+    assert items[0]["sources"] == ["recent_chat"]
+    assert items[0]["priority"] == 80
+    assert all(item["priority"] == 60 for item in items[1:])
+    assert "sh.601398" not in [item["symbol"] for item in items]
+    assert list_ai_native_user_ids() == [1, 2]
+    assert list_interested_user_ids_for_symbol("sh600519") == [1]
