@@ -18,7 +18,7 @@ from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
 )
-from server.engines.ai_native.scenario_outcome_service import get_memory_context_for_chat
+from server.engines.ai_native.scenario_outcome_service import get_memory_context_for_chat, list_symbol_outcome_reviews
 
 
 RISK_DISCLAIMER = "仅供参考，不构成投资建议"
@@ -40,6 +40,11 @@ def answer_structure_question(
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
+    review_context = (
+        list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
+        if intent_type == "review"
+        else None
+    )
     session = upsert_chat_session(
         user_id=user_id,
         symbol=canonical,
@@ -54,6 +59,7 @@ def answer_structure_question(
         context=context,
         chart_focus=chart_focus,
         memory_context=memory_context,
+        review_context=review_context,
     )
     reminder_candidates = _reminder_candidates(intent_type=intent_type, context=context, chart_focus=chart_focus)
     payload = {
@@ -66,6 +72,7 @@ def answer_structure_question(
         "chart_focus": chart_focus,
         "suggested_reminders": reminder_candidates,
         "memory_context": memory_context,
+        "review_context": review_context,
         "risk_disclaimer": RISK_DISCLAIMER,
     }
     message = save_chat_message(
@@ -85,6 +92,8 @@ def answer_structure_question(
 
 def classify_intent(question: str) -> str:
     text = (question or "").strip().lower()
+    if any(token in text for token in ("复盘", "回顾", "错在哪里", "错哪", "纪律", "上次错", "最近错")):
+        return "review"
     if any(token in text for token in ("跌破", "不看", "失效", "哪里止", "防守", "破位")):
         return "invalidation"
     if any(token in text for token in ("拿着", "还能持", "要走", "卖", "减仓", "清仓")):
@@ -93,8 +102,6 @@ def classify_intent(question: str) -> str:
         return "reminder"
     if any(token in text for token in ("为什么", "解释", "结构", "中枢")):
         return "explain_structure"
-    if any(token in text for token in ("复盘", "回顾")):
-        return "review"
     return "buy_window"
 
 
@@ -259,6 +266,7 @@ def _build_answer(
     context: dict[str, Any],
     chart_focus: dict[str, Any],
     memory_context: dict[str, Any] | None = None,
+    review_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol = context["symbol"]
     boundary = context.get("boundary") or {}
@@ -291,13 +299,16 @@ def _build_answer(
             f"当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
             f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。{RISK_DISCLAIMER}"
         )
+    elif intent_type == "review":
+        coach = _review_answer(symbol=symbol, review_context=review_context, memory_context=memory_context)
     else:
         coach = (
             f"不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
             f"{RISK_DISCLAIMER}"
         )
-    coach = _apply_memory_warning(coach, memory_context)
+    if intent_type != "review":
+        coach = _apply_memory_warning(coach, memory_context)
     return {
         "coach_answer": coach,
         "referenced_boundaries": [
@@ -305,6 +316,58 @@ def _build_answer(
             {"role": "invalidation", "level": level, "price": zd},
         ],
     }
+
+
+def _review_answer(
+    *,
+    symbol: str,
+    review_context: dict[str, Any] | None,
+    memory_context: dict[str, Any] | None,
+) -> str:
+    items = (review_context or {}).get("items") or []
+    warnings = (memory_context or {}).get("active_warnings") or []
+    if not items:
+        return f"{symbol} 还没有可复盘的结构分支结果。先等提醒触发或 outcome worker 生成复盘记录，再看纪律偏差。{RISK_DISCLAIMER}"
+    latest = items[0]
+    mistake_items = [item for item in items if item.get("is_mistake")]
+    latest_text = _review_item_text(latest)
+    if mistake_items:
+        mistake = mistake_items[0]
+        warning = str((warnings[0] if warnings else {}).get("text") or "").strip()
+        warning_text = f"历史纪律提示：{warning}。" if warning else ""
+        return (
+            f"{symbol} 最近最需要看的问题是：{_review_item_text(mistake)}。"
+            f"{warning_text}最新一条复盘是 {latest_text}。"
+            f"这不是交易指令，只用于复核你的执行纪律。{RISK_DISCLAIMER}"
+        )
+    return (
+        f"{symbol} 最近 {len(items)} 条结构复盘里，还没有记录到“结构失效后未处理”的纪律错误。"
+        f"最新一条是 {latest_text}。继续看触发线和失败线是否被实际验证。{RISK_DISCLAIMER}"
+    )
+
+
+def _review_item_text(item: dict[str, Any]) -> str:
+    outcome = item.get("outcome") or "pending"
+    branch_type = ((item.get("branch") or {}).get("branch_type") or "结构分支")
+    price = item.get("invalidated_price") or item.get("triggered_price") or item.get("trigger_price")
+    price_text = f"{_num(price):.2f}" if _num(price) > 0 else "边界价"
+    if item.get("is_mistake"):
+        return f"{_branch_type_text(branch_type)}在 {price_text} 附近失效后没有按计划处理"
+    if outcome == "invalidated":
+        return f"{_branch_type_text(branch_type)}在 {price_text} 附近失效"
+    if outcome == "triggered":
+        return f"{_branch_type_text(branch_type)}在 {price_text} 附近触发"
+    if outcome == "expired":
+        return f"{_branch_type_text(branch_type)}到期未触发"
+    return f"{_branch_type_text(branch_type)}仍在观察"
+
+
+def _branch_type_text(branch_type: str) -> str:
+    return {
+        "observe_breakout": "突破观察分支",
+        "invalidation_watch": "失效观察分支",
+        "holding_defense": "持仓防守分支",
+    }.get(branch_type, branch_type or "结构分支")
 
 
 def _apply_memory_warning(coach: str, memory_context: dict[str, Any] | None) -> str:
