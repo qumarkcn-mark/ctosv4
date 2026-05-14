@@ -13,7 +13,10 @@ from typing import Any
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import now_text, stable_hash
-from server.engines.ai_native.structure_context_service import get_latest_ai_structure_context
+from server.engines.ai_native.structure_context_service import (
+    get_ai_structure_context_status,
+    get_latest_ai_structure_context,
+)
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
@@ -48,6 +51,7 @@ def answer_structure_question(
         session_id=session["session_id"],
     )
     intent_type = classify_intent(question, conversation_context=conversation_context)
+    data_status = _context_data_status(user_id=user_id, symbol=canonical, context=context)
     chart_focus = chart_focus_for_intent(context, intent_type)
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
@@ -62,6 +66,7 @@ def answer_structure_question(
         intent_type=intent_type,
         context=context,
         chart_focus=chart_focus,
+        data_status=data_status,
         memory_context=memory_context,
         review_context=review_context,
     )
@@ -75,6 +80,7 @@ def answer_structure_question(
         "referenced_boundaries": answer["referenced_boundaries"],
         "chart_focus": chart_focus,
         "suggested_reminders": reminder_candidates,
+        "data_status": data_status,
         "memory_context": memory_context,
         "review_context": review_context,
         "conversation_context": conversation_context,
@@ -97,6 +103,8 @@ def answer_structure_question(
 
 def classify_intent(question: str, conversation_context: dict[str, Any] | None = None) -> str:
     text = (question or "").strip().lower()
+    if _is_out_of_scope_question(text):
+        return "out_of_scope"
     if any(token in text for token in ("复盘", "回顾", "错在哪里", "错哪", "纪律", "上次错", "最近错")):
         return "review"
     if any(token in text for token in ("跌破", "不看", "失效", "哪里止", "防守", "破位")):
@@ -297,6 +305,7 @@ def _build_answer(
     intent_type: str,
     context: dict[str, Any],
     chart_focus: dict[str, Any],
+    data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
     review_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -307,37 +316,44 @@ def _build_answer(
     zg = _num(center.get("zg"))
     zd = _num(center.get("zd"))
     background_note = _background_note(context)
+    freshness_note = _freshness_note(data_status)
     position = (context.get("raw_context") or {}).get("position_context") or {}
     holding_text = "你现在有持仓，先把防守线看清楚" if position.get("has_position") else "你现在是空仓，重点是等触发条件而不是追问结论"
     if zg <= 0 or zd <= 0:
-        coach = f"{symbol} 目前结构边界不足，无法判断。先等 CZSC 快照刷新出有效中枢，再讨论观察窗口。{RISK_DISCLAIMER}"
+        coach = f"{freshness_note}{symbol} 目前结构边界不足，无法判断。先等 CZSC 快照刷新出有效中枢，再讨论观察窗口。{RISK_DISCLAIMER}"
         return {"coach_answer": coach, "referenced_boundaries": []}
     if intent_type == "invalidation":
         coach = (
-            f"这只票先看 {level} 级别下沿 {zd:.2f}。如果有效跌破这里，当前观察分支就要降级；"
+            f"{freshness_note}这只票先看 {level} 级别下沿 {zd:.2f}。如果有效跌破这里，当前观察分支就要降级；"
             f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。{RISK_DISCLAIMER}"
         )
     elif intent_type == "hold_or_exit":
         coach = (
-            f"{holding_text}：{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
+            f"{freshness_note}{holding_text}：{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
             f"我不能替你下卖出结论，但可以把跌破 {zd:.2f} 设成复核提醒。{RISK_DISCLAIMER}"
         )
     elif intent_type == "reminder":
         coach = (
-            f"可以围绕两个条件设提醒：站上 {zg:.2f} 后观察是否回踩不破，或跌破 {zd:.2f} 后复核结构失效。"
+            f"{freshness_note}可以围绕两个条件设提醒：站上 {zg:.2f} 后观察是否回踩不破，或跌破 {zd:.2f} 后复核结构失效。"
             f"提醒只帮助你复核，不代表交易指令。{RISK_DISCLAIMER}"
         )
     elif intent_type == "explain_structure":
         coach = (
-            f"当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
+            f"{freshness_note}当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
             f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。"
             f"{background_note}{RISK_DISCLAIMER}"
         )
     elif intent_type == "review":
         coach = _review_answer(symbol=symbol, review_context=review_context, memory_context=memory_context)
+    elif intent_type == "out_of_scope":
+        coach = (
+            f"{freshness_note}这个问题超出当前结构教练边界，我不能给目标价、荐股、基本面买卖结论或收益预测。"
+            f"当前只能回到 {level} 级别结构：站上 {zg:.2f} 才是观察增强，跌破 {zd:.2f} 就先按分支失效复核。"
+            f"{background_note}{RISK_DISCLAIMER}"
+        )
     else:
         coach = (
-            f"不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
+            f"{freshness_note}不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
             f"{background_note}{RISK_DISCLAIMER}"
         )
@@ -378,6 +394,43 @@ def _review_answer(
         f"{symbol} 最近 {len(items)} 条结构复盘里，还没有记录到“结构失效后未处理”的纪律错误。"
         f"最新一条是 {latest_text}。继续看触发线和失败线是否被实际验证。{RISK_DISCLAIMER}"
     )
+
+
+def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) -> dict[str, Any]:
+    levels = list(((context.get("boundary") or {}).get("levels") or {}).keys())
+    status = get_ai_structure_context_status(user_id=user_id, symbol=symbol, levels=levels or None)
+    return {
+        "status": status.get("status") or "unknown",
+        "stale_reason": status.get("stale_reason") or "",
+        "missing_levels": status.get("missing_levels") or [],
+        "context_id": context.get("context_id") or "",
+    }
+
+
+def _freshness_note(data_status: dict[str, Any] | None) -> str:
+    status = (data_status or {}).get("status")
+    reason = (data_status or {}).get("stale_reason") or ""
+    missing = (data_status or {}).get("missing_levels") or []
+    if status == "stale":
+        if missing:
+            return f"结构快照待刷新，当前基于上一版数据，缺少 {','.join(missing)} 级别。"
+        return "结构快照待刷新，当前基于上一版数据。"
+    if status == "failed":
+        return f"结构刷新失败，当前只能基于上一版结构复核，原因是 {reason or 'UNKNOWN'}。"
+    return ""
+
+
+def _is_out_of_scope_question(text: str) -> bool:
+    if not text:
+        return False
+    direct_tokens = ("目标价", "能涨到", "涨多少", "收益", "荐股", "推荐股票", "推荐一只", "基本面能买吗", "财报能买吗")
+    if any(token in text for token in direct_tokens):
+        return True
+    if any(token in text for token in ("基本面", "财报", "业绩", "估值", "消息面")) and any(
+        token in text for token in ("买", "卖", "目标", "涨", "推荐", "仓位")
+    ):
+        return True
+    return False
 
 
 def _review_item_text(item: dict[str, Any]) -> str:
@@ -454,6 +507,8 @@ def _apply_memory_warning(coach: str, memory_context: dict[str, Any] | None) -> 
 
 
 def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_focus: dict[str, Any]) -> list[dict[str, Any]]:
+    if intent_type in {"review", "out_of_scope"}:
+        return []
     boundary = context.get("boundary") or {}
     level = chart_focus.get("level") or ""
     level_item = ((boundary.get("levels") or {}).get(level) or {})
