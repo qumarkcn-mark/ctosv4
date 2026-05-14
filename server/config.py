@@ -63,6 +63,20 @@ STRUCTURE_WORKER_INTERVAL = float(os.getenv("STRUCTURE_WORKER_INTERVAL", "2"))
 STRUCTURE_JOB_TIMEOUT_SECONDS = int(os.getenv("STRUCTURE_JOB_TIMEOUT_SECONDS", "600"))
 AI_STRUCTURE_OUTCOME_WORKER_INTERVAL = float(os.getenv("AI_STRUCTURE_OUTCOME_WORKER_INTERVAL", "60"))
 
+# Background worker startup switches. STRUCTURE_WORKER_ENABLED remains a
+# compatibility master switch for the V5 structure workers.
+PRICE_MONITOR_ENABLED = os.getenv("PRICE_MONITOR_ENABLED", "true").lower() == "true"
+KLINE_SYNC_WORKER_ENABLED = os.getenv("KLINE_SYNC_WORKER_ENABLED", "true").lower() == "true"
+AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED = (
+    os.getenv("AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED", os.getenv("STRUCTURE_WORKER_ENABLED", "true")).lower() == "true"
+)
+AI_STRUCTURE_CONTEXT_WORKER_ENABLED = (
+    os.getenv("AI_STRUCTURE_CONTEXT_WORKER_ENABLED", os.getenv("STRUCTURE_WORKER_ENABLED", "true")).lower() == "true"
+)
+AI_STRUCTURE_OUTCOME_WORKER_ENABLED = (
+    os.getenv("AI_STRUCTURE_OUTCOME_WORKER_ENABLED", os.getenv("STRUCTURE_WORKER_ENABLED", "true")).lower() == "true"
+)
+
 # 行情 API
 PRICE_API_TIMEOUT = 5  # 秒
 PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔

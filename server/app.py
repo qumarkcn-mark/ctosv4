@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from server.config import DEBUG
+from server import config
 from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
@@ -17,6 +17,40 @@ from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _worker_specs():
+    return [
+        ("price_monitor", monitor, "PRICE_MONITOR_ENABLED"),
+        ("kline_sync", kline_sync, "KLINE_SYNC_WORKER_ENABLED"),
+        ("ai_structure_snapshot", ai_structure_snapshot_worker, "AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED"),
+        ("ai_structure_context", ai_structure_context_worker, "AI_STRUCTURE_CONTEXT_WORKER_ENABLED"),
+        ("ai_structure_outcome", ai_structure_outcome_worker, "AI_STRUCTURE_OUTCOME_WORKER_ENABLED"),
+    ]
+
+
+def start_background_workers() -> list[str]:
+    """Start configured background workers.
+
+    V5 workers are explicit so deploys can enable snapshot/context/outcome
+    separately without accidentally starting legacy structure paths.
+    """
+    started: list[str] = []
+    for name, worker, flag in _worker_specs():
+        if name.startswith("ai_structure_") and not getattr(config, "STRUCTURE_WORKER_ENABLED", False):
+            logger.info("后台 Worker %s 未启用，跳过启动 (STRUCTURE_WORKER_ENABLED=false)", name)
+            continue
+        if not getattr(config, flag, False):
+            logger.info("后台 Worker %s 未启用，跳过启动 (%s=false)", name, flag)
+            continue
+        worker.start()
+        started.append(name)
+    return started
+
+
+def stop_background_workers() -> None:
+    for _name, worker, _flag in _worker_specs():
+        worker.stop()
 
 
 @asynccontextmanager
@@ -35,18 +69,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"孤儿清理失败: {e}")
 
-    monitor.start()
-    kline_sync.start()
-    ai_structure_snapshot_worker.start()
-    ai_structure_context_worker.start()
-    ai_structure_outcome_worker.start()
+    start_background_workers()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
-    monitor.stop()
-    kline_sync.stop()
-    ai_structure_snapshot_worker.stop()
-    ai_structure_context_worker.stop()
-    ai_structure_outcome_worker.stop()
+    stop_background_workers()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
@@ -61,7 +87,7 @@ app = FastAPI(
 # CORS - 允许前端跨域
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if DEBUG else ["https://your-domain.com"],
+    allow_origins=["*"] if config.DEBUG else ["https://your-domain.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

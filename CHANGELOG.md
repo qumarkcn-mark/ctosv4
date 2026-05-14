@@ -9,6 +9,7 @@
 - Added multi-user follow-up context dispatch when a shared symbol snapshot becomes fresh.
 - Added startup recovery for CZSC snapshot jobs that previously failed because the CZSC dependency was unavailable.
 - Added AI Structure universe priority scheduling so held symbols, recently chatted symbols, and watchlist symbols are warmed in that order.
+- Added explicit background worker startup switches for price monitoring, K-line sync, and each V5 AI Structure worker.
 - Added the AI Structure reminder loop: user-scoped reminder listing, price-monitor triggering, coach-event logging, and right-side reminder status chips.
 - Added mistake-only AI Structure memory: only ignored invalidations enter daily chat memory, capped to a tiny warning context.
 - Added automatic scenario outcome settlement when AI Structure reminders trigger, without marking user behavior as a mistake until follow-up confirms it.
@@ -45,4 +46,5 @@
 - Playwright QA smoke for Review Training page V5 outcome timeline and existing behavior report.
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_context_service.py tests/test_ai_structure_chat_api.py -q`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_universe.py tests/test_watchlist_data_sync.py -q`
+- `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_runtime_isolation.py -q`
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.

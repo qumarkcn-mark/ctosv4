@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server import config
-from server.app import app
+from server.app import app, start_background_workers
 from server.workers.kline_sync_worker import enqueue_structure_jobs_for_changes
 
 
@@ -40,6 +40,61 @@ def test_default_app_runtime_does_not_import_legacy_structure_modules():
         "server.services.chan_detail_service",
     ):
         assert module_name not in sys.modules
+
+
+def test_background_workers_respect_explicit_startup_switches(monkeypatch):
+    started = []
+
+    class FakeWorker:
+        def __init__(self, name):
+            self.name = name
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr("server.app.monitor", FakeWorker("price"))
+    monkeypatch.setattr("server.app.kline_sync", FakeWorker("kline"))
+    monkeypatch.setattr("server.app.ai_structure_snapshot_worker", FakeWorker("snapshot"))
+    monkeypatch.setattr("server.app.ai_structure_context_worker", FakeWorker("context"))
+    monkeypatch.setattr("server.app.ai_structure_outcome_worker", FakeWorker("outcome"))
+    monkeypatch.setattr(config, "PRICE_MONITOR_ENABLED", True)
+    monkeypatch.setattr(config, "KLINE_SYNC_WORKER_ENABLED", False)
+    monkeypatch.setattr(config, "AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED", True)
+    monkeypatch.setattr(config, "AI_STRUCTURE_CONTEXT_WORKER_ENABLED", False)
+    monkeypatch.setattr(config, "AI_STRUCTURE_OUTCOME_WORKER_ENABLED", True)
+
+    result = start_background_workers()
+
+    assert result == ["price_monitor", "ai_structure_snapshot", "ai_structure_outcome"]
+    assert started == ["price", "snapshot", "outcome"]
+
+
+def test_structure_worker_master_switch_disables_all_v5_workers(monkeypatch):
+    started = []
+
+    class FakeWorker:
+        def __init__(self, name):
+            self.name = name
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr("server.app.monitor", FakeWorker("price"))
+    monkeypatch.setattr("server.app.kline_sync", FakeWorker("kline"))
+    monkeypatch.setattr("server.app.ai_structure_snapshot_worker", FakeWorker("snapshot"))
+    monkeypatch.setattr("server.app.ai_structure_context_worker", FakeWorker("context"))
+    monkeypatch.setattr("server.app.ai_structure_outcome_worker", FakeWorker("outcome"))
+    monkeypatch.setattr(config, "PRICE_MONITOR_ENABLED", False)
+    monkeypatch.setattr(config, "KLINE_SYNC_WORKER_ENABLED", False)
+    monkeypatch.setattr(config, "STRUCTURE_WORKER_ENABLED", False)
+    monkeypatch.setattr(config, "AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED", True)
+    monkeypatch.setattr(config, "AI_STRUCTURE_CONTEXT_WORKER_ENABLED", True)
+    monkeypatch.setattr(config, "AI_STRUCTURE_OUTCOME_WORKER_ENABLED", True)
+
+    result = start_background_workers()
+
+    assert result == []
+    assert started == []
 
 
 def test_default_kline_sync_enqueues_only_czsc_v5_jobs(monkeypatch):

@@ -23,7 +23,7 @@ class AIStructureContextWorker:
         self._task: Optional[asyncio.Task] = None
 
     def start(self):
-        if not getattr(config, "STRUCTURE_WORKER_ENABLED", False):
+        if not getattr(config, "STRUCTURE_WORKER_ENABLED", False) or not getattr(config, "AI_STRUCTURE_CONTEXT_WORKER_ENABLED", False):
             logger.info("AI Structure Context Worker 未启用，跳过启动")
             return
         if self._running:

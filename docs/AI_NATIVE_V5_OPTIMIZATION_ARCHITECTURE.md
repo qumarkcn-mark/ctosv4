@@ -803,6 +803,10 @@ positions / watchlist 变化
 
 Worker Contract:
 
+- Worker 启停必须由显式环境变量控制：`AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED`、`AI_STRUCTURE_CONTEXT_WORKER_ENABLED`、`AI_STRUCTURE_OUTCOME_WORKER_ENABLED`。
+- `STRUCTURE_WORKER_ENABLED=false` 是 V5 结构 worker 的兼容总开关；单个 worker 开关可以在部署时单独关闭。
+- `PRICE_MONITOR_ENABLED` 和 `KLINE_SYNC_WORKER_ENABLED` 控制提醒扫描和 K 线同步；小程序只复用后端 API，不需要单独启动页面 worker。
+- 默认 app 不启动旧 radar / chan / structure worker，不注册旧结构路由。
 - 每类 job 必须有 idempotency key。
 - Snapshot job key: `symbol + level + engine + data_signature + compute_profile`。
 - Context job key: `user_id + symbol + source_snapshot_ids + prompt_version`。

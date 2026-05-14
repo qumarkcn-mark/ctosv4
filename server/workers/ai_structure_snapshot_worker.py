@@ -27,9 +27,7 @@ class AIStructureSnapshotWorker:
         self._task: Optional[asyncio.Task] = None
 
     def start(self):
-        # V5 Phase 1 uses the existing structure worker switch to avoid adding
-        # another config flag before the contract is proven.
-        if not getattr(config, "STRUCTURE_WORKER_ENABLED", False):
+        if not getattr(config, "STRUCTURE_WORKER_ENABLED", False) or not getattr(config, "AI_STRUCTURE_SNAPSHOT_WORKER_ENABLED", False):
             logger.info("AI Structure Snapshot Worker 未启用，跳过启动")
             return
         if self._running:
