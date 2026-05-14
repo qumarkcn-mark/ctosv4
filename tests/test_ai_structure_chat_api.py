@@ -241,6 +241,76 @@ def test_chat_sessions_and_messages_are_user_scoped(monkeypatch, tmp_path):
     assert other_messages.status_code == 404
 
 
+def test_chat_followup_uses_session_context_for_ellipsis(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context(user_id=1)
+    client = make_client()
+    first = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+    session_id = first.json()["data"]["session_id"]
+
+    followup = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "那跌破呢？", "session_id": session_id},
+    )
+
+    assert followup.status_code == 200
+    data = followup.json()["data"]
+    assert data["session_id"] == session_id
+    assert data["intent_type"] == "invalidation"
+    assert data["conversation_context"]["turn_count"] == 1
+    assert data["conversation_context"]["last_intent_type"] == "buy_window"
+    assert "10.00" in data["coach_answer"]
+    assert "仅供参考，不构成投资建议" in data["coach_answer"]
+
+
+def test_chat_followup_reuses_last_intent_when_question_is_implicit(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context(user_id=1)
+    client = make_client()
+    first = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    )
+    session_id = first.json()["data"]["session_id"]
+
+    followup = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "那继续呢？", "session_id": session_id},
+    )
+
+    assert followup.status_code == 200
+    data = followup.json()["data"]
+    assert data["intent_type"] == "invalidation"
+    assert data["conversation_context"]["last_intent_type"] == "invalidation"
+    assert "当前观察分支就要降级" in data["coach_answer"]
+
+
+def test_chat_followup_can_request_reminder_from_prior_answer(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context(user_id=1)
+    client = make_client()
+    first = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    )
+    session_id = first.json()["data"]["session_id"]
+
+    followup = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "那帮我盯一下", "session_id": session_id},
+    )
+
+    assert followup.status_code == 200
+    data = followup.json()["data"]
+    assert data["intent_type"] == "reminder"
+    assert data["conversation_context"]["last_intent_type"] == "invalidation"
+    assert len(data["suggested_reminders"]) == 2
+    assert "提醒只帮助你复核，不代表交易指令" in data["coach_answer"]
+
+
 def test_chat_rejects_cross_user_session(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     build_context(user_id=1)

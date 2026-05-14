@@ -35,7 +35,19 @@ def answer_structure_question(
     context = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
     if not context:
         return None
-    intent_type = classify_intent(question)
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=canonical,
+        context_id=context["context_id"],
+        session_id=session_id,
+    )
+    if not session:
+        return None
+    conversation_context = get_recent_conversation_context(
+        user_id=user_id,
+        session_id=session["session_id"],
+    )
+    intent_type = classify_intent(question, conversation_context=conversation_context)
     chart_focus = chart_focus_for_intent(context, intent_type)
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
@@ -45,14 +57,6 @@ def answer_structure_question(
         if intent_type == "review"
         else None
     )
-    session = upsert_chat_session(
-        user_id=user_id,
-        symbol=canonical,
-        context_id=context["context_id"],
-        session_id=session_id,
-    )
-    if not session:
-        return None
     answer = _build_answer(
         question=question,
         intent_type=intent_type,
@@ -73,6 +77,7 @@ def answer_structure_question(
         "suggested_reminders": reminder_candidates,
         "memory_context": memory_context,
         "review_context": review_context,
+        "conversation_context": conversation_context,
         "risk_disclaimer": RISK_DISCLAIMER,
     }
     message = save_chat_message(
@@ -90,7 +95,7 @@ def answer_structure_question(
     return payload
 
 
-def classify_intent(question: str) -> str:
+def classify_intent(question: str, conversation_context: dict[str, Any] | None = None) -> str:
     text = (question or "").strip().lower()
     if any(token in text for token in ("复盘", "回顾", "错在哪里", "错哪", "纪律", "上次错", "最近错")):
         return "review"
@@ -102,6 +107,9 @@ def classify_intent(question: str) -> str:
         return "reminder"
     if any(token in text for token in ("为什么", "解释", "结构", "中枢")):
         return "explain_structure"
+    followup_intent = _followup_intent(text, conversation_context)
+    if followup_intent:
+        return followup_intent
     return "buy_window"
 
 
@@ -203,6 +211,30 @@ def list_chat_messages(*, user_id: int, session_id: str) -> list[dict[str, Any]]
         return [_message_row(row) for row in rows]
     finally:
         conn.close()
+
+
+def get_recent_conversation_context(*, user_id: int, session_id: str, limit: int = 4) -> dict[str, Any]:
+    messages = list_chat_messages(user_id=user_id, session_id=session_id) or []
+    recent = messages[-max(1, limit):]
+    turns = [
+        {
+            "question_text": item.get("question_text") or "",
+            "intent_type": item.get("intent_type") or "",
+            "context_id": item.get("context_id") or "",
+            "message_id": item.get("message_id") or "",
+            "evidence_refs": item.get("evidence_refs") or [],
+        }
+        for item in recent
+    ]
+    last = turns[-1] if turns else {}
+    return {
+        "version": "ai_structure_conversation_context.v1",
+        "turn_count": len(messages),
+        "last_intent_type": last.get("intent_type") or None,
+        "last_context_id": last.get("context_id") or None,
+        "last_message_id": last.get("message_id") or None,
+        "recent_turns": turns,
+    }
 
 
 def save_chat_message(
@@ -368,6 +400,24 @@ def _branch_type_text(branch_type: str) -> str:
         "invalidation_watch": "失效观察分支",
         "holding_defense": "持仓防守分支",
     }.get(branch_type, branch_type or "结构分支")
+
+
+def _followup_intent(text: str, conversation_context: dict[str, Any] | None) -> str | None:
+    last_intent = (conversation_context or {}).get("last_intent_type")
+    if not last_intent:
+        return None
+    if any(token in text for token in ("那", "如果", "这个", "它", "继续", "还有", "呢", "然后")):
+        if any(token in text for token in ("跌", "破", "失效", "不看", "防守")):
+            return "invalidation"
+        if any(token in text for token in ("提醒", "盯", "到价", "叫我")):
+            return "reminder"
+        if any(token in text for token in ("为什么", "结构", "中枢")):
+            return "explain_structure"
+        if any(token in text for token in ("复盘", "错", "纪律")):
+            return "review"
+        if last_intent in {"buy_window", "invalidation", "hold_or_exit", "reminder", "explain_structure", "review"}:
+            return last_intent
+    return None
 
 
 def _apply_memory_warning(coach: str, memory_context: dict[str, Any] | None) -> str:

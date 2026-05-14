@@ -17,6 +17,7 @@
 - Added the AI Structure outcome timeline to the right-side coach panel, including recent branch reviews and mistake-memory warnings.
 - Added review-aware AI Structure chat answers for questions like “我上次错在哪里？”, grounded in outcome timeline and mistake memory.
 - Added right-side AI Structure chat session restore so follow-up questions continue the latest user-scoped coaching conversation.
+- Added session-aware AI Structure follow-up understanding for ellipsis questions like “那跌破呢？” and “那帮我盯一下”.
 - Added a price-monitor regression test proving V5 AI Structure reminders are scanned and pushed even when no normal position stop-loss rows exist.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
