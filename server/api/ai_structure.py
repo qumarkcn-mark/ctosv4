@@ -24,6 +24,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
 from server.engines.ai_native.scenario_branch_service import list_scenario_branches
 from server.engines.ai_native.scenario_outcome_service import (
     get_symbol_memory_profile,
+    list_symbol_outcome_reviews,
     settle_scenario_branch,
 )
 from server.engines.ai_native.pipeline_ensure_service import ensure_ai_structure_pipeline
@@ -384,6 +385,22 @@ def memory_profile(symbol: str, current_user_id: int = Depends(get_current_user_
     if not profile:
         raise HTTPException(status_code=404, detail="memory profile not found")
     return {"status": "success", "data": profile}
+
+
+@router.get("/outcomes/{symbol}")
+def outcome_reviews(
+    symbol: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user_id: int = Depends(get_current_user_id),
+):
+    return {
+        "status": "success",
+        "data": list_symbol_outcome_reviews(
+            user_id=current_user_id,
+            symbol=normalize_symbol(symbol),
+            limit=limit,
+        ),
+    }
 
 
 def _validate_compute_profile(compute_profile: str) -> None:

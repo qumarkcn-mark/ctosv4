@@ -489,6 +489,7 @@ API:
 ```http
 POST /api/ai-structure/branches/settle
 GET /api/ai-structure/memory/{symbol}
+GET /api/ai-structure/outcomes/{symbol}
 ```
 
 长期目标：
@@ -505,6 +506,7 @@ GET /api/ai-structure/memory/{symbol}
 - `settlement_window` 至少支持 `same_day` / `next_day` / `3d` / `5d` / `bars:N`。
 - `outcome_score` 记录分支质量，区分“方向正确但过早”“边界正确但触发太宽”“完全失效”。
 - `user_followed_plan` 记录用户是否按提醒或计划执行，用于交易纪律记忆。
+- outcome review API 返回 user-scoped timeline，并带上 branch contract、mistake 标记和 memory 摘要，供 Web、小程序、复盘页复用。
 
 ## 建议数据库表
 
