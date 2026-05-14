@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import jwt
+import json
 
 from server.api import ai_structure
 from server.api.auth import ALGORITHM, JWT_SECRET
@@ -171,6 +172,8 @@ def test_scan_structure_reminders_triggers_active_link(monkeypatch, tmp_path):
 
     assert result["count"] == 1
     assert result["items"][0]["alert_id"] == reminder["alert_id"]
+    assert result["items"][0]["settled_outcome"]["outcome"] == "invalidated"
+    assert result["items"][0]["settled_outcome"]["user_followed_plan"] is None
     assert result["items"][0]["message"]
     conn = database.get_connection()
     try:
@@ -182,12 +185,21 @@ def test_scan_structure_reminders_triggers_active_link(monkeypatch, tmp_path):
         event = conn.execute(
             "SELECT * FROM coach_events WHERE event_type = 'AI_STRUCTURE_REMINDER_TRIGGERED'",
         ).fetchone()
+        outcome = conn.execute(
+            "SELECT * FROM scenario_outcomes WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
+        memory = conn.execute(
+            "SELECT * FROM ai_symbol_memory_profiles WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
     finally:
         conn.close()
     assert alert["is_triggered"] == 1
     assert alert["triggered_at"]
     assert link["status"] == "TRIGGERED"
     assert event["symbol"] == "sh.600519"
+    assert outcome["outcome"] == "invalidated"
+    assert outcome["user_followed_plan"] is None
+    assert json.loads(memory["profile_json"])["mistakes"] == []
 
 
 def test_scan_structure_reminders_ignores_non_triggered_price(monkeypatch, tmp_path):
