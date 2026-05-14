@@ -1,5 +1,6 @@
 """Price monitor alert contract tests."""
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from server.workers import price_monitor as price_monitor_module
 from server.workers.price_monitor import PriceMonitor, _build_alert_strategy_contract, _parse_hhmm
 
 
@@ -125,3 +127,45 @@ def test_trigger_alert_db_persists_strategy_contract_and_disclaimer():
     assert event["event_type"] == "ALERT_CANDIDATE_CREATED"
     assert trigger["strategy_id"] == "war1_third_buy"
     assert delivery["delivery_status"] == "CREATED"
+
+
+def test_price_monitor_scans_ai_structure_reminders_without_positions(monkeypatch):
+    monitor = PriceMonitor()
+    sent = []
+    captured = {}
+
+    async def fake_get_batch_prices(symbols):
+        captured["symbols"] = symbols
+        return {"sh.600519": {"price": 1342.17}}
+
+    def fake_scan_structure_reminders(prices):
+        captured["prices"] = prices
+        return {
+            "count": 1,
+            "items": [
+                {
+                    "user_id": 1,
+                    "symbol": "sh.600519",
+                    "message": "sh.600519 跌破失败线，提醒复核。仅供参考，不构成投资建议",
+                }
+            ],
+        }
+
+    async def fake_send_stop_loss_alert(user_id, msg):
+        sent.append((user_id, msg))
+
+    monkeypatch.setattr(monitor, "_db_get_positions", lambda: [])
+    monkeypatch.setattr(price_monitor_module, "list_active_reminder_symbols", lambda: ["sh.600519"])
+    monkeypatch.setattr(price_monitor_module, "get_batch_prices", fake_get_batch_prices)
+    monkeypatch.setattr(price_monitor_module, "scan_structure_reminders", fake_scan_structure_reminders)
+    monkeypatch.setattr(price_monitor_module, "send_stop_loss_alert", fake_send_stop_loss_alert)
+
+    async def run_check():
+        await monitor._check_stop_losses()
+        await asyncio.sleep(0)
+
+    asyncio.run(run_check())
+
+    assert captured["symbols"] == ["sh.600519"]
+    assert captured["prices"] == {"sh.600519": {"price": 1342.17}}
+    assert sent == [(1, "sh.600519 跌破失败线，提醒复核。仅供参考，不构成投资建议")]
