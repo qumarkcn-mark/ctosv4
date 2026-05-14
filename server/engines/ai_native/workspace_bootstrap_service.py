@@ -22,6 +22,14 @@ from server.engines.ai_native.universe_resolver import DEFAULT_SOURCES, resolve_
 
 
 MAX_INLINE_ENSURE_SYMBOLS = 5
+DEFAULT_CLIENT = "web"
+CLIENT_SECTION_PROFILES = {
+    "web": ("context_status", "latest_context", "branches", "reminders", "outcomes"),
+    "miniprogram": ("context_status", "reminders", "outcomes"),
+    "worker": ("context_status",),
+    "reminder": ("context_status", "reminders"),
+}
+ALLOWED_INCLUDE_SECTIONS = set(CLIENT_SECTION_PROFILES["web"])
 
 
 async def bootstrap_ai_structure_workspace(
@@ -34,10 +42,14 @@ async def bootstrap_ai_structure_workspace(
     ensure_pipeline: bool = False,
     priority: int = 85,
     reason: str = "workspace_bootstrap",
+    client: str = DEFAULT_CLIENT,
+    include_sections: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return the minimum state a client needs to open the V5 workspace."""
     normalized_sources = _sources(sources)
     normalized_levels = list(levels or DEFAULT_LEVELS)
+    normalized_client = _client(client)
+    sections = _include_sections(normalized_client, include_sections)
     safe_limit = max(1, min(int(limit or 20), 50))
     universe = resolve_ai_native_universe(user_id, normalized_sources)[:safe_limit]
     symbols = [item["symbol"] for item in universe]
@@ -64,6 +76,8 @@ async def bootstrap_ai_structure_workspace(
         "sources": normalized_sources,
         "levels": normalized_levels,
         "compute_profile": compute_profile,
+        "client": normalized_client,
+        "include": sections,
         "universe": universe,
         "ensure_pipeline": ensure_result,
         "symbols": [
@@ -72,6 +86,7 @@ async def bootstrap_ai_structure_workspace(
                 universe_item=item,
                 levels=normalized_levels,
                 compute_profile=compute_profile,
+                include_sections=sections,
             )
             for item in universe
         ],
@@ -84,38 +99,45 @@ def _symbol_workspace_state(
     universe_item: dict[str, Any],
     levels: list[str],
     compute_profile: str,
+    include_sections: list[str],
 ) -> dict[str, Any]:
     symbol = normalize_symbol(universe_item["symbol"])
-    context_status = _status_summary(get_ai_structure_context_status(
-        user_id=user_id,
-        symbol=symbol,
-        levels=levels,
-        compute_profile=compute_profile,
-    ))
-    context = get_latest_ai_structure_context(user_id=user_id, symbol=symbol)
-    context_id = str((context or {}).get("context_id") or "")
-    branches = list_scenario_branches(user_id=user_id, symbol=symbol, context_id=context_id or None)
-    reminders = list_structure_reminders(user_id=user_id, symbol=symbol, limit=10)
-    outcomes = list_symbol_outcome_reviews(user_id=user_id, symbol=symbol, limit=5)
-    return {
+    context = None
+    state: dict[str, Any] = {
         "symbol": symbol,
         "name": universe_item.get("name") or symbol,
         "sources": universe_item.get("sources") or [],
         "priority": int(universe_item.get("priority") or 0),
         "has_position": bool(universe_item.get("has_position")),
-        "context_status": context_status,
-        "latest_context": _context_summary(context),
-        "branches": {
+    }
+    if "context_status" in include_sections:
+        state["context_status"] = _status_summary(get_ai_structure_context_status(
+            user_id=user_id,
+            symbol=symbol,
+            levels=levels,
+            compute_profile=compute_profile,
+        ))
+    if _needs_context(include_sections):
+        context = get_latest_ai_structure_context(user_id=user_id, symbol=symbol)
+    context_id = str((context or {}).get("context_id") or "")
+    if "latest_context" in include_sections:
+        state["latest_context"] = _context_summary(context)
+    if "branches" in include_sections:
+        branches = list_scenario_branches(user_id=user_id, symbol=symbol, context_id=context_id or None)
+        state["branches"] = {
             "count": len(branches),
             "items": branches[:5],
-        },
-        "reminders": reminders,
-        "outcomes": {
+        }
+    if "reminders" in include_sections:
+        state["reminders"] = list_structure_reminders(user_id=user_id, symbol=symbol, limit=10)
+    if "outcomes" in include_sections:
+        outcomes = list_symbol_outcome_reviews(user_id=user_id, symbol=symbol, limit=5)
+        state["outcomes"] = {
             "count": outcomes.get("count", 0),
             "items": (outcomes.get("items") or [])[:5],
             "memory": outcomes.get("memory") or {},
-        },
-    }
+        }
+    return state
 
 
 def _context_summary(context: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -203,3 +225,23 @@ def _status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 def _sources(sources: list[str] | None) -> list[str]:
     selected = [str(item).strip().lower() for item in (sources or list(DEFAULT_SOURCES)) if str(item).strip()]
     return selected or list(DEFAULT_SOURCES)
+
+
+def _client(client: str | None) -> str:
+    normalized = str(client or DEFAULT_CLIENT).strip().lower()
+    if normalized not in CLIENT_SECTION_PROFILES:
+        raise ValueError(f"unsupported workspace client: {normalized}")
+    return normalized
+
+
+def _include_sections(client: str, include_sections: list[str] | None) -> list[str]:
+    raw_sections = include_sections if include_sections is not None else list(CLIENT_SECTION_PROFILES[client])
+    sections = [str(item).strip().lower() for item in raw_sections if str(item).strip()]
+    invalid = sorted(set(sections) - ALLOWED_INCLUDE_SECTIONS)
+    if invalid:
+        raise ValueError(f"unsupported workspace include sections: {','.join(invalid)}")
+    return sections or list(CLIENT_SECTION_PROFILES[client])
+
+
+def _needs_context(include_sections: list[str]) -> bool:
+    return bool({"latest_context", "branches"} & set(include_sections))
