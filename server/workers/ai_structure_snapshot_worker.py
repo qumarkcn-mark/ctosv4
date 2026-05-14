@@ -9,7 +9,11 @@ import uuid
 from typing import Optional
 
 from server import config
-from server.engines.ai_native.czsc_snapshot_service import claim_next_snapshot_job, run_snapshot_job
+from server.engines.ai_native.czsc_snapshot_service import (
+    claim_next_snapshot_job,
+    recover_failed_snapshot_jobs,
+    run_snapshot_job,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,9 @@ class AIStructureSnapshotWorker:
         if self._running:
             return
         self._running = True
+        recovered = recover_failed_snapshot_jobs(reason="snapshot_worker_start_recover")
+        if recovered.get("count"):
+            logger.info("AI Structure Snapshot Worker 恢复失败快照任务: %d", recovered["count"])
         self._task = asyncio.create_task(self._loop())
         logger.info("AI Structure Snapshot Worker 启动 worker_id=%s", self.worker_id)
 
