@@ -12,9 +12,16 @@ from typing import Any
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.czsc_snapshot_service import now_text, stable_hash
-from server.engines.ai_native.scenario_outcome_service import settle_scenario_branch
+from server.engines.ai_native.scenario_outcome_service import settle_scenario_branch, update_symbol_memory_profile
 from server.engines.ai_native.structure_chat_service import RISK_DISCLAIMER
 from server.engines.coach.event_log import record_alert_delivery, record_coach_event
+
+ACK_ACTIONS = {"handled", "continue_watch", "ignored"}
+ACK_STATUSES = {
+    "handled": "ACKED_HANDLED",
+    "continue_watch": "ACKED_CONTINUE_WATCH",
+    "ignored": "ACKED_IGNORED",
+}
 
 
 def create_reminder_from_chat_evidence(
@@ -160,7 +167,7 @@ def list_structure_reminders(
     *,
     user_id: int,
     symbol: str | None = None,
-    statuses: tuple[str, ...] = ("ACTIVE", "TRIGGERED"),
+    statuses: tuple[str, ...] = ("ACTIVE", "TRIGGERED", "ACKED_HANDLED", "ACKED_CONTINUE_WATCH", "ACKED_IGNORED"),
     limit: int = 50,
 ) -> dict[str, Any]:
     """List user-scoped AI Structure reminders for the workspace."""
@@ -194,6 +201,126 @@ def list_structure_reminders(
         return {"count": len(rows), "items": [_link_row(row) for row in rows]}
     finally:
         conn.close()
+
+
+def ack_structure_reminder(*, user_id: int, reminder_id: int, action: str) -> dict[str, Any] | None:
+    """Record the user's follow-up on a triggered AI Structure reminder."""
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in ACK_ACTIONS:
+        raise ValueError("unsupported reminder ack action")
+
+    link = _load_reminder_link(user_id=user_id, reminder_id=reminder_id)
+    if not link:
+        return None
+    if link["status"] != "TRIGGERED":
+        raise ValueError("only triggered reminders can be acknowledged")
+
+    branch_id = _find_branch_for_reminder(
+        user_id=int(user_id),
+        symbol=link["symbol"],
+        context_id=link["context_id"],
+        evidence_id=link["evidence_id"],
+        direction=link["direction"],
+        include_settled=True,
+    )
+    now = now_text()
+    outcome: dict[str, Any] | None = None
+    followed = None
+    if normalized_action in {"handled", "ignored"}:
+        followed = 1 if normalized_action == "handled" else 0
+    if followed is not None and branch_id:
+        outcome = _load_latest_reminder_outcome(user_id=int(user_id), branch_id=branch_id)
+        if not outcome:
+            outcome = settle_scenario_branch(
+                user_id=int(user_id),
+                branch_id=branch_id,
+                current_price=link["trigger_price"],
+                settlement_window="ai_reminder_trigger",
+                checked_at=link.get("triggered_at") or now,
+                user_followed_plan=bool(followed),
+            )
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if followed is not None and branch_id:
+            outcome = _latest_reminder_outcome(conn, user_id=int(user_id), branch_id=branch_id)
+            if outcome:
+                conn.execute(
+                    """
+                    UPDATE scenario_outcomes
+                       SET user_followed_plan = ?
+                     WHERE outcome_id = ? AND user_id = ?
+                    """,
+                    (followed, outcome["outcome_id"], int(user_id)),
+                )
+                outcome = dict(outcome)
+                outcome["user_followed_plan"] = followed
+        ack_status = ACK_STATUSES[normalized_action]
+        update = conn.execute(
+            """
+            UPDATE ai_structure_reminder_links
+               SET status = ?,
+                   updated_at = ?
+             WHERE id = ? AND user_id = ? AND status = 'TRIGGERED'
+            """,
+            (ack_status, now, int(reminder_id), int(user_id)),
+        )
+        if update.rowcount != 1:
+            raise ValueError("only triggered reminders can be acknowledged")
+        event_id = record_coach_event(
+            conn,
+            event_type="AI_STRUCTURE_REMINDER_ACKED",
+            user_id=int(user_id),
+            symbol=link["symbol"],
+            source="ai_structure_workspace",
+            severity="WARNING" if normalized_action == "ignored" else "INFO",
+            dedupe_key=f"{link['dedupe_key']}:ack:{normalized_action}",
+            strategy={
+                "strategy_id": "ai_structure_v5",
+                "strategy_version": "v1",
+                "strategy_type": "AI_STRUCTURE_REMINDER",
+            },
+            structure_ref={
+                "context_id": link["context_id"],
+                "evidence_id": link["evidence_id"],
+                "session_id": link["session_id"],
+                "message_id": link["message_id"],
+                "branch_id": branch_id,
+            },
+            evidence={
+                "alert_id": link["alert_id"],
+                "link_id": link["id"],
+                "trigger_price": link["trigger_price"],
+                "direction": link["direction"],
+                "ack_action": normalized_action,
+                "outcome_id": outcome.get("outcome_id") if outcome else None,
+            },
+            message={"title": "AI Structure Reminder Follow-up", "body": _ack_message(normalized_action)},
+            metadata={"alert_id": link["alert_id"], "link_id": link["id"]},
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT l.*, a.is_triggered, a.triggered_at, a.message
+              FROM ai_structure_reminder_links l
+              JOIN alerts a ON a.id = l.alert_id
+             WHERE l.id = ? AND l.user_id = ?
+            """,
+            (int(reminder_id), int(user_id)),
+        ).fetchone()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    if normalized_action in {"handled", "ignored"}:
+        update_symbol_memory_profile(user_id=int(user_id), symbol=link["symbol"])
+    result = _link_row(row) if row else {}
+    result["ack_action"] = normalized_action
+    result["ack_event_id"] = event_id
+    result["outcome"] = outcome
+    return result
 
 
 def list_active_reminder_symbols() -> list[str]:
@@ -379,6 +506,24 @@ def _load_message(*, user_id: int, session_id: str, message_id: str) -> dict[str
         conn.close()
 
 
+def _load_reminder_link(*, user_id: int, reminder_id: int) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT l.*, a.is_triggered, a.triggered_at, a.message
+              FROM ai_structure_reminder_links l
+              JOIN alerts a ON a.id = l.alert_id
+             WHERE l.user_id = ? AND l.id = ?
+             LIMIT 1
+            """,
+            (int(user_id), int(reminder_id)),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def _candidate_for_evidence(candidates: list[dict[str, Any]], evidence_id: str) -> dict[str, Any] | None:
     for candidate in candidates:
         if candidate.get("evidence_id") == evidence_id:
@@ -428,6 +573,14 @@ def _trigger_message(*, row, current_price: float) -> str:
     )
 
 
+def _ack_message(action: str) -> str:
+    if action == "handled":
+        return f"用户已标记提醒处理完成。{RISK_DISCLAIMER}"
+    if action == "ignored":
+        return f"用户已忽略触发提醒，将进入纪律复盘。{RISK_DISCLAIMER}"
+    return f"用户选择继续观察触发提醒。{RISK_DISCLAIMER}"
+
+
 def _auto_settle_branch_for_reminder(
     *,
     user_id: int,
@@ -464,18 +617,20 @@ def _find_branch_for_reminder(
     context_id: str,
     evidence_id: str,
     direction: str,
+    include_settled: bool = False,
 ) -> str:
     expected_condition = "price_above" if str(direction).upper() == "ABOVE" else "price_below"
     conn = get_connection()
     try:
+        status_clause = "" if include_settled else "AND status = 'ACTIVE'"
         rows = conn.execute(
-            """
+            f"""
             SELECT branch_id, branch_type, trigger_condition_json, invalidate_condition_json, evidence_refs_json
               FROM scenario_branches
              WHERE user_id = ?
                AND symbol = ?
                AND context_id = ?
-               AND status = 'ACTIVE'
+               {status_clause}
              ORDER BY
                CASE branch_type
                  WHEN 'observe_breakout' THEN 0
@@ -497,6 +652,30 @@ def _find_branch_for_reminder(
             if trigger.get("type") == expected_condition or invalid.get("type") == expected_condition:
                 return row["branch_id"]
         return ""
+    finally:
+        conn.close()
+
+
+def _latest_reminder_outcome(conn, *, user_id: int, branch_id: str):
+    return conn.execute(
+        """
+        SELECT *
+          FROM scenario_outcomes
+         WHERE user_id = ?
+           AND branch_id = ?
+           AND settlement_window = 'ai_reminder_trigger'
+         ORDER BY checked_at DESC, id DESC
+         LIMIT 1
+        """,
+        (int(user_id), branch_id),
+    ).fetchone()
+
+
+def _load_latest_reminder_outcome(*, user_id: int, branch_id: str) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        row = _latest_reminder_outcome(conn, user_id=int(user_id), branch_id=branch_id)
+        return dict(row) if row else None
     finally:
         conn.close()
 

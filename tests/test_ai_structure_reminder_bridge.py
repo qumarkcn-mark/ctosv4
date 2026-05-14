@@ -61,6 +61,27 @@ def build_context(user_id=1):
     context_service.run_context_job_sync(job)
 
 
+def create_triggered_invalidation_reminder(client):
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    ).json()["data"]
+    candidate = chat["suggested_reminders"][0]
+    reminder = client.post(
+        "/api/ai-structure/reminders",
+        json={
+            "session_id": chat["session_id"],
+            "message_id": chat["message_id"],
+            "evidence_id": candidate["evidence_id"],
+        },
+    ).json()["data"]
+    scan = reminder_service.scan_structure_reminders({
+        "sh600519": {"price": float(candidate["trigger_price"]) - 0.1},
+    })
+    assert scan["count"] == 1
+    return reminder, scan["items"][0]
+
+
 def test_create_reminder_writes_alert_and_coach_event(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     build_context()
@@ -259,3 +280,167 @@ def test_reminder_is_user_scoped(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 404
+
+
+def test_ack_handled_marks_outcome_followed_without_mistake(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+
+    response = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "handled"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ACKED_HANDLED"
+    assert data["ack_action"] == "handled"
+    assert data["outcome"]["outcome"] == "invalidated"
+    assert data["outcome"]["user_followed_plan"] == 1
+    conn = database.get_connection()
+    try:
+        outcome = conn.execute("SELECT * FROM scenario_outcomes WHERE user_id = 1").fetchone()
+        memory = conn.execute(
+            "SELECT * FROM ai_symbol_memory_profiles WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
+        event = conn.execute(
+            "SELECT * FROM coach_events WHERE event_type = 'AI_STRUCTURE_REMINDER_ACKED'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert outcome["user_followed_plan"] == 1
+    assert json.loads(memory["profile_json"])["mistakes"] == []
+    assert event["severity"] == "INFO"
+
+
+def test_ack_ignored_marks_outcome_unfollowed_and_enters_mistake_memory(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+
+    response = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "ignored"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ACKED_IGNORED"
+    assert data["outcome"]["user_followed_plan"] == 0
+    conn = database.get_connection()
+    try:
+        memory = conn.execute(
+            "SELECT * FROM ai_symbol_memory_profiles WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
+        event = conn.execute(
+            "SELECT * FROM coach_events WHERE event_type = 'AI_STRUCTURE_REMINDER_ACKED'",
+        ).fetchone()
+    finally:
+        conn.close()
+    mistakes = json.loads(memory["profile_json"])["mistakes"]
+    assert mistakes[0]["type"] == "ignored_invalidation"
+    assert event["severity"] == "WARNING"
+
+
+def test_ack_ignored_creates_outcome_when_auto_settlement_was_missing(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+    conn = database.get_connection()
+    try:
+        conn.execute("DELETE FROM scenario_outcomes WHERE user_id = 1")
+        conn.execute("DELETE FROM ai_symbol_memory_profiles WHERE user_id = 1")
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "ignored"},
+    )
+
+    assert response.status_code == 200
+    conn = database.get_connection()
+    try:
+        outcome = conn.execute("SELECT * FROM scenario_outcomes WHERE user_id = 1").fetchone()
+        memory = conn.execute(
+            "SELECT * FROM ai_symbol_memory_profiles WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert outcome["settlement_window"] == "ai_reminder_trigger"
+    assert outcome["outcome"] == "invalidated"
+    assert outcome["user_followed_plan"] == 0
+    assert json.loads(memory["profile_json"])["mistakes"][0]["type"] == "ignored_invalidation"
+
+
+def test_ack_continue_watch_records_event_without_mistake(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+
+    response = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "continue_watch"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ACKED_CONTINUE_WATCH"
+    assert data["outcome"] is None
+    conn = database.get_connection()
+    try:
+        outcome = conn.execute("SELECT * FROM scenario_outcomes WHERE user_id = 1").fetchone()
+        memory = conn.execute(
+            "SELECT * FROM ai_symbol_memory_profiles WHERE user_id = 1 AND symbol = 'sh.600519'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert outcome["user_followed_plan"] is None
+    assert json.loads(memory["profile_json"])["mistakes"] == []
+
+
+def test_ack_reminder_is_user_scoped(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    ensure_user(2)
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+
+    response = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "ignored"},
+        headers=auth_headers(2),
+    )
+
+    assert response.status_code == 404
+
+
+def test_ack_reminder_cannot_be_applied_twice(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    reminder, _ = create_triggered_invalidation_reminder(client)
+
+    first = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "handled"},
+    )
+    second = client.post(
+        f"/api/ai-structure/reminders/{reminder['id']}/ack",
+        json={"action": "ignored"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    conn = database.get_connection()
+    try:
+        outcome = conn.execute("SELECT * FROM scenario_outcomes WHERE user_id = 1").fetchone()
+    finally:
+        conn.close()
+    assert outcome["user_followed_plan"] == 1
