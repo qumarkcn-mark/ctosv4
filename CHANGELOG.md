@@ -18,6 +18,7 @@
 - Added review-aware AI Structure chat answers for questions like “我上次错在哪里？”, grounded in outcome timeline and mistake memory.
 - Added right-side AI Structure chat session restore so follow-up questions continue the latest user-scoped coaching conversation.
 - Added session-aware AI Structure follow-up understanding for ellipsis questions like “那跌破呢？” and “那帮我盯一下”.
+- Added V5 outcome and mistake-memory review timeline to the Review Training page.
 - Added a price-monitor regression test proving V5 AI Structure reminders are scanned and pushed even when no normal position stop-loss rows exist.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
@@ -38,4 +39,5 @@
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_chat_api.py tests/test_ai_structure_auth_isolation.py -q`
 - Playwright QA smoke for AI Structure workspace: ask -> chart evidence -> reminder create -> real price-monitor trigger -> ack ignored -> mistake memory.
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_price_monitor_alerts.py tests/test_ai_structure_reminder_bridge.py -q`
+- Playwright QA smoke for Review Training page V5 outcome timeline and existing behavior report.
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.
