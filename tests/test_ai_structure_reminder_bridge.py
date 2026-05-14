@@ -7,6 +7,7 @@ from server.api.auth import ALGORITHM, JWT_SECRET
 from server.db import database
 from server.engines.ai_native import czsc_snapshot_service as snapshot_service
 from server.engines.ai_native import structure_context_service as context_service
+from server.engines.ai_native import structure_reminder_service as reminder_service
 
 
 def reset_db(monkeypatch, tmp_path):
@@ -119,6 +120,110 @@ def test_duplicate_reminder_reuses_existing_alert(monkeypatch, tmp_path):
     finally:
         conn.close()
     assert count == 1
+
+
+def test_list_reminders_returns_user_symbol_scope(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    ).json()["data"]
+    evidence_id = chat["suggested_reminders"][0]["evidence_id"]
+    client.post(
+        "/api/ai-structure/reminders",
+        json={"session_id": chat["session_id"], "message_id": chat["message_id"], "evidence_id": evidence_id},
+    )
+
+    response = client.get("/api/ai-structure/reminders/sh600519")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] == 1
+    assert data["items"][0]["symbol"] == "sh.600519"
+    assert data["items"][0]["status"] == "ACTIVE"
+    assert data["items"][0]["triggered"] is False
+    assert data["items"][0]["message"]
+
+
+def test_scan_structure_reminders_triggers_active_link(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    ).json()["data"]
+    candidate = chat["suggested_reminders"][0]
+    reminder = client.post(
+        "/api/ai-structure/reminders",
+        json={
+            "session_id": chat["session_id"],
+            "message_id": chat["message_id"],
+            "evidence_id": candidate["evidence_id"],
+        },
+    ).json()["data"]
+
+    result = reminder_service.scan_structure_reminders({
+        "sh600519": {"price": float(candidate["trigger_price"]) - 0.1},
+    })
+
+    assert result["count"] == 1
+    assert result["items"][0]["alert_id"] == reminder["alert_id"]
+    assert result["items"][0]["message"]
+    conn = database.get_connection()
+    try:
+        alert = conn.execute("SELECT * FROM alerts WHERE id = ?", (reminder["alert_id"],)).fetchone()
+        link = conn.execute(
+            "SELECT * FROM ai_structure_reminder_links WHERE alert_id = ?",
+            (reminder["alert_id"],),
+        ).fetchone()
+        event = conn.execute(
+            "SELECT * FROM coach_events WHERE event_type = 'AI_STRUCTURE_REMINDER_TRIGGERED'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert alert["is_triggered"] == 1
+    assert alert["triggered_at"]
+    assert link["status"] == "TRIGGERED"
+    assert event["symbol"] == "sh.600519"
+
+
+def test_scan_structure_reminders_ignores_non_triggered_price(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+    chat = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "跌破哪里就不看了？"},
+    ).json()["data"]
+    candidate = chat["suggested_reminders"][0]
+    reminder = client.post(
+        "/api/ai-structure/reminders",
+        json={
+            "session_id": chat["session_id"],
+            "message_id": chat["message_id"],
+            "evidence_id": candidate["evidence_id"],
+        },
+    ).json()["data"]
+
+    result = reminder_service.scan_structure_reminders({
+        "sh600519": {"price": float(candidate["trigger_price"]) + 0.1},
+    })
+
+    assert result["count"] == 0
+    conn = database.get_connection()
+    try:
+        alert = conn.execute("SELECT * FROM alerts WHERE id = ?", (reminder["alert_id"],)).fetchone()
+        link = conn.execute(
+            "SELECT * FROM ai_structure_reminder_links WHERE alert_id = ?",
+            (reminder["alert_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert alert["is_triggered"] == 0
+    assert link["status"] == "ACTIVE"
 
 
 def test_reminder_is_user_scoped(monkeypatch, tmp_path):

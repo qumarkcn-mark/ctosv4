@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 from server.db.database import get_connection
-from server.domain.symbols import normalize_symbol
+from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.czsc_snapshot_service import now_text, stable_hash
 from server.engines.ai_native.structure_chat_service import RISK_DISCLAIMER
 from server.engines.coach.event_log import record_alert_delivery, record_coach_event
@@ -155,6 +155,173 @@ def create_reminder_from_chat_evidence(
         conn.close()
 
 
+def list_structure_reminders(
+    *,
+    user_id: int,
+    symbol: str | None = None,
+    statuses: tuple[str, ...] = ("ACTIVE", "TRIGGERED"),
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List user-scoped AI Structure reminders for the workspace."""
+    if not statuses or limit <= 0:
+        return {"count": 0, "items": []}
+    clauses = ["l.user_id = ?"]
+    params: list[Any] = [int(user_id)]
+    if symbol:
+        clauses.append("l.symbol = ?")
+        params.append(normalize_symbol(symbol))
+    placeholders = ",".join("?" for _ in statuses)
+    clauses.append(f"l.status IN ({placeholders})")
+    params.extend(statuses)
+    params.append(int(limit))
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT l.*, a.is_triggered, a.triggered_at, a.message
+              FROM ai_structure_reminder_links l
+              JOIN alerts a ON a.id = l.alert_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY
+                CASE l.status WHEN 'ACTIVE' THEN 0 WHEN 'TRIGGERED' THEN 1 ELSE 2 END,
+                l.updated_at DESC,
+                l.id DESC
+             LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return {"count": len(rows), "items": [_link_row(row) for row in rows]}
+    finally:
+        conn.close()
+
+
+def list_active_reminder_symbols() -> list[str]:
+    """Return symbols that have active AI Structure reminders."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT l.symbol
+              FROM ai_structure_reminder_links l
+              JOIN alerts a ON a.id = l.alert_id
+             WHERE l.status = 'ACTIVE'
+               AND a.is_triggered = 0
+             ORDER BY l.symbol
+            """
+        ).fetchall()
+        return [row["symbol"] for row in rows]
+    finally:
+        conn.close()
+
+
+def scan_structure_reminders(price_by_symbol: dict[str, dict]) -> dict[str, Any]:
+    """Trigger active AI Structure reminders using a current-price map.
+
+    The scan only marks reminders and logs coach events. It never executes a
+    trade and keeps the normal alerts table as the reminder source of truth.
+    """
+    normalized_prices = _normalize_price_map(price_by_symbol)
+    if not normalized_prices:
+        return {"count": 0, "items": []}
+
+    conn = get_connection()
+    triggered: list[dict[str, Any]] = []
+    try:
+        now = now_text()
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """
+            SELECT l.*, a.message
+              FROM ai_structure_reminder_links l
+              JOIN alerts a ON a.id = l.alert_id
+             WHERE l.status = 'ACTIVE'
+               AND a.is_triggered = 0
+             ORDER BY l.updated_at ASC, l.id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            price = normalized_prices.get(row["symbol"])
+            if price is None or not _is_triggered(price, row["trigger_price"], row["direction"]):
+                continue
+            message_text = row["message"] or _trigger_message(row=row, current_price=price)
+            conn.execute(
+                """
+                UPDATE alerts
+                   SET is_triggered = 1,
+                       triggered_at = ?
+                 WHERE id = ?
+                """,
+                (now, row["alert_id"]),
+            )
+            conn.execute(
+                """
+                UPDATE ai_structure_reminder_links
+                   SET status = 'TRIGGERED',
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (now, row["id"]),
+            )
+            dedupe_key = f"{row['dedupe_key']}:trigger:{now}"
+            event_id = record_coach_event(
+                conn,
+                event_type="AI_STRUCTURE_REMINDER_TRIGGERED",
+                user_id=int(row["user_id"]),
+                symbol=row["symbol"],
+                source="price_monitor",
+                severity="WARNING",
+                dedupe_key=dedupe_key,
+                strategy={
+                    "strategy_id": "ai_structure_v5",
+                    "strategy_version": "v1",
+                    "strategy_type": "AI_STRUCTURE_REMINDER",
+                },
+                structure_ref={
+                    "context_id": row["context_id"],
+                    "evidence_id": row["evidence_id"],
+                    "session_id": row["session_id"],
+                    "message_id": row["message_id"],
+                },
+                evidence={
+                    "current_price": price,
+                    "trigger_price": row["trigger_price"],
+                    "direction": row["direction"],
+                    "alert_id": row["alert_id"],
+                },
+                message={"title": "AI Structure Reminder Triggered", "body": message_text},
+                metadata={"alert_id": row["alert_id"], "link_id": row["id"]},
+            )
+            record_alert_delivery(
+                conn,
+                event_id=event_id,
+                alert_id=int(row["alert_id"]),
+                user_id=int(row["user_id"]),
+                symbol=row["symbol"],
+                channel="wechat_subscribe",
+                delivery_status="TRIGGERED",
+                message=message_text,
+                dedupe_key=f"{row['dedupe_key']}:delivery:triggered:{now}",
+            )
+            triggered.append({
+                "user_id": int(row["user_id"]),
+                "symbol": row["symbol"],
+                "alert_id": int(row["alert_id"]),
+                "context_id": row["context_id"],
+                "evidence_id": row["evidence_id"],
+                "trigger_price": float(row["trigger_price"]),
+                "current_price": price,
+                "direction": row["direction"],
+                "message": message_text,
+            })
+        conn.commit()
+        return {"count": len(triggered), "items": triggered}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def reminder_dedupe_key(
     *,
     user_id: int,
@@ -214,7 +381,36 @@ def _message_text(*, symbol: str, candidate: dict[str, Any]) -> str:
 def _link_row(row, *, duplicate: bool = False) -> dict[str, Any]:
     data = dict(row)
     data["duplicate"] = duplicate
+    data["triggered"] = bool(data.get("is_triggered"))
     return data
+
+
+def _normalize_price_map(price_by_symbol: dict[str, dict]) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for raw_symbol, payload in (price_by_symbol or {}).items():
+        price = _num((payload or {}).get("price"))
+        if price <= 0:
+            continue
+        symbol = normalize_symbol(raw_symbol)
+        normalized[symbol] = price
+        normalized[to_tencent_symbol(symbol)] = price
+    return normalized
+
+
+def _is_triggered(current_price: float, trigger_price: float, direction: str) -> bool:
+    if str(direction or "").upper() == "ABOVE":
+        return current_price >= float(trigger_price)
+    if str(direction or "").upper() == "BELOW":
+        return current_price <= float(trigger_price)
+    return False
+
+
+def _trigger_message(*, row, current_price: float) -> str:
+    direction = "上破" if row["direction"] == "ABOVE" else "跌破"
+    return (
+        f"{row['symbol']} 已{direction} {float(row['trigger_price']):.2f}，"
+        f"当前价 {current_price:.2f}，请复核 AI 结构提醒。提醒不下单，{RISK_DISCLAIMER}"
+    )
 
 
 def _num(value) -> float:

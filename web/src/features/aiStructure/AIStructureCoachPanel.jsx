@@ -27,6 +27,7 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
   const [pollUntil, setPollUntil] = useState(0)
   const [error, setError] = useState('')
   const [pendingQuestion, setPendingQuestion] = useState('')
+  const [reminders, setReminders] = useState([])
   const mountedRef = useRef(true)
 
   const displayName = symbolName || symbol
@@ -44,6 +45,16 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     }
   }, [symbol])
 
+  const loadReminders = useCallback(async () => {
+    if (!symbol) return
+    try {
+      const json = await apiJson(`${API_BASE}/ai-structure/reminders/${encodeURIComponent(symbol)}`)
+      if (mountedRef.current) setReminders(json.data?.items || [])
+    } catch {
+      if (mountedRef.current) setReminders([])
+    }
+  }, [symbol])
+
   useEffect(() => {
     mountedRef.current = true
     setMessages([])
@@ -52,12 +63,14 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
     setStatus(null)
     setPollUntil(0)
     setPendingQuestion('')
+    setReminders([])
     onEvidenceContext?.(null)
     loadStatus()
+    loadReminders()
     return () => {
       mountedRef.current = false
     }
-  }, [symbol, loadStatus, onEvidenceContext])
+  }, [symbol, loadStatus, loadReminders, onEvidenceContext])
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
@@ -173,10 +186,11 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
         role: 'system',
         text: json.data?.duplicate ? '提醒已存在' : '提醒已创建',
       }])
+      await loadReminders()
     } catch (err) {
       setError(err?.message || '提醒创建失败')
     }
-  }, [])
+  }, [loadReminders])
 
   const statusLabel = useMemo(() => {
     if (pollingActive) return '生成中'
@@ -209,6 +223,8 @@ export default function AIStructureCoachPanel({ symbol, symbolName, onEvidenceCo
       </header>
 
       <PipelineStatus items={pipelineItems} />
+
+      <ReminderStatus reminders={reminders} />
 
       <div className="ai-structure-quick">
         {QUICK_QUESTIONS.map((item) => (
@@ -275,6 +291,28 @@ function PipelineStatus({ items }) {
           <em>{item.detail}</em>
         </div>
       ))}
+    </div>
+  )
+}
+
+function ReminderStatus({ reminders }) {
+  if (!reminders?.length) return null
+  const active = reminders.filter((item) => item.status === 'ACTIVE')
+  const triggered = reminders.filter((item) => item.status === 'TRIGGERED')
+  return (
+    <div className="ai-reminder-status" aria-label="AI 结构提醒">
+      <div className="ai-reminder-status-head">
+        <strong>提醒</strong>
+        <span>{active.length} 个盯盘中{triggered.length ? ` / ${triggered.length} 个已触发` : ''}</span>
+      </div>
+      <div className="ai-reminder-status-list">
+        {reminders.slice(0, 4).map((item) => (
+          <div key={item.dedupe_key} className={`ai-reminder-chip ai-reminder-chip--${item.status.toLowerCase()}`}>
+            <span>{item.direction === 'ABOVE' ? '上破' : '跌破'} {Number(item.trigger_price || 0).toFixed(2)}</span>
+            <em>{item.status === 'TRIGGERED' ? '已触发' : '盯盘中'}</em>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
