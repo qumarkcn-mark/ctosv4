@@ -20,6 +20,7 @@
 - Added session-aware AI Structure follow-up understanding for ellipsis questions like “那跌破呢？” and “那帮我盯一下”.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.
 - Added the AI Structure background context contract: fundamentals, sector, fund flow, and market context remain context-only while CZSC lines stay the decision boundary.
+- Clarified that background context must not appear as radar status, structure pipeline state, Kline evidence, or reminder triggers; it is reserved for future selection and position background use.
 - Added a price-monitor regression test proving V5 AI Structure reminders are scanned and pushed even when no normal position stop-loss rows exist.
 - Removed legacy `chan.py` / old radar runtime paths from the default app. V5 does not keep fallback, shadow, or comparison entry points.
 - Removed old scanner, rotation, playbook, sand-table, multiverse, old AI Native fusion/agent/observation, and stop/reduce training code paths.
