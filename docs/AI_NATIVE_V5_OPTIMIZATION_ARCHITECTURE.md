@@ -712,6 +712,7 @@ stats_json
 - 图表读 chart context。
 - 右侧 AI 窗口读 latest context。
 - 如果 V5 snapshot 缺失或 stale，页面显示等待刷新 / 使用上一版快照，不回退到旧雷达。
+- 右侧 AI 工作台用轻量状态条区分 `stale`、`no_data`、`failed`、`pending`：缺 K 线时提示先同步数据，CZSC 不可用时提示检查 worker / 依赖，stale 时明确“基于上一版结构”，生成中时明确页面请求不会同步跑重型结构计算。
 
 ### Phase 3：旧实时结构计算退出产品主线
 
@@ -815,7 +816,6 @@ Worker Contract:
 
 ## 后置优化
 
-- 增加 stale UI 文案规范，例如“结构快照待刷新，当前基于上一版数据”。
 - 任务优先级限流：持仓 > 最近聊过 > watchlist；pin / discovery 候选后续再进入优先级队列。
 - 增加 AI 降级模板：当数据不足、结构 stale、问题超出产品边界时，必须拒绝直接判断并返回等待条件。
 
