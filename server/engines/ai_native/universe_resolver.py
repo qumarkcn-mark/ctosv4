@@ -5,13 +5,16 @@ V5 的股票池只来自用户数据源，不读取旧结构结果。
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Iterable
 
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 
 
-DEFAULT_SOURCES = ("positions", "watchlist")
+DEFAULT_SOURCES = ("positions", "recent_chat", "watchlist")
+RECENT_CHAT_LOOKBACK_DAYS = 30
+MAX_RECENT_CHAT_SYMBOLS_PER_USER = 20
 
 SOURCE_PRIORITIES = {
     "pin": 120,
@@ -36,6 +39,19 @@ def resolve_ai_native_universe(user_id: int, sources: Iterable[str] | None = Non
                 source="positions",
                 priority=SOURCE_PRIORITIES["positions"],
                 has_position=True,
+            )
+    if "recent_chat" in selected:
+        for row in _recent_chat_rows(user_id):
+            canonical = normalize_symbol(row["symbol"])
+            existing = items.get(canonical)
+            _merge_item(
+                items,
+                symbol=canonical,
+                name=row.get("symbol"),
+                source="recent_chat",
+                priority=SOURCE_PRIORITIES["recent_chat"],
+                has_position=bool(existing and existing["has_position"]),
+                last_chat_at=row.get("updated_at"),
             )
     if "watchlist" in selected:
         for row in _watchlist_rows(user_id):
@@ -62,13 +78,18 @@ def list_ai_native_user_ids(limit: int | None = None) -> list[int]:
             """
             SELECT DISTINCT user_id
               FROM positions
-             WHERE quantity > 0
+            WHERE quantity > 0
+            UNION
+            SELECT DISTINCT user_id
+              FROM ai_structure_chat_sessions
+             WHERE status = 'ACTIVE' AND updated_at >= ?
             UNION
             SELECT DISTINCT wg.user_id
               FROM watchlist_groups wg
               JOIN watchlist_items wi ON wi.group_id = wg.id
              ORDER BY user_id
-            """
+            """,
+            (_recent_chat_cutoff(),),
         ).fetchall()
     finally:
         conn.close()
@@ -103,6 +124,18 @@ def list_interested_user_ids_for_symbol(symbol: str) -> list[int]:
               FROM watchlist_items wi
               JOIN watchlist_groups wg ON wg.id = wi.group_id
             """
+        ).fetchall()
+        for row in rows:
+            if normalize_symbol(row["symbol"]) == canonical:
+                interested.add(int(row["user_id"]))
+
+        rows = conn.execute(
+            """
+            SELECT user_id, symbol
+              FROM ai_structure_chat_sessions
+             WHERE status = 'ACTIVE' AND updated_at >= ?
+            """,
+            (_recent_chat_cutoff(),),
         ).fetchall()
         for row in rows:
             if normalize_symbol(row["symbol"]) == canonical:
@@ -164,6 +197,29 @@ def _watchlist_rows(user_id: int) -> list[dict]:
         conn.close()
 
 
+def _recent_chat_rows(user_id: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol, MAX(updated_at) AS updated_at
+              FROM ai_structure_chat_sessions
+             WHERE user_id = ? AND status = 'ACTIVE' AND updated_at >= ?
+             GROUP BY symbol
+             ORDER BY MAX(updated_at) DESC, MAX(id) DESC
+             LIMIT ?
+            """,
+            (user_id, _recent_chat_cutoff(), MAX_RECENT_CHAT_SYMBOLS_PER_USER),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _recent_chat_cutoff() -> str:
+    return (datetime.now().astimezone() - timedelta(days=RECENT_CHAT_LOOKBACK_DAYS)).isoformat(timespec="seconds")
+
+
 def _merge_item(
     items: dict[str, dict],
     *,
@@ -173,6 +229,7 @@ def _merge_item(
     priority: int,
     has_position: bool,
     watchlist_group: str | None = None,
+    last_chat_at: str | None = None,
 ) -> None:
     canonical = normalize_symbol(symbol)
     item = items.get(canonical)
@@ -195,3 +252,5 @@ def _merge_item(
         groups = item.setdefault("watchlist_groups", [])
         if watchlist_group not in groups:
             groups.append(watchlist_group)
+    if last_chat_at:
+        item["last_chat_at"] = max(str(item.get("last_chat_at") or ""), str(last_chat_at))

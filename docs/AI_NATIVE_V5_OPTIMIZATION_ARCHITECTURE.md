@@ -57,7 +57,7 @@ flowchart TD
 Service:
 
 ```python
-resolve_ai_native_universe(user_id, sources=["positions", "watchlist"])
+resolve_ai_native_universe(user_id, sources=["positions", "recent_chat", "watchlist"])
 ```
 
 API:
@@ -816,7 +816,7 @@ Worker Contract:
 ## 后置优化
 
 - 增加 stale UI 文案规范，例如“结构快照待刷新，当前基于上一版数据”。
-- 增加任务优先级限流：持仓 > pin > 最近聊过 > watchlist > discovery 候选。
+- 任务优先级限流：持仓 > 最近聊过 > watchlist；pin / discovery 候选后续再进入优先级队列。
 - 增加 AI 降级模板：当数据不足、结构 stale、问题超出产品边界时，必须拒绝直接判断并返回等待条件。
 
 ## 最终产品形态
