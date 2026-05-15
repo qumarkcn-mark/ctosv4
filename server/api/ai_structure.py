@@ -35,6 +35,8 @@ from server.engines.ai_native.structure_context_service import (
     prewarm_ai_structure_contexts,
 )
 from server.engines.ai_native.structure_evidence_service import get_chart_context
+from server.engines.ai_native.momentum_context_service import get_momentum_context
+from server.engines.ai_native.structure_view_service import get_structure_view
 from server.engines.ai_native.structure_reminder_service import (
     ack_structure_reminder,
     create_reminder_from_chat_evidence,
@@ -349,6 +351,46 @@ def chart_context(
     )
     if not result:
         raise HTTPException(status_code=404, detail="context not found")
+    return {"status": "success", "data": result}
+
+
+@router.get("/structure-view/{symbol}")
+def structure_view(
+    symbol: str,
+    level: str = Query(default="day"),
+    compute_profile: str = Query(default=DEFAULT_COMPUTE_PROFILE),
+    count: int = Query(default=1200, ge=10, le=2000),
+):
+    _validate_compute_profile(compute_profile)
+    normalized_level = _validate_level(level)
+    result = get_structure_view(
+        symbol=normalize_symbol(symbol),
+        level=normalized_level,
+        compute_profile=compute_profile,
+        count=count,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="structure view not found")
+    return {"status": "success", "data": result}
+
+
+@router.get("/momentum-context/{symbol}")
+def momentum_context(
+    symbol: str,
+    level: str = Query(default="day"),
+    compute_profile: str = Query(default=DEFAULT_COMPUTE_PROFILE),
+    count: int = Query(default=1200, ge=10, le=2000),
+):
+    _validate_compute_profile(compute_profile)
+    normalized_level = _validate_level(level)
+    result = get_momentum_context(
+        symbol=normalize_symbol(symbol),
+        level=normalized_level,
+        compute_profile=compute_profile,
+        count=count,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="momentum context not found")
     return {"status": "success", "data": result}
 
 

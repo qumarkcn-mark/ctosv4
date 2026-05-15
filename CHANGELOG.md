@@ -25,6 +25,8 @@
 - Added a shared AI Structure workspace bootstrap API for Web and miniprogram clients to load universe, context status, branches, reminders, and outcome memory in one CZSC-only read model.
 - Wired the Web AI Structure workspace startup path to the shared bootstrap API, reusing the read model for status, reminders, outcome memory, and AI pool health.
 - Added client profiles and include filters to the AI Structure workspace bootstrap contract so Web, miniprogram, worker, and reminder callers can reuse the same API without overfetching.
+- Added the V5 Kline Workspace foundation: standalone candlestick chart, period switching, MA/BOLL/MACD/RSI/VOL controls, current-price line, manual sync, CZSC structure overlays, momentum context overlays, and AI answer evidence overlays.
+- Added read-only `structure-view` and `momentum-context` APIs so Web, miniprogram, workers, reminders, and future review surfaces can reuse persisted CZSC snapshots without blocking page requests.
 - Replaced the miniprogram stock detail legacy Chan matrix entry with a compact V5 AI Structure status surface backed by symbol-focused `workspace/bootstrap`.
 - Added a user-scoped AI Structure outcome review feed for miniprogram/background clients, driven by positions/recent_chat/watchlist with compact per-symbol memory summaries.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.
@@ -54,3 +56,6 @@
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_context_service.py tests/test_ai_structure_chat_api.py -q`
 - `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_universe.py tests/test_watchlist_data_sync.py -q`
 - Isolated V5 data-loop smoke: `/api/data/sync-klines/{symbol}` -> CZSC snapshots -> AI structure contexts -> chat -> chart evidence.
+- `npm run build`
+- `PYTHONPATH=. venv/bin/python -m pytest tests/test_ai_structure_chart_context.py tests/test_ai_structure_chat_api.py tests/test_ai_structure_structure_view.py tests/test_ai_structure_momentum_context.py tests/test_ai_structure_no_legacy_calls.py -q`
+- Playwright Kline Workspace QA smoke for drag/zoom boundaries, CZSC overlays, momentum overlays, and AI evidence layer independence.
