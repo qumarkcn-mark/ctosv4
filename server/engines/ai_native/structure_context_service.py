@@ -241,6 +241,7 @@ def get_ai_structure_context_status(
                 "status": status,
                 "stale_reason": stale_reason,
                 "context": latest,
+                "reasoning_status": reasoning_availability(latest),
                 "job": _job_row(job) if job else None,
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -252,6 +253,7 @@ def get_ai_structure_context_status(
                 "status": "pending",
                 "stale_reason": "",
                 "context": None,
+                "reasoning_status": reasoning_availability(None),
                 "job": _job_row(job),
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -262,6 +264,7 @@ def get_ai_structure_context_status(
                 "status": snapshot_gate["status"],
                 "stale_reason": snapshot_gate["stale_reason"],
                 "context": None,
+                "reasoning_status": reasoning_availability(None),
                 "job": snapshot_gate["job"],
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -271,11 +274,56 @@ def get_ai_structure_context_status(
             "status": "no_snapshot" if not latest_ids else "pending",
             "stale_reason": "NO_SNAPSHOT" if not latest_ids else "",
             "context": None,
+            "reasoning_status": reasoning_availability(None),
             "job": _job_row(job) if job else None,
             "missing_levels": snapshot_set["missing_levels"],
         }
     finally:
         conn.close()
+
+
+def reasoning_availability(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not context:
+        return {
+            "status": "pending",
+            "ready": False,
+            "title": "AI 推演生成中",
+            "message": "AI 推演正在生成中，完成后会自动展示完整走势推演。",
+            "provider": "",
+            "llm_status": "",
+        }
+    meta = ((context.get("reasoning") or {}).get("reasoning_meta") or context.get("reasoning_meta") or {})
+    provider = str(meta.get("provider") or "")
+    llm_status = str(meta.get("llm_status") or "")
+    if provider == "llm" and llm_status == "success":
+        return {
+            "status": "success",
+            "ready": True,
+            "title": "AI 推演已完成",
+            "message": "",
+            "provider": provider,
+            "llm_status": llm_status,
+        }
+    if llm_status == "failed":
+        status = "failed"
+        title = "AI 推演暂未完成"
+        message = "AI 推演返回异常，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
+    elif provider == "local_fallback" or llm_status in {"not_invoked", ""}:
+        status = "unavailable"
+        title = "AI 推演暂未完成"
+        message = "AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
+    else:
+        status = "pending"
+        title = "AI 推演生成中"
+        message = "AI 推演正在生成中，完成后会自动展示完整走势推演。"
+    return {
+        "status": status,
+        "ready": False,
+        "title": title,
+        "message": message,
+        "provider": provider,
+        "llm_status": llm_status,
+    }
 
 
 def _snapshot_gate_status(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any] | None:

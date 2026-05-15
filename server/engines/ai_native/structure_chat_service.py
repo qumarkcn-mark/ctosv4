@@ -16,6 +16,7 @@ from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, now_t
 from server.engines.ai_native.structure_context_service import (
     get_ai_structure_context_status,
     get_latest_ai_structure_context,
+    reasoning_availability,
 )
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
@@ -42,6 +43,14 @@ def answer_structure_question(
             symbol=canonical,
             question=question,
             session_id=session_id,
+        )
+    if not _is_llm_reasoning_ready(context):
+        return _answer_reasoning_unavailable(
+            user_id=user_id,
+            symbol=canonical,
+            question=question,
+            session_id=session_id,
+            context=context,
         )
     session = upsert_chat_session(
         user_id=user_id,
@@ -106,6 +115,64 @@ def answer_structure_question(
     return payload
 
 
+def _answer_reasoning_unavailable(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    session_id: str | None = None,
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context.get("context_id") or "",
+        session_id=session_id,
+    )
+    if not session:
+        return None
+    conversation_context = get_recent_conversation_context(
+        user_id=user_id,
+        session_id=session["session_id"],
+    )
+    intent_type = classify_intent(question, conversation_context=conversation_context)
+    data_status = _context_data_status(user_id=user_id, symbol=symbol, context=context)
+    answer = _build_reasoning_unavailable_answer(context)
+    payload = {
+        "session_id": session["session_id"],
+        "context_id": context.get("context_id") or "",
+        "answer": answer,
+        "coach_answer": answer,
+        "intent_type": intent_type,
+        "referenced_boundaries": [],
+        "chart_focus": {
+            "level": "",
+            "snapshot_id": "",
+            "evidence_ids": [],
+            "prices": [],
+        },
+        "suggested_reminders": [],
+        "data_status": data_status,
+        "memory_context": get_memory_context_for_chat(user_id=user_id, symbol=symbol),
+        "review_context": None,
+        "conversation_context": conversation_context,
+        "risk_disclaimer": RISK_DISCLAIMER,
+    }
+    message = save_chat_message(
+        user_id=user_id,
+        symbol=symbol,
+        session_id=session["session_id"],
+        context_id=context.get("context_id") or "",
+        question_text=question,
+        intent_type=intent_type,
+        answer_payload=payload,
+        evidence_refs=[],
+        reminder_candidates=[],
+    )
+    payload["message_id"] = message["message_id"]
+    return payload
+
+
 def _answer_without_context(
     *,
     user_id: int,
@@ -165,6 +232,15 @@ def _answer_without_context(
     )
     payload["message_id"] = message["message_id"]
     return payload
+
+
+def _is_llm_reasoning_ready(context: dict[str, Any]) -> bool:
+    return bool(reasoning_availability(context).get("ready"))
+
+
+def _build_reasoning_unavailable_answer(context: dict[str, Any]) -> str:
+    status = reasoning_availability(context)
+    return status.get("message") or "AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
 
 
 def classify_intent(question: str, conversation_context: dict[str, Any] | None = None) -> str:
@@ -593,6 +669,7 @@ def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) 
         "status": status.get("status") or "unknown",
         "stale_reason": status.get("stale_reason") or "",
         "missing_levels": status.get("missing_levels") or [],
+        "reasoning_status": status.get("reasoning_status") or reasoning_availability(context or None),
         "context_id": context.get("context_id") or "",
     }
 

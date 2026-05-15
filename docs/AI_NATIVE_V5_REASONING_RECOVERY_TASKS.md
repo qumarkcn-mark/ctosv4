@@ -256,6 +256,7 @@ CZSC snapshot
 - context job 可以异步调用 LLM。
 - 页面请求不得同步调用 LLM。
 - 没有 LLM 或 LLM 失败时，context 状态必须是 degraded/failed/pending，不能伪装为已推演。
+- 没有成功的 LLM 推演时，雷达和 chat 都不能展示本地 fallback 的算法边界，只能返回“AI 推演暂未完成”的用户提示。
 - `raw_context_json` 保存结构事实。
 - `reasoning_json` 保存 AI 判断。
 - 结构事实和 AI 判断不能混在一个字段里。
@@ -264,6 +265,7 @@ CZSC snapshot
 
 - `get_latest_ai_structure_context` 返回 `reasoning_json`。
 - `prompt_version` 等于 `ai_structure_reasoning.e1_dynamic_growth`。
+- `get_ai_structure_context_status` 返回 `reasoning_status`，前端和 chat 只在 `ready=true` 时展示推演。
 - context job 失败时不会污染上一版有效推演。
 
 ### Task 5：数据库保存 AI 推演结果

@@ -51,10 +51,18 @@
 }
 
 .ai-structure-status--stale,
-.ai-structure-status--pending {
+.ai-structure-status--pending,
+.ai-structure-status--reasoning-pending {
   color: var(--signal-amber, #f59e0b);
   border-color: rgba(245,158,11,0.28);
   background: rgba(245,158,11,0.08);
+}
+
+.ai-structure-status--reasoning-failed,
+.ai-structure-status--reasoning-unavailable {
+  color: var(--warning-red, #dc2626);
+  border-color: rgba(220,38,38,0.28);
+  background: rgba(220,38,38,0.08);
 }
 
 .ai-pipeline {

@@ -43,9 +43,13 @@ export default function AIStructureCoachPanel({
   const symbolRef = useRef(symbol)
 
   const displayName = symbolName || symbol
-  const canAsk = Boolean(status?.context)
   const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
   const reasoningContext = status?.context || null
+  const aiReasoningReady = isAiReasoningReady(status)
+  const canAsk = Boolean(status?.context && aiReasoningReady)
+  const displayStatus = status?.context && !aiReasoningReady
+    ? `reasoning-${aiReasoningStatus(status) || 'pending'}`
+    : (status?.status || 'idle')
 
   const applyWorkspaceSymbolState = useCallback((state) => {
     if (!state || !sameSymbol(state.symbol, symbolRef.current)) return
@@ -306,6 +310,9 @@ export default function AIStructureCoachPanel({
     if (workspaceLoading && !status) return '启动中'
     if (pollingActive) return '生成中'
     if (!status) return '检测中'
+    const aiStatus = aiReasoningStatus(status)
+    if (status.context && ['failed', 'unavailable'].includes(aiStatus)) return '推演暂未完成'
+    if (status.context && aiStatus !== 'success') return '推演中'
     if (status.status === 'fresh') return '结构就绪'
     if (status.status === 'stale') return '结构待刷新'
     if (status.status === 'pending') return '生成中'
@@ -328,7 +335,7 @@ export default function AIStructureCoachPanel({
           <span className="ai-structure-kicker">AI Native V5</span>
           <h3>{displayName}</h3>
         </div>
-        <span className={`ai-structure-status ai-structure-status--${status?.status || 'idle'}`}>
+        <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
           {statusLabel}
         </span>
       </header>
@@ -400,12 +407,14 @@ export default function AIStructureCoachPanel({
 
 function ReasoningBrief({ context }) {
   if (!context) return null
-  const growth = context.trend_growth || {}
-  const divergence = context.divergence_view || {}
-  const resonance = context.resonance_view || {}
-  const summary = context.coach_summary || context.summary_text || ''
-  const mainLevel = formatLevel(context.main_level)
-  const triggerLevel = formatLevel(context.trigger_level)
+  if (!isAiReasoningReady({ context })) return null
+  const reasoning = context.reasoning || context
+  const growth = reasoning.trend_growth || {}
+  const divergence = reasoning.divergence_view || {}
+  const resonance = reasoning.resonance_view || {}
+  const summary = reasoning.coach_summary || context.coach_summary || context.summary_text || ''
+  const mainLevel = formatLevel(reasoning.main_level || context.main_level)
+  const triggerLevel = formatLevel(reasoning.trigger_level || context.trigger_level)
   if (!summary && !growth.growth_path && !mainLevel && !triggerLevel) return null
   return (
     <section className="ai-reasoning-brief" aria-label="AI 当前推演">
@@ -641,6 +650,8 @@ function failureText(status) {
 
 function emptyText(status, pollingActive) {
   if (status?.status === 'failed') return failureText(status)
+  const ai = aiReasoning(status)
+  if (status?.context && !ai.ready) return ai.message || 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。'
   if (pollingActive || status?.status === 'pending') return '后台正在生成结构上下文，完成后会自动回答已排队的问题。'
   if (status?.missing_levels?.length) return `缺少 ${formatLevels(status.missing_levels)} 的 CZSC 快照。可以先生成上下文，后台会补齐。`
   return '还没有结构上下文。可以直接提问，我会先生成再回答。'
@@ -649,6 +660,14 @@ function emptyText(status, pollingActive) {
 function statusNotice(status, pollingActive) {
   if (!status && !pollingActive) return null
   const reason = statusReason(status)
+  const ai = aiReasoning(status)
+  if (status?.context && !ai.ready) {
+    return {
+      tone: ['failed', 'unavailable'].includes(ai.status) ? 'error' : 'working',
+      title: ai.title || 'AI 推演暂未完成',
+      text: ai.message || 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+    }
+  }
   if (reason === 'NO_DATA') {
     return {
       tone: 'error',
@@ -762,6 +781,9 @@ function snapshotStatusDetail(status, flags) {
 function contextStatusTone(status, isWorking) {
   if (!status) return 'checking'
   if (status.status === 'failed') return 'error'
+  const ai = aiReasoning(status)
+  if (status.context && ['failed', 'unavailable'].includes(ai.status)) return 'error'
+  if (status.context && !ai.ready) return 'working'
   if (status.status === 'stale') return 'warn'
   if (status.context) return 'ready'
   if (isWorking) return 'working'
@@ -772,10 +794,47 @@ function contextStatusDetail(status, flags) {
   const { canAsk, isFailed, isWorking } = flags
   if (!status) return '检测中'
   if (isFailed) return '失败'
+  const ai = aiReasoning(status)
+  if (status.context && ['failed', 'unavailable'].includes(ai.status)) return '推演失败'
+  if (status.context && !ai.ready) return '推演中'
   if (status.status === 'stale') return '待刷新'
   if (canAsk) return '已就绪'
   if (isWorking) return '生成中'
   return '未生成'
+}
+
+function aiReasoning(statusOrContext) {
+  const directStatus = statusOrContext?.reasoning_status
+  if (directStatus) return directStatus
+  const context = statusOrContext?.context || statusOrContext
+  if (!context) return { status: 'pending', ready: false, title: 'AI 推演生成中', message: 'AI 推演正在生成中，完成后会自动展示完整走势推演。' }
+  const meta = (context.reasoning && context.reasoning.reasoning_meta) || context.reasoning_meta || {}
+  if (meta.provider === 'llm' && meta.llm_status === 'success') return { status: 'success', ready: true }
+  if (meta.llm_status === 'failed') {
+    return {
+      status: 'failed',
+      ready: false,
+      title: 'AI 推演暂未完成',
+      message: 'AI 推演返回异常，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+    }
+  }
+  if (meta.provider === 'local_fallback' || meta.llm_status === 'not_invoked' || !meta.llm_status) {
+    return {
+      status: 'unavailable',
+      ready: false,
+      title: 'AI 推演暂未完成',
+      message: 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+    }
+  }
+  return { status: meta.llm_status || 'pending', ready: false, title: 'AI 推演生成中', message: 'AI 推演正在生成中，完成后会自动展示完整走势推演。' }
+}
+
+function aiReasoningStatus(statusOrContext) {
+  return aiReasoning(statusOrContext).status
+}
+
+function isAiReasoningReady(statusOrContext) {
+  return Boolean(aiReasoning(statusOrContext).ready)
 }
 
 function statusReason(status) {
