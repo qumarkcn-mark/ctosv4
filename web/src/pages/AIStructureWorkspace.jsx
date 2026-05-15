@@ -4,7 +4,7 @@ import { apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchlistPanel from '../components/WatchlistPanel.jsx'
 import AIStructureCoachPanel from '../features/aiStructure/AIStructureCoachPanel.jsx'
-import BaseKlineChart from '../features/kline/BaseKlineChart.jsx'
+import PriceEvidenceView from '../features/kline/PriceEvidenceView.jsx'
 import { readLastViewedSymbol } from '../utils/symbolStorage.js'
 import './AIStructureWorkspace.css'
 
@@ -103,7 +103,7 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
         </div>
 
         <div className="ai-workspace-body">
-          <BaseKlineChart
+          <PriceEvidenceView
             symbol={symbol}
             symbolName={symbolName}
             chartContext={aiEvidenceContext}

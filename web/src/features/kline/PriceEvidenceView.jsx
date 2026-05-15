@@ -14,7 +14,7 @@ import {
   readKlinePreferences,
   writeKlinePreference,
 } from './klinePreferences.js'
-import './BaseKlineChart.css'
+import './PriceEvidenceView.css'
 
 const KLINE_COUNT = 1200
 const CANDLE_PANE_ID = 'candle_pane'
@@ -33,7 +33,7 @@ const SUB_INDICATORS = [
   { value: 'NONE', label: '无' },
 ]
 
-export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
+export default function PriceEvidenceView({ symbol, symbolName, chartContext }) {
   const chartHostRef = useRef(null)
   const chartRef = useRef(null)
   const latestBarsRef = useRef([])

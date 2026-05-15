@@ -11,6 +11,7 @@ from server.engines.ai_native.czsc_snapshot_service import now_text
 from server.engines.ai_native.scenario_outcome_service import settle_scenario_branch
 
 DEFAULT_SETTLEMENT_WINDOWS = ("same_day", "next_day", "3d", "5d")
+MIN_SAME_DAY_SETTLEMENT_AGE = timedelta(minutes=30)
 
 
 def list_due_outcome_symbols(
@@ -129,8 +130,10 @@ def _existing_windows(conn, *, user_id: int, branch_id: str) -> set[str]:
 
 
 def _is_window_due(window: str, *, created_at: datetime, checked_at: datetime) -> bool:
+    if checked_at < created_at:
+        return False
     if window == "same_day":
-        return checked_at.date() >= created_at.date()
+        return checked_at.date() > created_at.date() or checked_at >= created_at + MIN_SAME_DAY_SETTLEMENT_AGE
     if window == "next_day":
         return checked_at >= created_at + timedelta(days=1)
     if window.endswith("d"):
