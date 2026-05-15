@@ -224,10 +224,33 @@ def normalize_reasoning_payload(payload: dict[str, Any], *, symbol: str, reasoni
     normalized = {**fallback, **payload}
     normalized["version"] = str(normalized.get("version") or AI_STRUCTURE_REASONING_PROMPT_VERSION)
     normalized["symbol"] = symbol
+    normalized["main_level"] = _normalize_level_label(normalized.get("main_level"), fallback.get("main_level"))
+    normalized["trigger_level"] = _normalize_level_label(normalized.get("trigger_level"), fallback.get("trigger_level"))
     normalized["scenario_branches"] = payload.get("scenario_branches") if isinstance(payload.get("scenario_branches"), list) else fallback["scenario_branches"]
     normalized["key_boundaries"] = payload.get("key_boundaries") if isinstance(payload.get("key_boundaries"), list) else fallback["key_boundaries"]
     normalized["risk_notes"] = payload.get("risk_notes") if isinstance(payload.get("risk_notes"), list) else fallback["risk_notes"]
     return normalized
+
+
+def _normalize_level_label(value: Any, fallback: Any = "") -> str:
+    text = str(value or "").strip().lower()
+    if text in {"week", "weekly", "周线"}:
+        return "week"
+    if text in {"day", "daily", "日线"}:
+        return "day"
+    if text in {"30", "30m", "m30", "30min", "30分钟", "30分"}:
+        return "30"
+    if text in {"5", "5m", "m5", "5min", "5分钟", "5分"}:
+        return "5"
+    if "周" in text or "week" in text:
+        return "week"
+    if "日" in text or "day" in text:
+        return "day"
+    if "30" in text:
+        return "30"
+    if "5" in text:
+        return "5"
+    return str(fallback or "")
 
 
 def _primary_level(levels: dict[str, Any]) -> str:

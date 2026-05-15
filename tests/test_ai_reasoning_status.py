@@ -9,6 +9,7 @@ from server.engines.ai_native.structure_context_service import (
     save_reasoning_run,
 )
 from server.engines.ai_native.structure_chat_service import answer_structure_question
+from server.prompts.ai_structure_reasoning_prompt import normalize_reasoning_payload
 from server.services.llm_service import _loads_lenient_json_object, _message_content_text, _message_reasoning_text
 
 
@@ -54,6 +55,33 @@ def test_reasoning_availability_hides_failed_llm():
     assert status["ready"] is False
     assert status["status"] == "failed"
     assert "不展示本地算法边界" in status["message"]
+
+
+def test_reasoning_payload_level_fields_strip_price_conditions():
+    reasoning_input = {
+        "structure_facts": {
+            "boundary": {
+                "levels": {
+                    "30": {"active_center": {"zg": 177.36, "zd": 165.42}},
+                    "5": {"active_center": {"zg": 253.49, "zd": 243.0}},
+                }
+            }
+        }
+    }
+    normalized = normalize_reasoning_payload(
+        {
+            "main_level": "30分钟",
+            "trigger_level": "30分钟中枢上沿177.36元",
+            "scenario_branches": [],
+            "key_boundaries": [],
+            "risk_notes": [],
+        },
+        symbol="sh.688008",
+        reasoning_input=reasoning_input,
+    )
+
+    assert normalized["main_level"] == "30"
+    assert normalized["trigger_level"] == "30"
 
 
 def test_context_job_force_rebuild_requeues_existing_success(monkeypatch, tmp_path):

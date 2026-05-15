@@ -441,44 +441,35 @@ function ReasoningBrief({ context }) {
   if (!isAiReasoningReady({ context })) return null
   const reasoning = context.reasoning || context
   const growth = reasoning.trend_growth || {}
-  const divergence = reasoning.divergence_view || {}
-  const resonance = reasoning.resonance_view || {}
   const summary = reasoning.coach_summary || context.coach_summary || context.summary_text || ''
   const mainLevel = formatLevel(reasoning.main_level || context.main_level)
-  const triggerLevel = formatLevel(reasoning.trigger_level || context.trigger_level)
-  if (!summary && !growth.growth_path && !mainLevel && !triggerLevel) return null
+  const growthText = buildGrowthText(growth)
+  if (!summary && !growthText && !mainLevel) return null
   return (
     <section className="ai-reasoning-brief" aria-label="AI 当前推演">
       <div className="ai-reasoning-brief-head">
         <strong>当前推演</strong>
-        <span>{mainLevel || '主级别待定'} / {triggerLevel || '触发待定'}</span>
+        <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
       </div>
       {summary && <p>{summary}</p>}
-      <div className="ai-reasoning-grid">
-        <ReasoningMiniBlock
-          label="走势生长"
-          value={growth.growth_path || growth.next_confirmation || '等待结构继续确认'}
-        />
-        <ReasoningMiniBlock
-          label="背驰"
-          value={divergence.status ? `${divergence.status}：${divergence.risk_note || divergence.evidence || ''}` : '等待离开段力度确认'}
-        />
-        <ReasoningMiniBlock
-          label="级别关系"
-          value={resonance.higher_level_context || resonance.lower_level_trigger || '等待级别关系确认'}
-        />
-      </div>
+      {growthText && (
+        <div className="ai-reasoning-growth">
+          <span>走势如何生长</span>
+          <em>{growthText}</em>
+        </div>
+      )}
     </section>
   )
 }
 
-function ReasoningMiniBlock({ label, value }) {
-  return (
-    <div className="ai-reasoning-mini">
-      <span>{label}</span>
-      <em>{value}</em>
-    </div>
-  )
+function buildGrowthText(growth = {}) {
+  const items = [
+    growth.current_state,
+    growth.growth_path,
+    growth.next_confirmation ? `下一步确认：${growth.next_confirmation}` : '',
+    growth.failure_path ? `失败路径：${growth.failure_path}` : '',
+  ]
+  return items.map((item) => String(item || '').trim()).filter(Boolean).join('\n')
 }
 
 function PipelineStatus({ items }) {
@@ -885,6 +876,17 @@ function formatLevels(levels = []) {
 }
 
 function formatLevel(level) {
-  if (!level) return ''
-  return LEVEL_LABELS[level] || level
+  const normalized = normalizeLevelKey(level)
+  return normalized ? LEVEL_LABELS[normalized] : ''
+}
+
+function normalizeLevelKey(level) {
+  const text = String(level || '').trim().toLowerCase()
+  if (!text) return ''
+  if (LEVEL_LABELS[text]) return text
+  if (text.includes('周') || text.includes('week')) return 'week'
+  if (text.includes('日') || text.includes('day')) return 'day'
+  if (text.includes('30')) return '30'
+  if (text.includes('5')) return '5'
+  return ''
 }

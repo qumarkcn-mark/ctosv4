@@ -260,47 +260,35 @@
 }
 
 .ai-reasoning-brief p {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: var(--text-secondary, rgba(255,255,255,0.55));
   font-size: 12px;
   line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
 }
 
-.ai-reasoning-grid {
+.ai-reasoning-growth {
   display: grid;
-  gap: 6px;
-}
-
-.ai-reasoning-mini {
-  display: grid;
-  gap: 3px;
+  gap: 5px;
   min-width: 0;
-  padding: 7px 8px;
+  padding: 8px 9px;
   border: 1px solid rgba(255,255,255,0.07);
   border-radius: 4px;
   background: rgba(255,255,255,0.035);
 }
 
-.ai-reasoning-mini span {
+.ai-reasoning-growth span {
   color: var(--text-primary, rgba(255,255,255,0.92));
   font-size: 11px;
   font-weight: 700;
   line-height: 1.25;
 }
 
-.ai-reasoning-mini em {
-  display: -webkit-box;
-  overflow: hidden;
+.ai-reasoning-growth em {
+  white-space: pre-wrap;
   color: var(--text-tertiary, rgba(255,255,255,0.32));
   font-size: 11px;
   font-style: normal;
   line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .ai-structure-quick {
