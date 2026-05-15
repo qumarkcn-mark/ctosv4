@@ -8,7 +8,7 @@ from typing import Any
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
-    segs = _serialize_segments(czsc_obj)
+    segs, segment_source = _serialize_segments(czsc_obj, bis)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
     latest_zs = serialized_zss[-1] if serialized_zss else {}
@@ -46,7 +46,7 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
         },
         "metadata": {
             "unsupported_fields": unsupported_fields,
-            "segment_source": "czsc_object" if segs else "unavailable_in_czsc_object",
+            "segment_source": segment_source,
         },
     }
 
@@ -99,7 +99,7 @@ def _serialize_bi(bi: Any) -> dict[str, Any]:
     }
 
 
-def _serialize_segments(czsc_obj: Any) -> list[dict[str, Any]]:
+def _serialize_segments(czsc_obj: Any, bis: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
     for attr_name in ("seg_list", "segs", "segments", "xd_list", "xds", "duans", "line_segments"):
         raw = getattr(czsc_obj, attr_name, None)
         if callable(raw) or not raw:
@@ -111,8 +111,11 @@ def _serialize_segments(czsc_obj: Any) -> list[dict[str, Any]]:
         segments = [_serialize_bi(item) for item in items]
         segments = [item for item in segments if item.get("x0") and item.get("x1")]
         if segments:
-            return segments
-    return []
+            for item in segments:
+                item["source"] = "czsc_object"
+            return segments, "czsc_object"
+
+    return [], "unavailable_in_czsc_object"
 
 
 def _serialize_zs(zs: Any) -> dict[str, Any]:

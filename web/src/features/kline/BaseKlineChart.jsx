@@ -111,6 +111,7 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
     const chart = chartRef.current
     const host = chartHostRef.current
     const view = structureViewRef.current
+    const bars = latestBarsRef.current
     if (!chart || !host || !view || !structureLayerRef.current) {
       setStructureOverlay(null)
       return
@@ -165,11 +166,15 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(leftTop) || !validPoint(rightBottom)) return null
+      const beginHalfWidth = estimateHalfBarWidth(chart, item.begin_index, item.zg, bars.length)
+      const endHalfWidth = estimateHalfBarWidth(chart, item.end_index, item.zd, bars.length)
+      const leftX = Math.min(leftTop.x, rightBottom.x) - beginHalfWidth
+      const rightX = Math.max(leftTop.x, rightBottom.x) + endHalfWidth
       return {
         ...item,
-        x: Math.min(leftTop.x, rightBottom.x),
+        x: leftX,
         y: Math.min(leftTop.y, rightBottom.y),
-        width: Math.abs(rightBottom.x - leftTop.x),
+        width: Math.max(2, rightX - leftX),
         height: Math.abs(rightBottom.y - leftTop.y),
       }
     }).map((item) => clipRectToViewport(item, viewport))
@@ -558,22 +563,31 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
         </div>
 
         <div className="base-kline__status">
-          <button
-            type="button"
-            className={structureLayer ? 'is-layer-active' : ''}
-            onClick={handleStructureLayerToggle}
-            title="显示/隐藏 CZSC 笔与中枢"
-          >
-            CZSC
-          </button>
-          <button
-            type="button"
-            className={momentumLayer ? 'is-layer-active' : ''}
-            onClick={handleMomentumLayerToggle}
-            title="显示/隐藏当前段与上一同向段力量对比"
-          >
-            力量
-          </button>
+          <div className="base-kline__layer-controls" aria-label="K线图层">
+            <button
+              type="button"
+              className={structureLayer ? 'is-layer-active' : ''}
+              onClick={handleStructureLayerToggle}
+              title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
+            >
+              结构
+            </button>
+            <button
+              type="button"
+              className={momentumLayer ? 'is-layer-active' : ''}
+              onClick={handleMomentumLayerToggle}
+              title="显示/隐藏当前段与上一同向段力量对比"
+            >
+              力量
+            </button>
+          </div>
+          {structureLayer && (
+            <div className="base-kline__legend" aria-label="结构图例">
+              <span><i className="is-bi" />笔</span>
+              {(structureView?.segments?.length || 0) > 0 && <span><i className="is-segment" />线段</span>}
+              <span><i className="is-center" />中枢</span>
+            </div>
+          )}
           <span>{loading ? '加载中' : `${barCount} 根`}</span>
           {structureLayer && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
           {momentumLayer && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
@@ -691,6 +705,27 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
 
 function validPoint(point) {
   return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+}
+
+function estimateHalfBarWidth(chart, dataIndex, value, barCount) {
+  const index = Number(dataIndex)
+  if (!chart || !Number.isFinite(index)) return 3
+  const baseValue = Number(value)
+  const yValue = Number.isFinite(baseValue) && baseValue > 0 ? baseValue : 1
+  const neighborIndex = index < barCount - 1 ? index + 1 : index - 1
+  if (neighborIndex < 0 || neighborIndex >= barCount) return 3
+  const point = chart.convertToPixel(
+    { dataIndex: index, value: yValue },
+    { paneId: CANDLE_PANE_ID, absolute: false }
+  )
+  const neighbor = chart.convertToPixel(
+    { dataIndex: neighborIndex, value: yValue },
+    { paneId: CANDLE_PANE_ID, absolute: false }
+  )
+  if (!validPoint(point) || !validPoint(neighbor)) return 3
+  const distance = Math.abs(neighbor.x - point.x)
+  if (!Number.isFinite(distance) || distance <= 0) return 3
+  return Math.max(2, Math.min(16, distance / 2))
 }
 
 function isStructureItemContained(startIndex, endIndex, range, padding = 0) {

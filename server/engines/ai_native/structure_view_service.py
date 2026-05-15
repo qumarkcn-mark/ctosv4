@@ -71,6 +71,7 @@ def get_structure_view(
         centers = _mark_active_center(centers, active_center)
     segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
     unsupported_fields = _unsupported_fields(snapshot)
+    segment_source = _segment_source(snapshot, segments)
 
     return {
         "version": "structure_view.v1",
@@ -91,7 +92,8 @@ def get_structure_view(
             "segments": bool(segments),
             "centers": bool([item for item in centers if item] or active_center),
             "segment_status": "ready" if segments else "unavailable",
-            "segment_reason": "czsc_snapshot_segments" if segments else _segment_unavailable_reason(unsupported_fields),
+            "segment_source": segment_source,
+            "segment_reason": segment_source if segments else _segment_unavailable_reason(unsupported_fields),
         },
         "bar_axis": {
             "count": len(klines),
@@ -131,6 +133,9 @@ def _normalize_bi(item: dict[str, Any], *, index: int, time_axis: dict[int, int]
         "high": _num(item.get("high")),
         "low": _num(item.get("low")),
         "bar_count": int(_num(item.get("bar_count"))),
+        "source": item.get("source") or "",
+        "start_bi_index": _optional_int(item.get("start_bi_index")),
+        "end_bi_index": _optional_int(item.get("end_bi_index")),
     }
 
 
@@ -208,6 +213,19 @@ def _unsupported_fields(snapshot: dict[str, Any]) -> list[str]:
 def _segment_unavailable_reason(unsupported_fields: list[str]) -> str:
     if "segs" in unsupported_fields:
         return "czsc_object_does_not_expose_segments"
+    return "snapshot_has_no_segments"
+
+
+def _segment_source(snapshot: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    metadata = snapshot.get("metadata") if isinstance(snapshot.get("metadata"), dict) else {}
+    raw_source = str(metadata.get("segment_source") or "") if isinstance(metadata, dict) else ""
+    if segments and raw_source == "unavailable_in_czsc_object" and segments[0].get("source"):
+        return str(segments[0]["source"])
+    if raw_source:
+        return str(metadata["segment_source"])
+    for item in segments:
+        if item.get("source"):
+            return str(item["source"])
     return "snapshot_has_no_segments"
 
 
@@ -340,3 +358,10 @@ def _num(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return parsed if parsed == parsed else 0.0
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

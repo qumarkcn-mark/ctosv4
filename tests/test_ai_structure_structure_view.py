@@ -65,6 +65,9 @@ def save_sample_snapshot():
                     "y0": 10.0,
                     "y1": 10.8,
                     "bar_count": 3,
+                    "source": "czsc_object",
+                    "start_bi_index": 0,
+                    "end_bi_index": 1,
                 }
             ],
             "bi_zhongshus": [
@@ -107,6 +110,9 @@ def test_structure_view_service_returns_chart_ready_geometry(monkeypatch, tmp_pa
     assert view["bis"][0]["end_index"] == 1
     assert view["segments"][0]["start_index"] == 0
     assert view["segments"][0]["end_index"] == 2
+    assert view["segments"][0]["source"] == "czsc_object"
+    assert view["segments"][0]["start_bi_index"] == 0
+    assert view["capabilities"]["segment_source"] == "czsc_object"
     assert view["capabilities"]["segments"] is True
     assert view["capabilities"]["segment_status"] == "ready"
     assert view["centers"][0]["active"] is True
@@ -217,6 +223,67 @@ def test_structure_view_marks_segments_unavailable_without_fallback(monkeypatch,
 
     assert view["segments"] == []
     assert view["capabilities"]["segment_status"] == "unavailable"
+    assert view["capabilities"]["segment_reason"] == "czsc_object_does_not_expose_segments"
+
+
+def test_structure_view_does_not_derive_segments_from_existing_snapshot_bis(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    points = [
+        ("2026-05-01", 10.0),
+        ("2026-05-02", 12.0),
+        ("2026-05-03", 11.0),
+        ("2026-05-04", 13.0),
+        ("2026-05-05", 10.0),
+        ("2026-05-06", 11.0),
+        ("2026-05-07", 9.0),
+        ("2026-05-08", 10.0),
+    ]
+    klines = [
+        {"time": time, "open": price, "high": price + 0.2, "low": price - 0.2, "close": price}
+        for time, price in points
+    ]
+    bis = []
+    for (start_time, start_price), (end_time, end_price) in zip(points, points[1:]):
+        bis.append(
+            {
+                "direction": "up" if end_price >= start_price else "down",
+                "is_up": end_price >= start_price,
+                "is_sure": True,
+                "x0": start_time,
+                "x1": end_time,
+                "y0": start_price,
+                "y1": end_price,
+                "start_price": start_price,
+                "end_price": end_price,
+                "bar_count": 1,
+            }
+        )
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-no-derived-segments",
+        data_as_of="2026-05-08",
+        snapshot_payload={
+            "level": "day",
+            "price": 10.0,
+            "klines": klines,
+            "bis": bis,
+            "segs": [],
+            "bi_zhongshus": [],
+            "active_zhongshu": {},
+            "metadata": {"unsupported_fields": ["segs"], "segment_source": "unavailable_in_czsc_object"},
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    assert view["segments"] == []
+    assert view["capabilities"]["segment_status"] == "unavailable"
+    assert view["capabilities"]["segment_source"] == "unavailable_in_czsc_object"
     assert view["capabilities"]["segment_reason"] == "czsc_object_does_not_expose_segments"
 
 

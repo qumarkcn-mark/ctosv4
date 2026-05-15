@@ -28,6 +28,7 @@
 - Added the V5 Kline Workspace foundation: standalone candlestick chart, period switching, MA/BOLL/MACD/RSI/VOL controls, current-price line, manual sync, CZSC structure overlays, momentum context overlays, and AI answer evidence overlays.
 - Added read-only `structure-view` and `momentum-context` APIs so Web, miniprogram, workers, reminders, and future review surfaces can reuse persisted CZSC snapshots without blocking page requests.
 - Completed the CZSC structure overlay contract for future line segments: snapshots now serialize real CZSC segment fields when the engine exposes them, `structure-view` reports segment capability state, and the Kline workspace shows `线段待接入` instead of silently hiding the missing layer.
+- Disabled non-native CZSC-BI derived line segments in the Kline structure layer; V5 only displays line segments when the CZSC engine exposes native segment objects.
 - Replaced the miniprogram stock detail legacy Chan matrix entry with a compact V5 AI Structure status surface backed by symbol-focused `workspace/bootstrap`.
 - Added a user-scoped AI Structure outcome review feed for miniprogram/background clients, driven by positions/recent_chat/watchlist with compact per-symbol memory summaries.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.
