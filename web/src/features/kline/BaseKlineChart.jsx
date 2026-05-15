@@ -111,6 +111,7 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
     const chart = chartRef.current
     const host = chartHostRef.current
     const view = structureViewRef.current
+    const bars = latestBarsRef.current
     if (!chart || !host || !view || !structureLayerRef.current) {
       setStructureOverlay(null)
       return
@@ -165,11 +166,15 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(leftTop) || !validPoint(rightBottom)) return null
+      const beginHalfWidth = estimateHalfBarWidth(chart, item.begin_index, item.zg, bars.length)
+      const endHalfWidth = estimateHalfBarWidth(chart, item.end_index, item.zd, bars.length)
+      const leftX = Math.min(leftTop.x, rightBottom.x) - beginHalfWidth
+      const rightX = Math.max(leftTop.x, rightBottom.x) + endHalfWidth
       return {
         ...item,
-        x: Math.min(leftTop.x, rightBottom.x),
+        x: leftX,
         y: Math.min(leftTop.y, rightBottom.y),
-        width: Math.abs(rightBottom.x - leftTop.x),
+        width: Math.max(2, rightX - leftX),
         height: Math.abs(rightBottom.y - leftTop.y),
       }
     }).map((item) => clipRectToViewport(item, viewport))
@@ -700,6 +705,27 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
 
 function validPoint(point) {
   return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+}
+
+function estimateHalfBarWidth(chart, dataIndex, value, barCount) {
+  const index = Number(dataIndex)
+  if (!chart || !Number.isFinite(index)) return 3
+  const baseValue = Number(value)
+  const yValue = Number.isFinite(baseValue) && baseValue > 0 ? baseValue : 1
+  const neighborIndex = index < barCount - 1 ? index + 1 : index - 1
+  if (neighborIndex < 0 || neighborIndex >= barCount) return 3
+  const point = chart.convertToPixel(
+    { dataIndex: index, value: yValue },
+    { paneId: CANDLE_PANE_ID, absolute: false }
+  )
+  const neighbor = chart.convertToPixel(
+    { dataIndex: neighborIndex, value: yValue },
+    { paneId: CANDLE_PANE_ID, absolute: false }
+  )
+  if (!validPoint(point) || !validPoint(neighbor)) return 3
+  const distance = Math.abs(neighbor.x - point.x)
+  if (!Number.isFinite(distance) || distance <= 0) return 3
+  return Math.max(2, Math.min(16, distance / 2))
 }
 
 function isStructureItemContained(startIndex, endIndex, range, padding = 0) {
