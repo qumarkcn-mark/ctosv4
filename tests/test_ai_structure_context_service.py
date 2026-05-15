@@ -126,10 +126,19 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
     finally:
         conn.close()
 
-    async def fake_infer(self, system_prompt, context_json, *, user_id=1, model_route=None):
+    async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
         assert "缠论结构推演层" in system_prompt
+        assert model_route.thinking_enabled is True
         payload = json.loads(context_json)
         assert payload["structure_facts"]["boundary"]["primary_level"] == "5"
+        return "完整 Think 推演：日线中枢边界内，5分钟触发观察。仅供参考，不构成投资建议"
+
+    async def fake_infer(self, system_prompt, context_json, *, user_id=1, model_route=None):
+        assert "前端摘要层" in system_prompt
+        assert model_route.thinking_enabled is False
+        payload = json.loads(context_json)
+        assert payload["structure_context"]["structure_facts"]["boundary"]["primary_level"] == "5"
+        assert "完整 Think 推演" in payload["full_reasoning_text"]
         return {
             "version": "ai_structure_reasoning.e1_dynamic_growth",
             "symbol": "sh.600519",
@@ -159,6 +168,7 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
             "risk_notes": ["仅供参考，不构成投资建议"],
         }
 
+    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_json", fake_infer)
 
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
@@ -168,10 +178,20 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
     assert result["status"] == "success"
     latest = context_service.get_latest_ai_structure_context(user_id=1, symbol="sh600519")
     assert latest["reasoning"]["reasoning_meta"]["provider"] == "llm"
+    assert latest["reasoning"]["reasoning_meta"]["pipeline"] == "think_full_text_then_flash_summary"
+    assert latest["reasoning"]["reasoning_meta"]["full_reasoning_available"] is True
     assert latest["reasoning"]["trend_growth"]["current_state"] == "test_llm"
     assert latest["main_level"] == "day"
     assert latest["trigger_level"] == "5"
     assert latest["branches"][0]["branch_type"] == "llm_a_plus_b"
+    conn = database.get_connection()
+    try:
+        run = conn.execute("SELECT * FROM ai_structure_reasoning_runs WHERE context_id = ?", (latest["context_id"],)).fetchone()
+    finally:
+        conn.close()
+    assert run is not None
+    assert run["status"] == "SUCCESS"
+    assert "完整 Think 推演" in run["full_reasoning_text"]
 
 
 def test_context_background_contract_keeps_fundamental_context_only(monkeypatch, tmp_path):

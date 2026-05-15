@@ -261,6 +261,29 @@ CREATE TABLE IF NOT EXISTS ai_structure_contexts (
 CREATE INDEX IF NOT EXISTS idx_v5_contexts_latest
 ON ai_structure_contexts(user_id, symbol, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS ai_structure_reasoning_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    context_id TEXT NOT NULL DEFAULT '',
+    source_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
+    prompt_version TEXT NOT NULL,
+    think_model TEXT NOT NULL DEFAULT '',
+    summary_model TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    full_reasoning_text TEXT NOT NULL DEFAULT '',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, symbol, prompt_version, source_snapshot_ids_json)
+);
+CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_latest
+ON ai_structure_reasoning_runs(user_id, symbol, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_context
+ON ai_structure_reasoning_runs(user_id, context_id);
+
 CREATE TABLE IF NOT EXISTS ai_structure_context_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL UNIQUE,
@@ -1018,6 +1041,28 @@ def run_migrations(conn: sqlite3.Connection):
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_v5_contexts_latest ON ai_structure_contexts(user_id, symbol, updated_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS ai_structure_reasoning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            context_id TEXT NOT NULL DEFAULT '',
+            source_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
+            prompt_version TEXT NOT NULL,
+            think_model TEXT NOT NULL DEFAULT '',
+            summary_model TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            full_reasoning_text TEXT NOT NULL DEFAULT '',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, symbol, prompt_version, source_snapshot_ids_json)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_latest ON ai_structure_reasoning_runs(user_id, symbol, updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_context ON ai_structure_reasoning_runs(user_id, context_id)",
         """
         CREATE TABLE IF NOT EXISTS ai_structure_context_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

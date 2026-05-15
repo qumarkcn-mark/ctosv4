@@ -68,7 +68,26 @@ def build_context(user_id=1):
     job = context_service.claim_next_context_job(worker_id=f"ctx-worker-{user_id}")
     result = context_service.run_context_job_sync(job)
     assert result["status"] == "success"
+    mark_latest_context_llm_success(user_id=user_id)
     return context_service.get_latest_ai_structure_context(user_id=user_id, symbol="sh600519")
+
+
+def mark_latest_context_llm_success(user_id=1, symbol="sh600519"):
+    latest = context_service.get_latest_ai_structure_context(user_id=user_id, symbol=symbol)
+    assert latest
+    reasoning = latest["reasoning"]
+    meta = dict(reasoning.get("reasoning_meta") or {})
+    meta.update({"provider": "llm", "llm_status": "success"})
+    reasoning["reasoning_meta"] = meta
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE ai_structure_contexts SET reasoning_json = ? WHERE context_id = ?",
+            (json.dumps(reasoning, ensure_ascii=False), latest["context_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def seed_fundamental_background():
@@ -151,6 +170,7 @@ def test_chat_uses_fundamental_background_without_trade_instruction(monkeypatch,
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
     assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
     client = make_client()
 
     response = client.post(
@@ -298,6 +318,7 @@ def test_chat_guardrails_out_of_scope_even_when_boundary_missing(monkeypatch, tm
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
     assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
     client = make_client()
 
     response = client.post(

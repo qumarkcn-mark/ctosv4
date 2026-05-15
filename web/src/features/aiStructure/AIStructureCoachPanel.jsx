@@ -33,6 +33,7 @@ export default function AIStructureCoachPanel({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [booting, setBooting] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
   const [pollUntil, setPollUntil] = useState(0)
   const [error, setError] = useState('')
   const [pendingQuestion, setPendingQuestion] = useState('')
@@ -214,6 +215,31 @@ export default function AIStructureCoachPanel({
     }
   }, [symbol, booting, pollingActive, loadStatus, onWorkspaceRefresh])
 
+  const regenerateReasoning = useCallback(async () => {
+    if (!symbol || regenerating || pollingActive) return
+    setRegenerating(true)
+    setError('')
+    try {
+      await apiJson(`${API_BASE}/ai-structure/contexts/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbols: [symbol],
+          levels: CONTEXT_LEVELS,
+          reason: 'web_ai_structure_regenerate',
+          force_rebuild: true,
+          priority: 100,
+        }),
+      })
+      setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
+      await loadStatus()
+    } catch (err) {
+      setError(err?.message || '重新生成推演失败')
+    } finally {
+      setRegenerating(false)
+    }
+  }, [symbol, regenerating, pollingActive, loadStatus])
+
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
     if (!question || loading || !symbol) return
@@ -342,7 +368,12 @@ export default function AIStructureCoachPanel({
 
       <PipelineStatus items={pipelineItems} />
 
-      <StatusNotice status={status} pollingActive={pollingActive} />
+      <StatusNotice
+        status={status}
+        pollingActive={pollingActive}
+        onRetry={regenerateReasoning}
+        retrying={regenerating}
+      />
 
       <ReasoningBrief context={reasoningContext} />
 
@@ -464,13 +495,20 @@ function PipelineStatus({ items }) {
   )
 }
 
-function StatusNotice({ status, pollingActive }) {
+function StatusNotice({ status, pollingActive, onRetry, retrying }) {
   const notice = statusNotice(status, pollingActive)
   if (!notice) return null
   return (
     <div className={`ai-status-notice ai-status-notice--${notice.tone}`}>
-      <strong>{notice.title}</strong>
-      <span>{notice.text}</span>
+      <div className="ai-status-notice-copy">
+        <strong>{notice.title}</strong>
+        <span>{notice.text}</span>
+      </div>
+      {notice.retryable && (
+        <button type="button" onClick={onRetry} disabled={retrying || pollingActive}>
+          {retrying || pollingActive ? '生成中' : '重新生成'}
+        </button>
+      )}
     </div>
   )
 }
@@ -666,6 +704,7 @@ function statusNotice(status, pollingActive) {
       tone: ['failed', 'unavailable'].includes(ai.status) ? 'error' : 'working',
       title: ai.title || 'AI 推演暂未完成',
       text: ai.message || 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+      retryable: ['failed', 'unavailable'].includes(ai.status),
     }
   }
   if (reason === 'NO_DATA') {

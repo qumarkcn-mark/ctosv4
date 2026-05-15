@@ -64,6 +64,7 @@ class ContextPrewarmRequest(BaseModel):
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     priority: int = Field(default=70, ge=1, le=100)
     reason: str = "manual_context_prewarm"
+    force_rebuild: bool = False
 
 
 class PipelineEnsureRequest(BaseModel):
@@ -245,6 +246,26 @@ def prewarm_contexts(
         compute_profile=request.compute_profile,
         priority=request.priority,
         reason=request.reason,
+        force_rebuild=request.force_rebuild,
+    )
+    return {"status": "success", "data": result}
+
+
+@router.post("/contexts/regenerate")
+def regenerate_contexts(
+    request: ContextPrewarmRequest,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    _validate_compute_profile(request.compute_profile)
+    levels = [_validate_level(level) for level in request.levels]
+    result = prewarm_ai_structure_contexts(
+        user_id=current_user_id,
+        symbols=request.symbols,
+        levels=levels,
+        compute_profile=request.compute_profile,
+        priority=max(request.priority, 95),
+        reason=request.reason or "manual_context_regenerate",
+        force_rebuild=True,
     )
     return {"status": "success", "data": result}
 

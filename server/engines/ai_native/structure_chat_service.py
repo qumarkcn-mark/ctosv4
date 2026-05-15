@@ -7,6 +7,7 @@ CZSC, old radar, or any heavy structure path.
 from __future__ import annotations
 
 import json
+import asyncio
 import uuid
 from typing import Any
 
@@ -14,8 +15,10 @@ from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, now_text, stable_hash
 from server.engines.ai_native.structure_context_service import (
+    _has_configured_ai_native_key,
     get_ai_structure_context_status,
     get_latest_ai_structure_context,
+    get_reasoning_run_for_context,
     reasoning_availability,
 )
 from server.engines.ai_native.structure_evidence_service import (
@@ -75,7 +78,18 @@ def answer_structure_question(
         if intent_type == "review"
         else None
     )
-    answer = _build_answer(
+    answer = _build_ai_answer_from_full_reasoning(
+        user_id=user_id,
+        symbol=canonical,
+        question=question,
+        intent_type=intent_type,
+        context=context,
+        chart_focus=chart_focus,
+        data_status=data_status,
+        memory_context=memory_context,
+        review_context=review_context,
+        conversation_context=conversation_context,
+    ) or _build_answer(
         question=question,
         intent_type=intent_type,
         context=context,
@@ -445,6 +459,95 @@ def save_chat_message(
         return _message_row(row)
     finally:
         conn.close()
+
+
+def _build_ai_answer_from_full_reasoning(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    intent_type: str,
+    context: dict[str, Any],
+    chart_focus: dict[str, Any],
+    data_status: dict[str, Any] | None = None,
+    memory_context: dict[str, Any] | None = None,
+    review_context: dict[str, Any] | None = None,
+    conversation_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not _has_configured_ai_native_key(user_id):
+        return None
+    run = get_reasoning_run_for_context(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context.get("context_id") or "",
+        source_snapshot_ids=context.get("source_snapshot_ids") or [],
+    )
+    full_text = str((run or {}).get("full_reasoning_text") or "").strip()
+    if not full_text:
+        return None
+    prompt = {
+        "version": "ai_structure_chat_from_full_reasoning.v1",
+        "symbol": symbol,
+        "question": question,
+        "intent_type": intent_type,
+        "full_reasoning_text": full_text,
+        "summary": {
+            "coach_summary": context.get("coach_summary") or "",
+            "reasoning": context.get("reasoning") or {},
+        },
+        "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+        "memory_context": memory_context or {},
+        "review_context": review_context or {},
+        "conversation_context": conversation_context or {},
+        "data_status": data_status or {},
+        "chart_focus": chart_focus,
+        "rules": {
+            "answer_from_full_reasoning_only": True,
+            "do_not_recalculate_structure": True,
+            "do_not_add_new_price_levels": True,
+            "no_direct_trade_instruction": True,
+            "required_risk_disclaimer": RISK_DISCLAIMER,
+        },
+    }
+    system_prompt = (
+        "你是 CT-OS AI Native V5 的问答解释层。"
+        "你只能根据已保存的 DeepSeek Pro Think 完整推演原文、摘要、持仓和历史记忆回答。"
+        "不要重新计算中枢、笔、背驰或级别结构，不要引入新价格。"
+        "回答用户真实问题，给条件化观察、风险边界、提醒/复盘建议。"
+        "不要直接给买入、卖出、满仓、清仓指令。"
+        f"结尾必须包含：{RISK_DISCLAIMER}"
+    )
+    try:
+        from server.services.llm_service import AIModelRoute, LLMService
+        try:
+            asyncio.get_running_loop()
+            return None
+        except RuntimeError:
+            pass
+        answer_text = asyncio.run(
+            LLMService().infer_ai_native_markdown(
+                system_prompt,
+                _json(prompt),
+                user_id=user_id,
+                model_route=AIModelRoute(thinking_enabled=False, timeout_seconds=90, max_tokens=1800),
+            )
+        )
+    except Exception:
+        return None
+    answer_text = str(answer_text or "").strip()
+    if not answer_text:
+        return None
+    if RISK_DISCLAIMER not in answer_text:
+        answer_text = f"{answer_text.rstrip('。')}。{RISK_DISCLAIMER}"
+    answer_text = _apply_memory_warning(answer_text, memory_context)
+    return {
+        "coach_answer": answer_text,
+        "referenced_boundaries": _referenced_boundaries(
+            chart_focus.get("level") or "",
+            _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zg")),
+            _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zd")),
+        ),
+    }
 
 
 def _build_answer(

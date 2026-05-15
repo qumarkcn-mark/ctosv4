@@ -1,4 +1,15 @@
+import json
+
 from server.engines.ai_native.structure_context_service import reasoning_availability
+from server.db import database
+from server.engines.ai_native.structure_context_service import (
+    enqueue_context_job,
+    get_latest_ai_structure_context,
+    save_ai_structure_context,
+    save_reasoning_run,
+)
+from server.engines.ai_native.structure_chat_service import answer_structure_question
+from server.services.llm_service import _loads_lenient_json_object, _message_content_text, _message_reasoning_text
 
 
 def test_reasoning_availability_only_ready_for_successful_llm():
@@ -43,3 +54,239 @@ def test_reasoning_availability_hides_failed_llm():
     assert status["ready"] is False
     assert status["status"] == "failed"
     assert "不展示本地算法边界" in status["message"]
+
+
+def test_context_job_force_rebuild_requeues_existing_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO users (id, openid, nickname) VALUES (1, 'u1', 'U1')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    first = enqueue_context_job(
+        user_id=1,
+        symbol="sh.688008",
+        compute_profile="chart_standard_v1",
+        source_snapshot_ids=["snap-a", "snap-b"],
+        reason="first",
+    )
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE ai_structure_context_jobs
+               SET status = 'SUCCESS',
+                   result_context_id = 'ctx-old',
+                   finished_at = updated_at
+             WHERE job_id = ?
+            """,
+            (first["job_id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rebuilt = enqueue_context_job(
+        user_id=1,
+        symbol="sh.688008",
+        compute_profile="chart_standard_v1",
+        source_snapshot_ids=["snap-a", "snap-b"],
+        reason="retry",
+        force_rebuild=True,
+    )
+
+    assert rebuilt["status"] == "PENDING"
+    assert rebuilt["forced"] is True
+    assert rebuilt["job_id"] != first["job_id"]
+    assert rebuilt["result_context_id"] == ""
+
+
+def test_lenient_json_repairs_code_fence_and_trailing_comma():
+    parsed = _loads_lenient_json_object('```json\\n{"a": 1, "b": "2%",}\\n```')
+
+    assert parsed == {"a": 1, "b": "2%"}
+
+
+def test_reasoning_content_is_not_treated_as_json_content():
+    class Message:
+        content = ""
+        reasoning_content = '{"should_not": "parse_as_final"}'
+
+    assert _message_content_text(Message()) == ""
+    assert _message_reasoning_text(Message()) == '{"should_not": "parse_as_final"}'
+
+
+def test_latest_context_prefers_previous_successful_reasoning(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO users (id, openid, nickname) VALUES (1, 'u1', 'U1')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    common = {
+        "user_id": 1,
+        "symbol": "sh.688008",
+        "prompt_version": "ai_structure_reasoning.e1_dynamic_growth",
+        "source_snapshot_ids": ["snap-a"],
+        "raw_context": {},
+        "background": {},
+        "boundary": {},
+        "summary_text": "",
+    }
+    success = save_ai_structure_context(
+        **common,
+        context_fingerprint="a" * 64,
+        reasoning={"reasoning_meta": {"provider": "llm", "llm_status": "success"}},
+    )
+    save_ai_structure_context(
+        **common,
+        context_fingerprint="b" * 64,
+        reasoning={"reasoning_meta": {"provider": "local_fallback", "llm_status": "failed"}},
+    )
+
+    latest = get_latest_ai_structure_context(user_id=1, symbol="sh.688008")
+
+    assert latest["context_id"] == success["context_id"]
+    assert reasoning_availability(latest)["ready"] is True
+
+
+def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, openid, nickname, settings_json) VALUES (1, 'u1', 'U1', ?)",
+            (json.dumps({"deepseek_api_key": "sk-test"}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = save_ai_structure_context(
+        user_id=1,
+        symbol="sh.688008",
+        prompt_version="ai_structure_reasoning.e1_dynamic_growth",
+        context_fingerprint="c" * 64,
+        source_snapshot_ids=["snap-a"],
+        raw_context={"position_context": {"has_position": True, "quantity": 2000, "avg_cost": 135, "current_price": 247.98}},
+        reasoning={
+            "reasoning_meta": {"provider": "llm", "llm_status": "success"},
+            "structure_summary": "周线向上离开，5分钟跌破小中枢。",
+            "scenario_branches": [],
+        },
+        background={},
+        boundary={
+            "levels": {
+                "5": {
+                    "snapshot_id": "snap-a",
+                    "active_center": {"zg": 253.49, "zd": 243.0},
+                    "evidence": {"trigger_line": "snap-a:5:line:trigger", "invalidation_line": "snap-a:5:line:invalidation"},
+                }
+            }
+        },
+        summary_text="周线强，小级别破坏。",
+        coach_summary="周线强，小级别破坏。",
+        main_level="day",
+        trigger_level="5",
+    )
+    save_reasoning_run(
+        user_id=1,
+        symbol="sh.688008",
+        source_snapshot_ids=["snap-a"],
+        prompt_version="ai_structure_reasoning.e1_dynamic_growth.full_text",
+        status="SUCCESS",
+        full_reasoning_text="Think全文：当前不适合加仓，5分钟需站回253.49，跌破243要防守。仅供参考，不构成投资建议",
+        summary={},
+        context_id=context["context_id"],
+    )
+
+    async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
+        payload = json.loads(context_json)
+        assert "Think全文" in payload["full_reasoning_text"]
+        assert payload["question"] == "我先持仓2000股，成本135，要不要加仓？"
+        assert model_route.thinking_enabled is False
+        return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
+
+    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
+
+    answer = answer_structure_question(
+        user_id=1,
+        symbol="sh.688008",
+        question="我先持仓2000股，成本135，要不要加仓？",
+    )
+
+    assert answer["context_id"] == context["context_id"]
+    assert "不适合加仓" in answer["coach_answer"]
+    assert "253.49" in answer["coach_answer"]
+    assert answer["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_does_not_use_full_reasoning_from_different_snapshot_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, openid, nickname, settings_json) VALUES (1, 'u1', 'U1', ?)",
+            (json.dumps({"deepseek_api_key": "sk-test"}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = save_ai_structure_context(
+        user_id=1,
+        symbol="sh.688008",
+        prompt_version="ai_structure_reasoning.e1_dynamic_growth",
+        context_fingerprint="d" * 64,
+        source_snapshot_ids=["snap-new"],
+        raw_context={},
+        reasoning={
+            "reasoning_meta": {"provider": "llm", "llm_status": "success"},
+            "structure_summary": "新结构摘要。",
+            "scenario_branches": [],
+        },
+        background={},
+        boundary={
+            "levels": {
+                "5": {
+                    "snapshot_id": "snap-new",
+                    "active_center": {"zg": 253.49, "zd": 243.0},
+                    "evidence": {"trigger_line": "snap-new:5:line:trigger", "invalidation_line": "snap-new:5:line:invalidation"},
+                }
+            }
+        },
+        summary_text="新结构摘要。",
+    )
+    save_reasoning_run(
+        user_id=1,
+        symbol="sh.688008",
+        source_snapshot_ids=["snap-old"],
+        prompt_version="ai_structure_reasoning.e1_dynamic_growth.full_text",
+        status="SUCCESS",
+        full_reasoning_text="旧 Think 全文，不应该被新 context 使用。",
+        summary={},
+        context_id="old-context",
+    )
+
+    async def forbidden_markdown(*args, **kwargs):
+        raise AssertionError("chat must not use reasoning text from another snapshot set")
+
+    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", forbidden_markdown)
+
+    answer = answer_structure_question(
+        user_id=1,
+        symbol="sh.688008",
+        question="我现在能买吗？",
+    )
+
+    assert answer["context_id"] == context["context_id"]
+    assert "不能直接回答" in answer["coach_answer"]
+    assert "旧 Think" not in answer["coach_answer"]

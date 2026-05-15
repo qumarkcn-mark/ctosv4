@@ -151,12 +151,20 @@
 }
 
 .ai-status-notice {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 6px;
   background: rgba(255,255,255,0.025);
+}
+
+.ai-status-notice-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .ai-status-notice strong,
@@ -174,6 +182,23 @@
   color: var(--text-secondary, rgba(255,255,255,0.55));
   font-size: 11px;
   line-height: 1.45;
+}
+
+.ai-status-notice button {
+  flex: 0 0 auto;
+  min-width: 70px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.ai-status-notice button:disabled {
+  cursor: not-allowed;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
 }
 
 .ai-status-notice--working {
