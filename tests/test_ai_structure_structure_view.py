@@ -55,6 +55,18 @@ def save_sample_snapshot():
                     "bar_count": 2,
                 },
             ],
+            "segs": [
+                {
+                    "direction": "up",
+                    "is_up": True,
+                    "is_sure": True,
+                    "x0": "2026-05-10",
+                    "x1": "2026-05-12",
+                    "y0": 10.0,
+                    "y1": 10.8,
+                    "bar_count": 3,
+                }
+            ],
             "bi_zhongshus": [
                 {
                     "begin_date": "2026-05-10",
@@ -93,6 +105,10 @@ def test_structure_view_service_returns_chart_ready_geometry(monkeypatch, tmp_pa
     assert view["bar_axis"]["count"] == 3
     assert view["bis"][0]["start_index"] == 0
     assert view["bis"][0]["end_index"] == 1
+    assert view["segments"][0]["start_index"] == 0
+    assert view["segments"][0]["end_index"] == 2
+    assert view["capabilities"]["segments"] is True
+    assert view["capabilities"]["segment_status"] == "ready"
     assert view["centers"][0]["active"] is True
     assert view["active_center"]["begin_index"] == 0
     assert view["active_center"]["end_index"] == 2
@@ -167,7 +183,41 @@ def test_structure_view_api_returns_public_snapshot_view(monkeypatch, tmp_path):
     data = response.json()["data"]
     assert data["snapshot_id"].startswith("czsc_snapshot_")
     assert len(data["bis"]) == 2
+    assert len(data["segments"]) == 1
     assert data["active_center"]["zd"] == 10.2
+
+
+def test_structure_view_marks_segments_unavailable_without_fallback(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-no-segments",
+        data_as_of="2026-05-16",
+        snapshot_payload={
+            "level": "day",
+            "price": 10.8,
+            "klines": [
+                {"time": "2026-05-10", "open": 10, "high": 11, "low": 9, "close": 10.5},
+                {"time": "2026-05-11", "open": 10.5, "high": 12, "low": 10, "close": 11.5},
+            ],
+            "bis": [],
+            "segs": [],
+            "bi_zhongshus": [],
+            "active_zhongshu": {},
+            "metadata": {"unsupported_fields": ["segs", "seg_zhongshus", "bsps"]},
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    assert view["segments"] == []
+    assert view["capabilities"]["segment_status"] == "unavailable"
+    assert view["capabilities"]["segment_reason"] == "czsc_object_does_not_expose_segments"
 
 
 def test_structure_view_api_404_when_missing(monkeypatch, tmp_path):

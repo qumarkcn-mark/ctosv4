@@ -8,17 +8,22 @@ from typing import Any
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
+    segs = _serialize_segments(czsc_obj)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
     latest_zs = serialized_zss[-1] if serialized_zss else {}
     price = _last_price(rows, bis)
+    unsupported_fields = ["seg_zhongshus", "bsps"]
+    if not segs:
+        unsupported_fields.append("segs")
 
     return {
         "level": level,
         "klines": [_serialize_row(row) for row in rows],
         "fxs": fxs,
         "bis": bis,
-        "segs": [],
+        "segs": segs,
+        "segments": segs,
         "bi_zhongshus": serialized_zss,
         "seg_zhongshus": [],
         "zhongshus": serialized_zss,
@@ -35,11 +40,13 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
             "fx_count": len(fxs),
             "bi_count": len(bis),
             "bi_zs_count": len(serialized_zss),
+            "seg_count": len(segs),
             "seg_zs_count": 0,
             "bsp_count": 0,
         },
         "metadata": {
-            "unsupported_fields": ["segs", "seg_zhongshus", "bsps"],
+            "unsupported_fields": unsupported_fields,
+            "segment_source": "czsc_object" if segs else "unavailable_in_czsc_object",
         },
     }
 
@@ -90,6 +97,22 @@ def _serialize_bi(bi: Any) -> dict[str, Any]:
         "direction": "up" if is_up else "down",
         "is_sure": True,
     }
+
+
+def _serialize_segments(czsc_obj: Any) -> list[dict[str, Any]]:
+    for attr_name in ("seg_list", "segs", "segments", "xd_list", "xds", "duans", "line_segments"):
+        raw = getattr(czsc_obj, attr_name, None)
+        if callable(raw) or not raw:
+            continue
+        try:
+            items = list(raw)
+        except TypeError:
+            continue
+        segments = [_serialize_bi(item) for item in items]
+        segments = [item for item in segments if item.get("x0") and item.get("x1")]
+        if segments:
+            return segments
+    return []
 
 
 def _serialize_zs(zs: Any) -> dict[str, Any]:

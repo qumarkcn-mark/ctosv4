@@ -136,6 +136,23 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
       if (!clipped) return null
       return { ...item, start: clipped.start, end: clipped.end }
     }).filter(Boolean)
+    const segments = (view.segments || [])
+      .filter((item) => isStructureItemVisible(item.start_index, item.end_index, viewport.range, 2))
+      .map((item) => {
+        const start = chart.convertToPixel(
+          { dataIndex: item.start_index, value: item.start_price },
+          { paneId: CANDLE_PANE_ID, absolute: false }
+        )
+        const end = chart.convertToPixel(
+          { dataIndex: item.end_index, value: item.end_price },
+          { paneId: CANDLE_PANE_ID, absolute: false }
+        )
+        if (!validPoint(start) || !validPoint(end)) return null
+        const clipped = clipLineToViewport(start, end, viewport)
+        if (!clipped) return null
+        return { ...item, start: clipped.start, end: clipped.end }
+      })
+      .filter(Boolean)
     const centers = (view.centers || [])
       .filter((item) => isStructureItemVisible(item.begin_index, item.end_index, viewport.range, 2))
       .map((item) => {
@@ -157,7 +174,7 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
       }
     }).map((item) => clipRectToViewport(item, viewport))
       .filter((item) => item && item.width > 2 && item.height > 2)
-    setStructureOverlay({ bis, centers })
+    setStructureOverlay({ bis, segments, centers })
   }, [])
 
   const updateMomentumOverlay = useCallback(() => {
@@ -599,6 +616,16 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
                 y2={item.end.y}
               />
             ))}
+            {structureOverlay.segments?.map((item) => (
+              <line
+                key={item.id}
+                className={`base-kline__segment ${item.is_up ? 'is-up' : 'is-down'} ${item.is_sure ? '' : 'is-unsure'}`}
+                x1={item.start.x}
+                y1={item.start.y}
+                x2={item.end.x}
+                y2={item.end.y}
+              />
+            ))}
           </svg>
         )}
         {momentumOverlay && (
@@ -855,7 +882,13 @@ function evidenceRoleLabel(role) {
 }
 
 function structureStatusLabel(status, view) {
-  if (status === 'ready') return `${view?.bis?.length || 0} 笔`
+  if (status === 'ready') {
+    const biCount = view?.bis?.length || 0
+    const segmentCount = view?.segments?.length || 0
+    if (segmentCount > 0) return `${biCount} 笔 · ${segmentCount} 线段`
+    if (view?.capabilities?.segment_status === 'unavailable') return `${biCount} 笔 · 线段待接入`
+    return `${biCount} 笔`
+  }
   if (status === 'loading') return '结构加载'
   if (status === 'missing') return '无结构'
   return ''

@@ -59,9 +59,36 @@ def test_serialize_czsc_level_exposes_stable_contract():
         "fx_count": 2,
         "bi_count": 1,
         "bi_zs_count": 1,
+        "seg_count": 0,
         "seg_zs_count": 0,
         "bsp_count": 0,
     }
     assert result["active_zhongshu"]["zg"] == 11.5
     assert result["state_hint"] == "above_zg"
     assert result["bis"][0]["direction"] == "up"
+    assert result["segs"] == []
+    assert "segs" in result["metadata"]["unsupported_fields"]
+    assert result["metadata"]["segment_source"] == "unavailable_in_czsc_object"
+
+
+def test_serialize_czsc_level_serializes_segments_when_czsc_exposes_them():
+    fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
+    fx_b = Obj(dt="2026-01-05", mark="G", high=13, low=12, fx=13)
+    czsc_obj = Obj(
+        fx_list=[fx_a, fx_b],
+        bi_list=[],
+        seg_list=[FakeBI(fx_a, fx_b, high=13.5, low=9.8)],
+        zs_list=[],
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-06", "open": 11, "high": 13, "low": 10, "close": 12.8, "volume": 100}],
+        level="day",
+    )
+
+    assert result["segs"][0]["start_price"] == 10
+    assert result["segments"][0]["end_price"] == 13
+    assert result["stats"]["seg_count"] == 1
+    assert "segs" not in result["metadata"]["unsupported_fields"]
+    assert result["metadata"]["segment_source"] == "czsc_object"
