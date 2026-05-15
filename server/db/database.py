@@ -245,6 +245,10 @@ CREATE TABLE IF NOT EXISTS ai_structure_contexts (
     context_fingerprint TEXT NOT NULL,
     source_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
     raw_context_json TEXT NOT NULL DEFAULT '{}',
+    reasoning_json TEXT NOT NULL DEFAULT '{}',
+    main_level TEXT NOT NULL DEFAULT '',
+    trigger_level TEXT NOT NULL DEFAULT '',
+    coach_summary TEXT NOT NULL DEFAULT '',
     background_json TEXT NOT NULL DEFAULT '{}',
     boundary_json TEXT NOT NULL DEFAULT '{}',
     summary_text TEXT NOT NULL DEFAULT '',
@@ -693,6 +697,11 @@ def run_migrations(conn: sqlite3.Connection):
         "ALTER TABLE alerts ADD COLUMN strategy_id TEXT",
         "ALTER TABLE alerts ADD COLUMN strategy_version TEXT",
         "ALTER TABLE alerts ADD COLUMN strategy_contract TEXT",
+        # 迁移 M020：AI Native V5 保存独立推演结果，结构事实和 AI 判断分离
+        "ALTER TABLE ai_structure_contexts ADD COLUMN reasoning_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE ai_structure_contexts ADD COLUMN main_level TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE ai_structure_contexts ADD COLUMN trigger_level TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE ai_structure_contexts ADD COLUMN coach_summary TEXT NOT NULL DEFAULT ''",
         # 迁移 M007：Coach/Event Log 最小三表
         """
         CREATE TABLE IF NOT EXISTS coach_events (
@@ -994,6 +1003,10 @@ def run_migrations(conn: sqlite3.Connection):
             context_fingerprint TEXT NOT NULL,
             source_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
             raw_context_json TEXT NOT NULL DEFAULT '{}',
+            reasoning_json TEXT NOT NULL DEFAULT '{}',
+            main_level TEXT NOT NULL DEFAULT '',
+            trigger_level TEXT NOT NULL DEFAULT '',
+            coach_summary TEXT NOT NULL DEFAULT '',
             background_json TEXT NOT NULL DEFAULT '{}',
             boundary_json TEXT NOT NULL DEFAULT '{}',
             summary_text TEXT NOT NULL DEFAULT '',

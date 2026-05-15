@@ -95,6 +95,13 @@ def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path)
     assert latest["source_snapshot_ids"] == [snap["snapshot_id"]]
     assert latest["raw_context"]["position_context"]["has_position"] is True
     assert latest["background"]["rules"]["structure_source"] == "czsc_snapshot_only"
+    assert latest["prompt_version"] == "ai_structure_reasoning.e1_dynamic_growth"
+    assert latest["reasoning"]["version"] == "ai_structure_reasoning.e1_dynamic_growth"
+    assert latest["reasoning"]["trend_growth"]["growth_path"]
+    assert latest["reasoning"]["scenario_branches"]
+    assert latest["main_level"] == "5"
+    assert latest["trigger_level"] == "5"
+    assert latest["coach_summary"]
     assert "仅供参考，不构成投资建议" in latest["summary_text"]
     assert latest["branches"]
     assert {branch["branch_type"] for branch in latest["branches"]} >= {
@@ -145,6 +152,7 @@ def test_context_background_contract_keeps_fundamental_context_only(monkeypatch,
     assert background["fundamental"]["verdict"] == "支持"
     assert "结构确认" in background["fundamental"]["summary"]
     assert context["raw_context"]["background_context"]["fundamental"]["role"] == "context_only"
+    assert context["reasoning"]["resonance_view"]["conflict_note"]
 
 
 def test_context_status_turns_stale_when_new_snapshot_exists(monkeypatch, tmp_path):

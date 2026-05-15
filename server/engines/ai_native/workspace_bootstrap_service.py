@@ -149,12 +149,19 @@ def _context_summary(context: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     boundary = context.get("boundary") or {}
     background = context.get("background") or {}
+    reasoning = context.get("reasoning") or {}
     return {
         "context_id": context.get("context_id"),
         "symbol": context.get("symbol"),
         "status": context.get("status"),
         "stale_reason": context.get("stale_reason") or "",
-        "main_level": context.get("main_level") or boundary.get("primary_level") or background.get("primary_level") or "",
+        "prompt_version": context.get("prompt_version") or reasoning.get("version") or "",
+        "main_level": context.get("main_level") or reasoning.get("main_level") or boundary.get("primary_level") or background.get("primary_level") or "",
+        "trigger_level": context.get("trigger_level") or reasoning.get("trigger_level") or "",
+        "coach_summary": context.get("coach_summary") or reasoning.get("coach_summary") or context.get("summary_text") or "",
+        "trend_growth": reasoning.get("trend_growth") or {},
+        "divergence_view": reasoning.get("divergence_view") or {},
+        "resonance_view": reasoning.get("resonance_view") or {},
         "boundary": boundary,
         "background": background,
         "updated_at": context.get("updated_at"),

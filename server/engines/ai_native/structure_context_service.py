@@ -30,9 +30,15 @@ from server.engines.ai_native.scenario_branch_service import (
     list_scenario_branches,
     upsert_scenario_branches_for_context,
 )
+from server.prompts.ai_structure_reasoning_prompt import (
+    AI_STRUCTURE_REASONING_PROMPT_VERSION,
+    build_local_reasoning_fallback,
+    build_reasoning_input,
+    normalize_reasoning_payload,
+)
 
 
-PROMPT_VERSION = "ai_structure_context.v1"
+PROMPT_VERSION = AI_STRUCTURE_REASONING_PROMPT_VERSION
 
 
 def context_job_key(
@@ -425,7 +431,15 @@ def build_ai_structure_context(
         "background_context": background,
         "snapshots": [_compact_snapshot(item) for item in ordered],
     }
-    summary_text = _summary_text(canonical, boundary, position)
+    reasoning_input = build_reasoning_input(
+        symbol=canonical,
+        source_snapshot_ids=source_snapshot_ids,
+        raw_context=raw_context,
+        boundary=boundary,
+        background=background,
+    )
+    reasoning = _generate_reasoning_payload(symbol=canonical, reasoning_input=reasoning_input)
+    summary_text = str(reasoning.get("coach_summary") or "") or _summary_text(canonical, boundary, position)
     fingerprint = stable_hash({
         "user_id": int(user_id),
         "symbol": canonical,
@@ -434,6 +448,7 @@ def build_ai_structure_context(
         "boundary": boundary,
         "position": position,
         "background": background,
+        "reasoning": reasoning,
     })
     return {
         "user_id": int(user_id),
@@ -442,6 +457,10 @@ def build_ai_structure_context(
         "context_fingerprint": fingerprint,
         "source_snapshot_ids": source_snapshot_ids,
         "raw_context": raw_context,
+        "reasoning": reasoning,
+        "main_level": str(reasoning.get("main_level") or ""),
+        "trigger_level": str(reasoning.get("trigger_level") or ""),
+        "coach_summary": str(reasoning.get("coach_summary") or ""),
         "background": background,
         "boundary": boundary,
         "summary_text": summary_text,
@@ -458,9 +477,13 @@ def save_ai_structure_context(
     context_fingerprint: str,
     source_snapshot_ids: list[str],
     raw_context: dict[str, Any],
+    reasoning: dict[str, Any],
     background: dict[str, Any],
     boundary: dict[str, Any],
     summary_text: str,
+    main_level: str = "",
+    trigger_level: str = "",
+    coach_summary: str = "",
     status: str = "fresh",
     stale_reason: str = "",
 ) -> dict[str, Any]:
@@ -473,14 +496,19 @@ def save_ai_structure_context(
             """
             INSERT INTO ai_structure_contexts (
                 context_id, user_id, symbol, prompt_version, context_fingerprint,
-                source_snapshot_ids_json, raw_context_json, background_json,
+                source_snapshot_ids_json, raw_context_json, reasoning_json,
+                main_level, trigger_level, coach_summary, background_json,
                 boundary_json, summary_text, status, stale_reason, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, symbol, context_fingerprint)
             DO UPDATE SET
                 source_snapshot_ids_json = excluded.source_snapshot_ids_json,
                 raw_context_json = excluded.raw_context_json,
+                reasoning_json = excluded.reasoning_json,
+                main_level = excluded.main_level,
+                trigger_level = excluded.trigger_level,
+                coach_summary = excluded.coach_summary,
                 background_json = excluded.background_json,
                 boundary_json = excluded.boundary_json,
                 summary_text = excluded.summary_text,
@@ -496,6 +524,10 @@ def save_ai_structure_context(
                 context_fingerprint,
                 _json(source_snapshot_ids),
                 _json(raw_context),
+                _json(reasoning),
+                main_level,
+                trigger_level,
+                coach_summary,
                 _json(background),
                 _json(boundary),
                 summary_text,
@@ -510,6 +542,13 @@ def save_ai_structure_context(
         return _context_row(row)
     finally:
         conn.close()
+
+
+def _generate_reasoning_payload(*, symbol: str, reasoning_input: dict[str, Any]) -> dict[str, Any]:
+    # P0 先使用本地推演契约兜底，避免 worker 在无 API Key 环境下伪造 LLM 成功。
+    # 后续接入 LLM 时仍必须经过 normalize，保证落库 schema 稳定。
+    fallback = build_local_reasoning_fallback(symbol=symbol, reasoning_input=reasoning_input)
+    return normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
 
 
 def _latest_snapshot_set(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any]:
@@ -732,6 +771,7 @@ def _context_row(row) -> dict[str, Any]:
     data = dict(row)
     data["source_snapshot_ids"] = json.loads(data.pop("source_snapshot_ids_json") or "[]")
     data["raw_context"] = json.loads(data.pop("raw_context_json") or "{}")
+    data["reasoning"] = json.loads(data.pop("reasoning_json", "{}") or "{}")
     data["background"] = json.loads(data.pop("background_json") or "{}")
     data["boundary"] = json.loads(data.pop("boundary_json") or "{}")
     return data
