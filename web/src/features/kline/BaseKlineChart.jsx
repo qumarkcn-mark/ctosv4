@@ -568,7 +568,7 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
               type="button"
               className={structureLayer ? 'is-layer-active' : ''}
               onClick={handleStructureLayerToggle}
-              title="显示/隐藏 CZSC 笔、线段与中枢"
+              title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
             >
               结构
             </button>
@@ -584,7 +584,7 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
           {structureLayer && (
             <div className="base-kline__legend" aria-label="结构图例">
               <span><i className="is-bi" />笔</span>
-              <span><i className="is-segment" />线段</span>
+              {(structureView?.segments?.length || 0) > 0 && <span><i className="is-segment" />线段</span>}
               <span><i className="is-center" />中枢</span>
             </div>
           )}

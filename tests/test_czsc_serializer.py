@@ -94,7 +94,7 @@ def test_serialize_czsc_level_serializes_segments_when_czsc_exposes_them():
     assert result["metadata"]["segment_source"] == "czsc_object"
 
 
-def test_serialize_czsc_level_derives_segments_from_czsc_bis_when_native_missing():
+def test_serialize_czsc_level_does_not_derive_segments_from_bis_when_native_missing():
     def fx(dt, price):
         return Obj(dt=dt, mark="", high=price, low=price, fx=price)
 
@@ -128,9 +128,7 @@ def test_serialize_czsc_level_derives_segments_from_czsc_bis_when_native_missing
         level="day",
     )
 
-    assert result["metadata"]["segment_source"] == "derived_from_czsc_bis_v1"
-    assert result["stats"]["seg_count"] >= 1
-    assert result["segs"][0]["source"] == "derived_from_czsc_bis_v1"
-    assert result["segs"][0]["start_bi_index"] == 0
-    assert result["segs"][0]["end_bi_index"] >= 2
-    assert "segs" not in result["metadata"]["unsupported_fields"]
+    assert result["metadata"]["segment_source"] == "unavailable_in_czsc_object"
+    assert result["stats"]["seg_count"] == 0
+    assert result["segs"] == []
+    assert "segs" in result["metadata"]["unsupported_fields"]

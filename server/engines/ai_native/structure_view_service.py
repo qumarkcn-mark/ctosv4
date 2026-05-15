@@ -14,7 +14,6 @@ from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     get_latest_snapshot,
 )
-from server.engines.structure.czsc_serializer import derive_segments_from_serialized_bis
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -71,9 +70,6 @@ def get_structure_view(
         )
         centers = _mark_active_center(centers, active_center)
     segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
-    if not segments:
-        derived_snapshot = {**snapshot, "segs": derive_segments_from_serialized_bis(snapshot.get("bis") or [])}
-        segments = _normalize_segments(derived_snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
     unsupported_fields = _unsupported_fields(snapshot)
     segment_source = _segment_source(snapshot, segments)
 

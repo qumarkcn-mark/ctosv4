@@ -65,7 +65,7 @@ def save_sample_snapshot():
                     "y0": 10.0,
                     "y1": 10.8,
                     "bar_count": 3,
-                    "source": "derived_from_czsc_bis_v1",
+                    "source": "czsc_object",
                     "start_bi_index": 0,
                     "end_bi_index": 1,
                 }
@@ -110,9 +110,9 @@ def test_structure_view_service_returns_chart_ready_geometry(monkeypatch, tmp_pa
     assert view["bis"][0]["end_index"] == 1
     assert view["segments"][0]["start_index"] == 0
     assert view["segments"][0]["end_index"] == 2
-    assert view["segments"][0]["source"] == "derived_from_czsc_bis_v1"
+    assert view["segments"][0]["source"] == "czsc_object"
     assert view["segments"][0]["start_bi_index"] == 0
-    assert view["capabilities"]["segment_source"] == "derived_from_czsc_bis_v1"
+    assert view["capabilities"]["segment_source"] == "czsc_object"
     assert view["capabilities"]["segments"] is True
     assert view["capabilities"]["segment_status"] == "ready"
     assert view["centers"][0]["active"] is True
@@ -226,7 +226,7 @@ def test_structure_view_marks_segments_unavailable_without_fallback(monkeypatch,
     assert view["capabilities"]["segment_reason"] == "czsc_object_does_not_expose_segments"
 
 
-def test_structure_view_derives_segments_from_existing_snapshot_bis(monkeypatch, tmp_path):
+def test_structure_view_does_not_derive_segments_from_existing_snapshot_bis(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     points = [
         ("2026-05-01", 10.0),
@@ -262,7 +262,7 @@ def test_structure_view_derives_segments_from_existing_snapshot_bis(monkeypatch,
         symbol="sh600519",
         level="day",
         compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
-        data_signature="sig-derived-segments",
+        data_signature="sig-no-derived-segments",
         data_as_of="2026-05-08",
         snapshot_payload={
             "level": "day",
@@ -281,10 +281,10 @@ def test_structure_view_derives_segments_from_existing_snapshot_bis(monkeypatch,
 
     view = get_structure_view(symbol="sh600519", level="day")
 
-    assert len(view["segments"]) >= 1
-    assert view["segments"][0]["source"] == "derived_from_czsc_bis_v1"
-    assert view["capabilities"]["segment_status"] == "ready"
-    assert view["capabilities"]["segment_source"] == "derived_from_czsc_bis_v1"
+    assert view["segments"] == []
+    assert view["capabilities"]["segment_status"] == "unavailable"
+    assert view["capabilities"]["segment_source"] == "unavailable_in_czsc_object"
+    assert view["capabilities"]["segment_reason"] == "czsc_object_does_not_expose_segments"
 
 
 def test_structure_view_api_404_when_missing(monkeypatch, tmp_path):
