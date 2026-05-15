@@ -234,6 +234,25 @@
   stroke-dasharray: 4 3;
 }
 
+.base-kline__segment {
+  stroke-width: 2;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.base-kline__segment.is-up {
+  stroke: rgba(248, 113, 113, 0.92);
+}
+
+.base-kline__segment.is-down {
+  stroke: rgba(52, 211, 153, 0.92);
+}
+
+.base-kline__segment.is-unsure {
+  opacity: 0.42;
+  stroke-dasharray: 6 4;
+}
+
 .base-kline__momentum-leg line {
   stroke-width: 2.2;
   vector-effect: non-scaling-stroke;

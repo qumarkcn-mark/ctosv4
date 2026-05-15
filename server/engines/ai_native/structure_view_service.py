@@ -69,6 +69,8 @@ def get_structure_view(
             active=True,
         )
         centers = _mark_active_center(centers, active_center)
+    segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
+    unsupported_fields = _unsupported_fields(snapshot)
 
     return {
         "version": "structure_view.v1",
@@ -84,13 +86,20 @@ def get_structure_view(
         "updated_at": snapshot_row.get("updated_at") or "",
         "status": snapshot_row.get("status") or "fresh",
         "price": _num(snapshot.get("price")),
+        "capabilities": {
+            "bis": bool([item for item in bis if item]),
+            "segments": bool(segments),
+            "centers": bool([item for item in centers if item] or active_center),
+            "segment_status": "ready" if segments else "unavailable",
+            "segment_reason": "czsc_snapshot_segments" if segments else _segment_unavailable_reason(unsupported_fields),
+        },
         "bar_axis": {
             "count": len(klines),
             "first_time": _bar_time(klines[0]) if klines else "",
             "last_time": _bar_time(klines[-1]) if klines else "",
         },
         "bis": [item for item in bis if item],
-        "segments": _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"]),
+        "segments": segments,
         "centers": [item for item in centers if item],
         "active_center": active_center,
     }
@@ -172,7 +181,8 @@ def _normalize_center(
 
 def _normalize_segments(snapshot: dict[str, Any], *, time_axis: dict[int, int], snapshot_id: str) -> list[dict[str, Any]]:
     raw_segments = (
-        snapshot.get("segments")
+        snapshot.get("segs")
+        or snapshot.get("segments")
         or snapshot.get("xds")
         or snapshot.get("duans")
         or snapshot.get("line_segments")
@@ -187,6 +197,18 @@ def _normalize_segments(snapshot: dict[str, Any], *, time_axis: dict[int, int], 
             segment["id"] = f"{snapshot_id}:segment:{index}"
             result.append(segment)
     return result
+
+
+def _unsupported_fields(snapshot: dict[str, Any]) -> list[str]:
+    metadata = snapshot.get("metadata") if isinstance(snapshot.get("metadata"), dict) else {}
+    fields = metadata.get("unsupported_fields") if isinstance(metadata, dict) else []
+    return [str(item) for item in fields] if isinstance(fields, list) else []
+
+
+def _segment_unavailable_reason(unsupported_fields: list[str]) -> str:
+    if "segs" in unsupported_fields:
+        return "czsc_object_does_not_expose_segments"
+    return "snapshot_has_no_segments"
 
 
 def _mark_active_center(centers: list[dict[str, Any] | None], active_center: dict[str, Any]) -> list[dict[str, Any] | None]:
