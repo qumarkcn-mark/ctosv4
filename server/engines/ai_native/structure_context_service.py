@@ -7,6 +7,7 @@ heavy structure computation and never reads legacy radar outputs.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import uuid
 from datetime import datetime, timedelta
@@ -32,6 +33,7 @@ from server.engines.ai_native.scenario_branch_service import (
 )
 from server.prompts.ai_structure_reasoning_prompt import (
     AI_STRUCTURE_REASONING_PROMPT_VERSION,
+    AI_STRUCTURE_REASONING_SYSTEM_PROMPT,
     build_local_reasoning_fallback,
     build_reasoning_input,
     normalize_reasoning_payload,
@@ -377,7 +379,32 @@ def claim_next_context_job(
 
 
 async def run_context_job(job: dict[str, Any]) -> dict[str, Any]:
-    return await run_in_threadpool(run_context_job_sync, job)
+    job_id = job["job_id"]
+    try:
+        source_snapshot_ids = json.loads(job.get("source_snapshot_ids_json") or "[]")
+        snapshots = _load_snapshots_by_ids(source_snapshot_ids)
+        if not snapshots:
+            _fail_job(job_id, code="NO_SNAPSHOT", message="No CZSC snapshots available", retryable=False)
+            return {"status": "failed", "error_code": "NO_SNAPSHOT"}
+        source_levels = [item["level"] for item in snapshots]
+        current_set = _latest_snapshot_set(symbol=job["symbol"], levels=source_levels, compute_profile=job["compute_profile"])
+        if set(source_snapshot_ids) != set(current_set["snapshot_ids"]):
+            _skip_job(job_id, reason="STALE_INPUT")
+            return {"status": "skipped", "reason": "STALE_INPUT"}
+
+        context = await build_ai_structure_context_async(
+            user_id=int(job["user_id"]),
+            symbol=job["symbol"],
+            snapshots=snapshots,
+            prompt_version=job["prompt_version"],
+        )
+        saved = save_ai_structure_context(**context)
+        branches = upsert_scenario_branches_for_context(saved)
+        _complete_job(job_id, context_id=saved["context_id"])
+        return {"status": "success", "context_id": saved["context_id"], "branch_count": len(branches)}
+    except Exception as exc:
+        _fail_job(job_id, code="CONTEXT_ERROR", message=str(exc)[:300], retryable=True)
+        return {"status": "failed", "error_code": "CONTEXT_ERROR", "error_message": str(exc)[:300]}
 
 
 def run_context_job_sync(job: dict[str, Any]) -> dict[str, Any]:
@@ -439,10 +466,82 @@ def build_ai_structure_context(
         background=background,
     )
     reasoning = _generate_reasoning_payload(symbol=canonical, reasoning_input=reasoning_input)
-    summary_text = str(reasoning.get("coach_summary") or "") or _summary_text(canonical, boundary, position)
+    return _context_payload(
+        user_id=user_id,
+        symbol=canonical,
+        prompt_version=prompt_version,
+        source_snapshot_ids=source_snapshot_ids,
+        position=position,
+        background=background,
+        boundary=boundary,
+        raw_context=raw_context,
+        reasoning=reasoning,
+    )
+
+
+async def build_ai_structure_context_async(
+    *,
+    user_id: int,
+    symbol: str,
+    snapshots: list[dict[str, Any]],
+    prompt_version: str = PROMPT_VERSION,
+) -> dict[str, Any]:
+    canonical = normalize_symbol(symbol)
+    ordered = sorted(snapshots, key=lambda item: _level_rank(item.get("level")))
+    source_snapshot_ids = [item["snapshot_id"] for item in ordered]
+    position = _position_context(user_id=user_id, symbol=canonical)
+    boundary = _boundary_payload(ordered)
+    background = _background_context(symbol=canonical, boundary=boundary, position=position, snapshots=ordered)
+    raw_context = {
+        "version": prompt_version,
+        "symbol": canonical,
+        "source": "czsc_snapshot",
+        "source_snapshot_ids": source_snapshot_ids,
+        "position_context": position,
+        "background_context": background,
+        "snapshots": [_compact_snapshot(item) for item in ordered],
+    }
+    reasoning_input = build_reasoning_input(
+        symbol=canonical,
+        source_snapshot_ids=source_snapshot_ids,
+        raw_context=raw_context,
+        boundary=boundary,
+        background=background,
+    )
+    reasoning = await _generate_reasoning_payload_async(
+        user_id=int(user_id),
+        symbol=canonical,
+        reasoning_input=reasoning_input,
+    )
+    return _context_payload(
+        user_id=user_id,
+        symbol=canonical,
+        prompt_version=prompt_version,
+        source_snapshot_ids=source_snapshot_ids,
+        position=position,
+        background=background,
+        boundary=boundary,
+        raw_context=raw_context,
+        reasoning=reasoning,
+    )
+
+
+def _context_payload(
+    *,
+    user_id: int,
+    symbol: str,
+    prompt_version: str,
+    source_snapshot_ids: list[str],
+    position: dict[str, Any],
+    background: dict[str, Any],
+    boundary: dict[str, Any],
+    raw_context: dict[str, Any],
+    reasoning: dict[str, Any],
+) -> dict[str, Any]:
+    summary_text = str(reasoning.get("coach_summary") or "") or _summary_text(symbol, boundary, position)
     fingerprint = stable_hash({
         "user_id": int(user_id),
-        "symbol": canonical,
+        "symbol": symbol,
         "prompt_version": prompt_version,
         "source_snapshot_ids": source_snapshot_ids,
         "boundary": boundary,
@@ -452,7 +551,7 @@ def build_ai_structure_context(
     })
     return {
         "user_id": int(user_id),
-        "symbol": canonical,
+        "symbol": symbol,
         "prompt_version": prompt_version,
         "context_fingerprint": fingerprint,
         "source_snapshot_ids": source_snapshot_ids,
@@ -549,6 +648,57 @@ def _generate_reasoning_payload(*, symbol: str, reasoning_input: dict[str, Any])
     # 后续接入 LLM 时仍必须经过 normalize，保证落库 schema 稳定。
     fallback = build_local_reasoning_fallback(symbol=symbol, reasoning_input=reasoning_input)
     return normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+
+
+async def _generate_reasoning_payload_async(
+    *,
+    user_id: int,
+    symbol: str,
+    reasoning_input: dict[str, Any],
+) -> dict[str, Any]:
+    fallback = build_local_reasoning_fallback(symbol=symbol, reasoning_input=reasoning_input)
+    if not _has_configured_ai_native_key(user_id):
+        return normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+    try:
+        from server.services.llm_service import LLMService
+
+        payload = await LLMService().infer_ai_native_json(
+            AI_STRUCTURE_REASONING_SYSTEM_PROMPT,
+            _json(reasoning_input),
+            user_id=user_id,
+        )
+        normalized = normalize_reasoning_payload(payload, symbol=symbol, reasoning_input=reasoning_input)
+        meta = dict(normalized.get("reasoning_meta") or {})
+        meta.update({"provider": "llm", "llm_status": "success"})
+        normalized["reasoning_meta"] = meta
+        return normalized
+    except Exception as exc:
+        degraded = normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+        meta = dict(degraded.get("reasoning_meta") or {})
+        meta.update({
+            "provider": "local_fallback",
+            "llm_status": "failed",
+            "error": str(exc)[:180],
+        })
+        degraded["reasoning_meta"] = meta
+        return degraded
+
+
+def _has_configured_ai_native_key(user_id: int) -> bool:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        settings = json.loads(row["settings_json"]) if row and row["settings_json"] else {}
+    except Exception:
+        settings = {}
+    finally:
+        conn.close()
+    provider = str(settings.get("ai_native_provider") or "deepseek").strip().lower()
+    if provider == "gemini":
+        key = settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+    else:
+        key = settings.get("deepseek_api_key") or os.environ.get("LLM_API_KEY")
+    return bool(key and key != "dummy_key_replace_in_prod")
 
 
 def _latest_snapshot_set(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any]:
