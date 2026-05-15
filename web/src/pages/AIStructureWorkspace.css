@@ -8,6 +8,8 @@
 }
 
 .ai-workspace-watchlist {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
