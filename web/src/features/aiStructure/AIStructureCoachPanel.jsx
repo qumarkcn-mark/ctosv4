@@ -6,7 +6,8 @@ import './AIStructureCoachPanel.css'
 const QUICK_QUESTIONS = [
   '我现在能买吗？',
   '跌破哪里就不看了？',
-  '我上次错在哪里？',
+  '走势怎么生长？',
+  '这里有没有背驰？',
   '帮我设提醒',
 ]
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
@@ -44,6 +45,7 @@ export default function AIStructureCoachPanel({
   const displayName = symbolName || symbol
   const canAsk = Boolean(status?.context)
   const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
+  const reasoningContext = status?.context || null
 
   const applyWorkspaceSymbolState = useCallback((state) => {
     if (!state || !sameSymbol(state.symbol, symbolRef.current)) return
@@ -335,6 +337,8 @@ export default function AIStructureCoachPanel({
 
       <StatusNotice status={status} pollingActive={pollingActive} />
 
+      <ReasoningBrief context={reasoningContext} />
+
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
       <OutcomeReviewStatus review={outcomeReview} />
@@ -391,6 +395,49 @@ export default function AIStructureCoachPanel({
         </button>
       </form>
     </section>
+  )
+}
+
+function ReasoningBrief({ context }) {
+  if (!context) return null
+  const growth = context.trend_growth || {}
+  const divergence = context.divergence_view || {}
+  const resonance = context.resonance_view || {}
+  const summary = context.coach_summary || context.summary_text || ''
+  const mainLevel = formatLevel(context.main_level)
+  const triggerLevel = formatLevel(context.trigger_level)
+  if (!summary && !growth.growth_path && !mainLevel && !triggerLevel) return null
+  return (
+    <section className="ai-reasoning-brief" aria-label="AI 当前推演">
+      <div className="ai-reasoning-brief-head">
+        <strong>当前推演</strong>
+        <span>{mainLevel || '主级别待定'} / {triggerLevel || '触发待定'}</span>
+      </div>
+      {summary && <p>{summary}</p>}
+      <div className="ai-reasoning-grid">
+        <ReasoningMiniBlock
+          label="走势生长"
+          value={growth.growth_path || growth.next_confirmation || '等待结构继续确认'}
+        />
+        <ReasoningMiniBlock
+          label="背驰"
+          value={divergence.status ? `${divergence.status}：${divergence.risk_note || divergence.evidence || ''}` : '等待离开段力度确认'}
+        />
+        <ReasoningMiniBlock
+          label="级别关系"
+          value={resonance.higher_level_context || resonance.lower_level_trigger || '等待级别关系确认'}
+        />
+      </div>
+    </section>
+  )
+}
+
+function ReasoningMiniBlock({ label, value }) {
+  return (
+    <div className="ai-reasoning-mini">
+      <span>{label}</span>
+      <em>{value}</em>
+    </div>
   )
 }
 
@@ -737,4 +784,9 @@ function statusReason(status) {
 
 function formatLevels(levels = []) {
   return levels.map((level) => LEVEL_LABELS[level] || level).join('/')
+}
+
+function formatLevel(level) {
+  if (!level) return ''
+  return LEVEL_LABELS[level] || level
 }
