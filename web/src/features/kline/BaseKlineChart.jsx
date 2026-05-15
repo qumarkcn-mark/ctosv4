@@ -558,22 +558,31 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
         </div>
 
         <div className="base-kline__status">
-          <button
-            type="button"
-            className={structureLayer ? 'is-layer-active' : ''}
-            onClick={handleStructureLayerToggle}
-            title="显示/隐藏 CZSC 笔与中枢"
-          >
-            CZSC
-          </button>
-          <button
-            type="button"
-            className={momentumLayer ? 'is-layer-active' : ''}
-            onClick={handleMomentumLayerToggle}
-            title="显示/隐藏当前段与上一同向段力量对比"
-          >
-            力量
-          </button>
+          <div className="base-kline__layer-controls" aria-label="K线图层">
+            <button
+              type="button"
+              className={structureLayer ? 'is-layer-active' : ''}
+              onClick={handleStructureLayerToggle}
+              title="显示/隐藏 CZSC 笔、线段与中枢"
+            >
+              结构
+            </button>
+            <button
+              type="button"
+              className={momentumLayer ? 'is-layer-active' : ''}
+              onClick={handleMomentumLayerToggle}
+              title="显示/隐藏当前段与上一同向段力量对比"
+            >
+              力量
+            </button>
+          </div>
+          {structureLayer && (
+            <div className="base-kline__legend" aria-label="结构图例">
+              <span><i className="is-bi" />笔</span>
+              <span><i className="is-segment" />线段</span>
+              <span><i className="is-center" />中枢</span>
+            </div>
+          )}
           <span>{loading ? '加载中' : `${barCount} 根`}</span>
           {structureLayer && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
           {momentumLayer && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
