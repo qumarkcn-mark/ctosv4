@@ -52,6 +52,7 @@ def get_structure_view(
             index=index,
             time_axis=time_axis,
             klines=klines,
+            bis=bis,
             snapshot_id=snapshot_row["snapshot_id"],
             active=False,
         )
@@ -65,6 +66,7 @@ def get_structure_view(
             index=len(centers),
             time_axis=time_axis,
             klines=klines,
+            bis=bis,
             snapshot_id=snapshot_row["snapshot_id"],
             active=True,
         )
@@ -145,6 +147,7 @@ def _normalize_center(
     index: int,
     time_axis: dict[int, int],
     klines: list[dict[str, Any]],
+    bis: list[dict[str, Any] | None],
     snapshot_id: str,
     active: bool,
 ) -> dict[str, Any] | None:
@@ -158,8 +161,22 @@ def _normalize_center(
         return None
     raw_begin_index = _nearest_index(time_axis, begin_ts)
     raw_end_index = _nearest_index(time_axis, end_ts)
-    begin_index = _center_entry_index(klines, zd=zd, zg=zg, fallback=raw_begin_index, raw_end=raw_end_index)
-    end_index = _center_exit_index(klines, zd=zd, zg=zg, fallback=raw_end_index, raw_begin=begin_index)
+    begin_index = _center_entry_index(
+        klines,
+        bis=bis,
+        zd=zd,
+        zg=zg,
+        fallback=raw_begin_index,
+        raw_end=raw_end_index,
+    )
+    end_index = _center_exit_index(
+        klines,
+        bis=bis,
+        zd=zd,
+        zg=zg,
+        fallback=raw_end_index,
+        raw_begin=begin_index,
+    )
     return {
         "id": f"{snapshot_id}:center:{'active' if active else index}",
         "index": index,
@@ -266,6 +283,7 @@ def _nearest_index(time_axis: dict[int, int], timestamp: int) -> int | None:
 def _center_entry_index(
     klines: list[dict[str, Any]],
     *,
+    bis: list[dict[str, Any] | None],
     zd: float,
     zg: float,
     fallback: int | None,
@@ -274,6 +292,13 @@ def _center_entry_index(
     """Find the first bar of the entering leg that touches the center zone."""
     if fallback is None:
         return None
+    entering_bi = _boundary_bi(bis, fallback, prefer="end")
+    if entering_bi:
+        start, end = _bi_index_range(entering_bi)
+        if start is not None and end is not None:
+            for index in range(max(0, start), min(len(klines) - 1, end) + 1):
+                if _bar_touches_zone(klines[index], zd=zd, zg=zg):
+                    return index
     start = max(0, fallback)
     end = min(len(klines) - 1, raw_end if raw_end is not None else len(klines) - 1)
     for index in range(start, end + 1):
@@ -285,6 +310,7 @@ def _center_entry_index(
 def _center_exit_index(
     klines: list[dict[str, Any]],
     *,
+    bis: list[dict[str, Any] | None],
     zd: float,
     zg: float,
     fallback: int | None,
@@ -293,11 +319,48 @@ def _center_exit_index(
     """Find the first bar of the leaving leg that exits the center zone."""
     if fallback is None:
         return None
+    leaving_bi = _boundary_bi(bis, fallback, prefer="end")
+    if leaving_bi:
+        start, end = _bi_index_range(leaving_bi)
+        if start is not None and end is not None:
+            seen_zone = False
+            for index in range(max(raw_begin or 0, start), min(len(klines) - 1, end) + 1):
+                if _bar_touches_zone(klines[index], zd=zd, zg=zg):
+                    seen_zone = True
+                if seen_zone and _bar_leaves_zone(klines[index], zd=zd, zg=zg):
+                    return index
     start = max(raw_begin or 0, fallback)
     for index in range(start, len(klines)):
         if _bar_leaves_zone(klines[index], zd=zd, zg=zg):
             return index
     return fallback
+
+
+def _boundary_bi(bis: list[dict[str, Any] | None], boundary: int | None, *, prefer: str) -> dict[str, Any] | None:
+    if boundary is None:
+        return None
+    valid = [item for item in bis if item and item.get("start_index") is not None and item.get("end_index") is not None]
+    key = "end_index" if prefer == "end" else "start_index"
+    for item in valid:
+        if item.get(key) == boundary:
+            return item
+    containing = [
+        item
+        for item in valid
+        if min(int(item["start_index"]), int(item["end_index"])) <= boundary <= max(int(item["start_index"]), int(item["end_index"]))
+    ]
+    if not containing:
+        return None
+    return min(containing, key=lambda item: abs(int(item.get(key) or boundary) - boundary))
+
+
+def _bi_index_range(bi: dict[str, Any]) -> tuple[int | None, int | None]:
+    try:
+        start = int(bi.get("start_index"))
+        end = int(bi.get("end_index"))
+    except (TypeError, ValueError):
+        return None, None
+    return min(start, end), max(start, end)
 
 
 def _bar_touches_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
