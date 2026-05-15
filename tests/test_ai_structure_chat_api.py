@@ -186,6 +186,62 @@ def test_chat_answers_invalidation_question(monkeypatch, tmp_path):
     assert any(item["role"] == "invalidation" for item in data["referenced_boundaries"])
 
 
+def test_chat_explains_trend_growth_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这个走势接下来怎么生长？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "trend_growth"
+    assert "走势生长路径" in data["coach_answer"]
+    assert "下一步确认" in data["coach_answer"]
+    assert "失败路径" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_explains_divergence_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这里有没有背驰？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "divergence"
+    assert "背驰观察" in data["coach_answer"]
+    assert "unclear" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_explains_level_resonance_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这里是什么级别共振？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "resonance"
+    assert "级别关系" in data["coach_answer"]
+    assert "触发观察" in data["coach_answer"]
+    assert "共振类型" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
 def test_chat_marks_stale_context_without_recomputing(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     build_context()

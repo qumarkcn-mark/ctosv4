@@ -179,6 +179,12 @@ def classify_intent(question: str, conversation_context: dict[str, Any] | None =
         return "hold_or_exit"
     if any(token in text for token in ("提醒", "盯", "到了叫", "到价")):
         return "reminder"
+    if any(token in text for token in ("背驰", "背离")):
+        return "divergence"
+    if any(token in text for token in ("共振", "级别", "大级别", "小级别", "a+小b", "a＋小b")):
+        return "resonance"
+    if any(token in text for token in ("走势", "生长", "怎么走", "演化", "推演", "发展")):
+        return "trend_growth"
     if any(token in text for token in ("为什么", "解释", "结构", "中枢")):
         return "explain_structure"
     followup_intent = _followup_intent(text, conversation_context)
@@ -383,6 +389,12 @@ def _build_answer(
     zd = _num(center.get("zd"))
     background_note = _background_note(context)
     freshness_note = _freshness_note(data_status)
+    reasoning = context.get("reasoning") or {}
+    trend_growth = reasoning.get("trend_growth") or {}
+    divergence_view = reasoning.get("divergence_view") or {}
+    resonance_view = reasoning.get("resonance_view") or {}
+    coach_summary = str(context.get("coach_summary") or reasoning.get("coach_summary") or "").strip()
+    reasoning_intro = _reasoning_intro(reasoning)
     position = (context.get("raw_context") or {}).get("position_context") or {}
     holding_text = "你现在有持仓，先把防守线看清楚" if position.get("has_position") else "你现在是空仓，重点是等触发条件而不是追问结论"
     if intent_type == "out_of_scope":
@@ -400,13 +412,15 @@ def _build_answer(
         coach = f"{freshness_note}{symbol} 目前结构边界不足，无法判断。先等 CZSC 快照刷新出有效中枢，再讨论观察窗口。{RISK_DISCLAIMER}"
         return {"coach_answer": coach, "referenced_boundaries": []}
     if intent_type == "invalidation":
+        failure_path = str(trend_growth.get("failure_path") or "").strip()
         coach = (
             f"{freshness_note}这只票先看 {level} 级别下沿 {zd:.2f}。如果有效跌破这里，当前观察分支就要降级；"
-            f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。{RISK_DISCLAIMER}"
+            f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。"
+            f"{failure_path}{RISK_DISCLAIMER}"
         )
     elif intent_type == "hold_or_exit":
         coach = (
-            f"{freshness_note}{holding_text}：{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
+            f"{freshness_note}{holding_text}：{reasoning_intro}{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
             f"我不能替你下卖出结论，但可以把跌破 {zd:.2f} 设成复核提醒。{RISK_DISCLAIMER}"
         )
     elif intent_type == "reminder":
@@ -415,10 +429,36 @@ def _build_answer(
             f"提醒只帮助你复核，不代表交易指令。{RISK_DISCLAIMER}"
         )
     elif intent_type == "explain_structure":
+        summary = str(reasoning.get("structure_summary") or coach_summary or "").strip()
         coach = (
-            f"{freshness_note}当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
+            f"{freshness_note}{summary}当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
             f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。"
             f"{background_note}{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "trend_growth":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"走势生长路径：{trend_growth.get('growth_path') or '当前推演里还没有足够清晰的生长路径。'}"
+            f"下一步确认：{trend_growth.get('next_confirmation') or '等待触发级别收线确认。'}"
+            f"失败路径：{trend_growth.get('failure_path') or f'跌破 {zd:.2f} 后复核分支失效。'}"
+            f"{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "divergence":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"背驰观察：{divergence_view.get('status') or 'unclear'}，级别 {divergence_view.get('level') or level}。"
+            f"{divergence_view.get('evidence') or '当前推演没有确认背驰，只能继续观察离开段和回拉段的力度。'}"
+            f"{divergence_view.get('risk_note') or '若离开后不能延续，需要在触发级别复核潜在背驰。'}"
+            f"{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "resonance":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"级别关系：{resonance_view.get('higher_level_context') or f'{level} 级别中枢边界'}；"
+            f"触发观察：{resonance_view.get('lower_level_trigger') or f'{level} 级别承接'}。"
+            f"共振类型：{resonance_view.get('resonance_type') or 'unclear'}。"
+            f"{resonance_view.get('conflict_note') or '若背景和结构冲突，仍以触发线和失败线为纪律边界。'}"
+            f"{RISK_DISCLAIMER}"
         )
     elif intent_type == "review":
         coach = _review_answer(
@@ -428,8 +468,10 @@ def _build_answer(
             freshness_note=freshness_note,
         )
     else:
+        branch_text = _branch_answer_text(reasoning)
         coach = (
-            f"{freshness_note}不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
+            f"{freshness_note}不能直接回答“现在买”。{reasoning_intro}{branch_text}"
+            f"更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
             f"{background_note}{RISK_DISCLAIMER}"
         )
@@ -513,6 +555,35 @@ def _referenced_boundaries(level: str, zg: float, zd: float) -> list[dict[str, A
     if zd > 0:
         items.append({"role": "invalidation", "level": level, "price": zd})
     return items
+
+
+def _reasoning_intro(reasoning: dict[str, Any]) -> str:
+    main_level = str(reasoning.get("main_level") or "")
+    trigger_level = str(reasoning.get("trigger_level") or "")
+    summary = str(reasoning.get("structure_summary") or "").strip()
+    parts = []
+    if main_level or trigger_level:
+        parts.append(f"当前推演主级别 {main_level or '未知'}，触发级别 {trigger_level or main_level or '未知'}。")
+    if summary:
+        parts.append(summary)
+    return "".join(parts)
+
+
+def _branch_answer_text(reasoning: dict[str, Any]) -> str:
+    branches = reasoning.get("scenario_branches") or []
+    if not isinstance(branches, list) or not branches:
+        return ""
+    first = next((item for item in branches if isinstance(item, dict)), None)
+    if not first:
+        return ""
+    title = str(first.get("title") or "").strip()
+    trigger = (first.get("trigger_condition") or {}) if isinstance(first.get("trigger_condition"), dict) else {}
+    invalidate = (first.get("invalidate_condition") or {}) if isinstance(first.get("invalidate_condition"), dict) else {}
+    trigger_label = str(trigger.get("label") or "").strip()
+    invalidate_label = str(invalidate.get("label") or "").strip()
+    if not (title or trigger_label or invalidate_label):
+        return ""
+    return f"当前优先分支：{title or '结构观察'}。{trigger_label}{invalidate_label}"
 
 
 def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) -> dict[str, Any]:
