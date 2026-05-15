@@ -92,3 +92,45 @@ def test_serialize_czsc_level_serializes_segments_when_czsc_exposes_them():
     assert result["stats"]["seg_count"] == 1
     assert "segs" not in result["metadata"]["unsupported_fields"]
     assert result["metadata"]["segment_source"] == "czsc_object"
+
+
+def test_serialize_czsc_level_derives_segments_from_czsc_bis_when_native_missing():
+    def fx(dt, price):
+        return Obj(dt=dt, mark="", high=price, low=price, fx=price)
+
+    points = [
+        ("2026-01-01", 10.0),
+        ("2026-01-02", 12.0),
+        ("2026-01-03", 11.0),
+        ("2026-01-04", 13.0),
+        ("2026-01-05", 10.0),
+        ("2026-01-06", 11.0),
+        ("2026-01-07", 9.0),
+        ("2026-01-08", 10.0),
+    ]
+    bis = []
+    for index, ((start_dt, start_price), (end_dt, end_price)) in enumerate(zip(points, points[1:])):
+        direction = "Up" if end_price >= start_price else "Down"
+        bis.append(
+            FakeBI(
+                fx(start_dt, start_price),
+                fx(end_dt, end_price),
+                direction=direction,
+                high=max(start_price, end_price),
+                low=min(start_price, end_price),
+            )
+        )
+    czsc_obj = Obj(fx_list=[], bi_list=bis, zs_list=[])
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-08", "open": 9.5, "high": 10.2, "low": 9.0, "close": 10.0, "volume": 100}],
+        level="day",
+    )
+
+    assert result["metadata"]["segment_source"] == "derived_from_czsc_bis_v1"
+    assert result["stats"]["seg_count"] >= 1
+    assert result["segs"][0]["source"] == "derived_from_czsc_bis_v1"
+    assert result["segs"][0]["start_bi_index"] == 0
+    assert result["segs"][0]["end_bi_index"] >= 2
+    assert "segs" not in result["metadata"]["unsupported_fields"]

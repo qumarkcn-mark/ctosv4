@@ -8,7 +8,7 @@ from typing import Any
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
-    segs = _serialize_segments(czsc_obj)
+    segs, segment_source = _serialize_segments(czsc_obj, bis)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
     latest_zs = serialized_zss[-1] if serialized_zss else {}
@@ -46,7 +46,7 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
         },
         "metadata": {
             "unsupported_fields": unsupported_fields,
-            "segment_source": "czsc_object" if segs else "unavailable_in_czsc_object",
+            "segment_source": segment_source,
         },
     }
 
@@ -99,7 +99,7 @@ def _serialize_bi(bi: Any) -> dict[str, Any]:
     }
 
 
-def _serialize_segments(czsc_obj: Any) -> list[dict[str, Any]]:
+def _serialize_segments(czsc_obj: Any, bis: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
     for attr_name in ("seg_list", "segs", "segments", "xd_list", "xds", "duans", "line_segments"):
         raw = getattr(czsc_obj, attr_name, None)
         if callable(raw) or not raw:
@@ -111,8 +111,121 @@ def _serialize_segments(czsc_obj: Any) -> list[dict[str, Any]]:
         segments = [_serialize_bi(item) for item in items]
         segments = [item for item in segments if item.get("x0") and item.get("x1")]
         if segments:
-            return segments
-    return []
+            for item in segments:
+                item["source"] = "czsc_object"
+            return segments, "czsc_object"
+
+    derived = derive_segments_from_serialized_bis(bis)
+    if derived:
+        return derived, "derived_from_czsc_bis_v1"
+    return [], "unavailable_in_czsc_object"
+
+
+def derive_segments_from_serialized_bis(bis: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive coarse line segments from confirmed CZSC BI endpoints.
+
+    CZSC 0.10.12 exposes BI but not native line segments. This keeps the
+    dependency boundary honest: the derived segments are display geometry from
+    CZSC BI facts, not a restored legacy Chan implementation.
+    """
+    confirmed = [item for item in bis if item.get("is_sure", True) and item.get("x0") and item.get("x1")]
+    if len(confirmed) < 3:
+        return []
+
+    pivots = [_start_pivot(confirmed[0], 0)]
+    pivots.extend(_local_extreme_pivots(confirmed))
+    pivots.append(_end_pivot(confirmed[-1], len(confirmed) - 1))
+    pivots = _dedupe_and_alternate_pivots(sorted(pivots, key=lambda item: item["bi_index"]))
+
+    segments = []
+    for index in range(1, len(pivots)):
+        start = pivots[index - 1]
+        end = pivots[index]
+        if end["bi_index"] - start["bi_index"] < 2:
+            continue
+        is_up = end["price"] >= start["price"]
+        segments.append(
+            {
+                "x0": start["time"],
+                "x1": end["time"],
+                "y0": start["price"],
+                "y1": end["price"],
+                "start_price": start["price"],
+                "end_price": end["price"],
+                "high": max(start["price"], end["price"]),
+                "low": min(start["price"], end["price"]),
+                "bar_count": sum(_int_value(item.get("bar_count")) for item in confirmed[start["bi_index"] : end["bi_index"] + 1]),
+                "is_up": is_up,
+                "direction": "up" if is_up else "down",
+                "is_sure": bool(start.get("is_sure", True) and end.get("is_sure", True)),
+                "source": "derived_from_czsc_bis_v1",
+                "start_bi_index": start["bi_index"],
+                "end_bi_index": end["bi_index"],
+            }
+        )
+    return segments
+
+
+def _local_extreme_pivots(bis: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tops = [(idx, _num(item.get("end_price") or item.get("y1")), item) for idx, item in enumerate(bis) if item.get("is_up")]
+    bottoms = [(idx, _num(item.get("end_price") or item.get("y1")), item) for idx, item in enumerate(bis) if not item.get("is_up")]
+    pivots = []
+    for left, current, right in zip(tops, tops[1:], tops[2:]):
+        if current[1] >= left[1] and current[1] > right[1]:
+            pivots.append(_pivot_from_bi(current[2], current[0], "top", is_sure=True))
+    for left, current, right in zip(bottoms, bottoms[1:], bottoms[2:]):
+        if current[1] <= left[1] and current[1] < right[1]:
+            pivots.append(_pivot_from_bi(current[2], current[0], "bottom", is_sure=True))
+    return pivots
+
+
+def _dedupe_and_alternate_pivots(pivots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for pivot in pivots:
+        if not result:
+            result.append(pivot)
+            continue
+        prev = result[-1]
+        if pivot["bi_index"] == prev["bi_index"]:
+            if _is_more_extreme(pivot, prev):
+                result[-1] = pivot
+            continue
+        if pivot["kind"] == prev["kind"]:
+            if _is_more_extreme(pivot, prev):
+                result[-1] = pivot
+            continue
+        result.append(pivot)
+    return result
+
+
+def _is_more_extreme(candidate: dict[str, Any], existing: dict[str, Any]) -> bool:
+    if candidate["kind"] == "top":
+        return candidate["price"] >= existing["price"]
+    return candidate["price"] <= existing["price"]
+
+
+def _start_pivot(bi: dict[str, Any], bi_index: int) -> dict[str, Any]:
+    return {
+        "kind": "bottom" if bi.get("is_up") else "top",
+        "time": bi.get("x0") or "",
+        "price": _num(bi.get("start_price") or bi.get("y0")),
+        "bi_index": bi_index,
+        "is_sure": True,
+    }
+
+
+def _end_pivot(bi: dict[str, Any], bi_index: int) -> dict[str, Any]:
+    return _pivot_from_bi(bi, bi_index, "top" if bi.get("is_up") else "bottom", is_sure=False)
+
+
+def _pivot_from_bi(bi: dict[str, Any], bi_index: int, kind: str, *, is_sure: bool) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "time": bi.get("x1") or "",
+        "price": _num(bi.get("end_price") or bi.get("y1")),
+        "bi_index": bi_index,
+        "is_sure": is_sure,
+    }
 
 
 def _serialize_zs(zs: Any) -> dict[str, Any]:
@@ -200,6 +313,13 @@ def _num(value: Any) -> float:
 def _int_attr(obj: Any, attr_name: str) -> int:
     try:
         return int(getattr(obj, attr_name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
     except (TypeError, ValueError):
         return 0
 
