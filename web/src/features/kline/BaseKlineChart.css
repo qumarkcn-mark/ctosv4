@@ -217,16 +217,17 @@
 }
 
 .base-kline__bi {
+  stroke: rgba(255, 255, 255, 0.72);
   stroke-width: 1.2;
   vector-effect: non-scaling-stroke;
 }
 
 .base-kline__bi.is-up {
-  stroke: rgba(244, 63, 94, 0.82);
+  stroke: rgba(255, 255, 255, 0.72);
 }
 
 .base-kline__bi.is-down {
-  stroke: rgba(16, 185, 129, 0.82);
+  stroke: rgba(255, 255, 255, 0.72);
 }
 
 .base-kline__bi.is-unsure {
