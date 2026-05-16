@@ -466,7 +466,7 @@ function buildGrowthText(growth = {}) {
   const items = [
     growth.growth_path,
     growth.next_confirmation ? `下一步确认：${growth.next_confirmation}` : '',
-    growth.failure_path ? `失败路径：${growth.failure_path}` : '',
+    growth.failure_path ? `风险演化：${growth.failure_path}` : '',
   ]
   return items.map((item) => String(item || '').trim()).filter(Boolean).join('\n')
 }
