@@ -515,10 +515,10 @@ chat 不重新计算结构，也不重新做完整推演。chat 读取：
 -> 已有 CZSC snapshot
 -> DeepSeek Pro Think 生成完整自然语言推演
 -> 保存完整推演原文
--> Flash/no-thinking 把完整推演压缩成前端摘要 JSON
+-> Think 前端摘要层把完整推演压缩成前端摘要 JSON
 -> 保存 reasoning_json
 -> 保存单票 context
--> chat 带上完整推演原文、摘要、持仓和轻量记忆回答
+-> chat 带上完整推演原文、摘要、持仓和轻量记忆，用 Think 回答
 -> radar bootstrap 能拿到推演摘要
 ```
 
@@ -530,32 +530,36 @@ chat 不重新计算结构，也不重新做完整推演。chat 读取：
 - 多模型对比。
 - 自动交易或下单。
 
-## P0 实现决策：Think 原文 + Flash 摘要
+## P0 实现决策：Think 原文 + Think 摘要 + Think 问答
 
-测试确认后，P0 主链路调整为两段式：
+测试确认后，P0 主链路调整为三段式：
 
 ```text
 CZSC structure facts
 -> DeepSeek Pro Think full reasoning text
 -> ai_structure_reasoning_runs.full_reasoning_text
--> Flash/no-thinking summary JSON
+-> DeepSeek Pro Think panel summary JSON
 -> ai_structure_contexts.reasoning_json / coach_summary
--> Radar panel / Chat / Reminder candidates
+-> Radar panel
+-> DeepSeek Pro Think chat answer from saved full reasoning
+-> Reminder candidates
 ```
 
 原则：
 
 - 不修改原 `ai_structure_reasoning.e1_dynamic_growth` JSON prompt 的职责。
 - Think 阶段输出完整自然语言推演，允许模型展开走势如何生长。
-- Flash 阶段只总结 Think 原文，不重新计算中枢、笔、背驰或价格边界。
+- Think 摘要阶段只总结 Think 原文，不重新计算中枢、笔、背驰或价格边界。
+- Chat 阶段读取已保存 Think 原文、摘要、持仓、记忆和最近对话回答，不重新做结构推演。
 - 新失败不得覆盖上一版成功推演。
-- chat 优先读取已保存 Think 原文回答用户问题；缺失或失败时退回确定性保护回答。
+- chat 缺失完整 Think 原文或 LLM 失败时，退回确定性保护回答。
 
 新增验收：
 
 - `ai_structure_reasoning_runs` 保存完整 Think 原文、摘要 JSON、模型状态和 context 关联。
-- context worker 成功时 `reasoning_meta.pipeline = think_full_text_then_flash_summary`。
-- chat 回答能引用保存的完整推演原文，并结合持仓问题回答“能不能加仓/何时防守”等条件化问题。
+- context worker 成功时 `reasoning_meta.pipeline = think_full_text_then_think_panel_summary`。
+- chat 回答能引用保存的完整推演原文，并结合持仓问题回答“能不能加仓/何时防守”等条件化问题，回答路径使用 Think。
+- reminder candidates 不生成已经被当前价穿越过的过期价格提醒。
 - 没有成功 LLM 推演时，雷达和 chat 仍不得展示本地 fallback 边界为 AI 推演结果。
 
 ## 关键判断
