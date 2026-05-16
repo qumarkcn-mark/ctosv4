@@ -30,6 +30,7 @@
 - Completed the CZSC structure overlay contract for future line segments: snapshots now serialize real CZSC segment fields when the engine exposes them, `structure-view` reports segment capability state, and the Kline workspace shows `线段待接入` instead of silently hiding the missing layer.
 - Disabled non-native CZSC-BI derived line segments in the Kline structure layer; V5 only displays line segments when the CZSC engine exposes native segment objects.
 - Aligned CZSC center boxes to the first K-line that enters the center zone and the first K-line that leaves it, matching the intended watchlist Kline workspace display range.
+- Projected CZSC Kline overlays by bar time instead of snapshot-local indexes, and closed center boxes on the first full K-line that leaves the center zone.
 - Replaced the miniprogram stock detail legacy Chan matrix entry with a compact V5 AI Structure status surface backed by symbol-focused `workspace/bootstrap`.
 - Added a user-scoped AI Structure outcome review feed for miniprogram/background clients, driven by positions/recent_chat/watchlist with compact per-symbol memory summaries.
 - Added V5 outcome and mistake-memory review timeline to the Review Training page.

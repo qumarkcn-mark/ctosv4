@@ -169,14 +169,17 @@ def _normalize_center(
         fallback=raw_begin_index,
         raw_end=raw_end_index,
     )
-    end_index = _center_exit_index(
+    end_index, exit_status = _center_exit_boundary(
         klines,
         bis=bis,
         zd=zd,
         zg=zg,
         fallback=raw_end_index,
         raw_begin=begin_index,
+        active=active,
     )
+    begin_bar_time = _bar_time_at(klines, begin_index)
+    end_bar_time = _bar_time_at(klines, end_index)
     return {
         "id": f"{snapshot_id}:center:{'active' if active else index}",
         "index": index,
@@ -185,10 +188,15 @@ def _normalize_center(
         "end_time": end_time,
         "begin_timestamp": begin_ts,
         "end_timestamp": end_ts,
+        "begin_bar_time": begin_bar_time,
+        "end_bar_time": end_bar_time,
+        "begin_bar_timestamp": _parse_time(begin_bar_time),
+        "end_bar_timestamp": _parse_time(end_bar_time),
         "begin_index": begin_index,
         "end_index": end_index,
         "raw_begin_index": raw_begin_index,
         "raw_end_index": raw_end_index,
+        "exit_status": exit_status,
         "zd": zd,
         "zg": zg,
         "zz": _num(item.get("zz")),
@@ -307,7 +315,7 @@ def _center_entry_index(
     return fallback
 
 
-def _center_exit_index(
+def _center_exit_boundary(
     klines: list[dict[str, Any]],
     *,
     bis: list[dict[str, Any] | None],
@@ -315,25 +323,25 @@ def _center_exit_index(
     zg: float,
     fallback: int | None,
     raw_begin: int | None,
-) -> int | None:
-    """Find the first bar of the leaving leg that exits the center zone."""
+    active: bool,
+) -> tuple[int | None, str]:
+    """Find the first full bar that leaves the center zone."""
     if fallback is None:
-        return None
+        return None, "missing"
     leaving_bi = _boundary_bi(bis, fallback, prefer="end")
     if leaving_bi:
         start, end = _bi_index_range(leaving_bi)
         if start is not None and end is not None:
-            seen_zone = False
             for index in range(max(raw_begin or 0, start), min(len(klines) - 1, end) + 1):
-                if _bar_touches_zone(klines[index], zd=zd, zg=zg):
-                    seen_zone = True
-                if seen_zone and _bar_leaves_zone(klines[index], zd=zd, zg=zg):
-                    return index
+                if _bar_fully_leaves_zone(klines[index], zd=zd, zg=zg):
+                    return index, "closed"
     start = max(raw_begin or 0, fallback)
     for index in range(start, len(klines)):
-        if _bar_leaves_zone(klines[index], zd=zd, zg=zg):
-            return index
-    return fallback
+        if _bar_fully_leaves_zone(klines[index], zd=zd, zg=zg):
+            return index, "closed"
+    if active and klines:
+        return len(klines) - 1, "open"
+    return fallback, "fallback"
 
 
 def _boundary_bi(bis: list[dict[str, Any] | None], boundary: int | None, *, prefer: str) -> dict[str, Any] | None:
@@ -374,13 +382,16 @@ def _bar_touches_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
     return high >= zd and low <= zg
 
 
-def _bar_leaves_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
-    close = _num(bar.get("close"))
-    if close > 0:
-        return close > zg or close < zd
+def _bar_fully_leaves_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
     high = _num(bar.get("high"))
     low = _num(bar.get("low"))
     return high > 0 and low > 0 and (low > zg or high < zd)
+
+
+def _bar_time_at(klines: list[dict[str, Any]], index: int | None) -> str:
+    if index is None or index < 0 or index >= len(klines):
+        return ""
+    return _bar_time(klines[index])
 
 
 def _bar_time(item: dict[str, Any]) -> str:

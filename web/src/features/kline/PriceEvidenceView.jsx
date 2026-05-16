@@ -14,6 +14,10 @@ import {
   readKlinePreferences,
   writeKlinePreference,
 } from './klinePreferences.js'
+import {
+  buildKlineTimeIndex,
+  resolveOverlayIndex,
+} from './klineOverlayProjection.js'
 import './PriceEvidenceView.css'
 
 const KLINE_COUNT = 1200
@@ -121,57 +125,76 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext }) 
       height: host.clientHeight,
       range: chart.getVisibleRange(),
     }
+    const timeIndex = buildKlineTimeIndex(bars)
     const bis = (view.bis || [])
-      .filter((item) => isStructureItemVisible(item.start_index, item.end_index, viewport.range, 2))
       .map((item) => {
+      const startIndex = resolveOverlayIndex(timeIndex, item.start_timestamp, item.start_time, item.start_index)
+      const endIndex = resolveOverlayIndex(timeIndex, item.end_timestamp, item.end_time, item.end_index)
+      if (!isStructureItemVisible(startIndex, endIndex, viewport.range, 2)) return null
       const start = chart.convertToPixel(
-        { dataIndex: item.start_index, value: item.start_price },
+        { dataIndex: startIndex, value: item.start_price },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       const end = chart.convertToPixel(
-        { dataIndex: item.end_index, value: item.end_price },
+        { dataIndex: endIndex, value: item.end_price },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(start) || !validPoint(end)) return null
       const clipped = clipLineToViewport(start, end, viewport)
       if (!clipped) return null
-      return { ...item, start: clipped.start, end: clipped.end }
+      return { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
     }).filter(Boolean)
     const segments = (view.segments || [])
-      .filter((item) => isStructureItemVisible(item.start_index, item.end_index, viewport.range, 2))
       .map((item) => {
+        const startIndex = resolveOverlayIndex(timeIndex, item.start_timestamp, item.start_time, item.start_index)
+        const endIndex = resolveOverlayIndex(timeIndex, item.end_timestamp, item.end_time, item.end_index)
+        if (!isStructureItemVisible(startIndex, endIndex, viewport.range, 2)) return null
         const start = chart.convertToPixel(
-          { dataIndex: item.start_index, value: item.start_price },
+          { dataIndex: startIndex, value: item.start_price },
           { paneId: CANDLE_PANE_ID, absolute: false }
         )
         const end = chart.convertToPixel(
-          { dataIndex: item.end_index, value: item.end_price },
+          { dataIndex: endIndex, value: item.end_price },
           { paneId: CANDLE_PANE_ID, absolute: false }
         )
         if (!validPoint(start) || !validPoint(end)) return null
         const clipped = clipLineToViewport(start, end, viewport)
         if (!clipped) return null
-        return { ...item, start: clipped.start, end: clipped.end }
+        return { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
       })
       .filter(Boolean)
     const centers = (view.centers || [])
-      .filter((item) => isStructureItemVisible(item.begin_index, item.end_index, viewport.range, 2))
       .map((item) => {
+      const beginIndex = resolveOverlayIndex(
+        timeIndex,
+        item.begin_bar_timestamp || item.begin_timestamp,
+        item.begin_bar_time || item.begin_time,
+        item.begin_index
+      )
+      const endIndex = resolveOverlayIndex(
+        timeIndex,
+        item.end_bar_timestamp || item.end_timestamp,
+        item.end_bar_time || item.end_time,
+        item.end_index
+      )
+      if (!isStructureItemVisible(beginIndex, endIndex, viewport.range, 2)) return null
       const leftTop = chart.convertToPixel(
-        { dataIndex: item.begin_index, value: item.zg },
+        { dataIndex: beginIndex, value: item.zg },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       const rightBottom = chart.convertToPixel(
-        { dataIndex: item.end_index, value: item.zd },
+        { dataIndex: endIndex, value: item.zd },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(leftTop) || !validPoint(rightBottom)) return null
-      const beginHalfWidth = estimateHalfBarWidth(chart, item.begin_index, item.zg, bars.length)
-      const endHalfWidth = estimateHalfBarWidth(chart, item.end_index, item.zd, bars.length)
+      const beginHalfWidth = estimateHalfBarWidth(chart, beginIndex, item.zg, bars.length)
+      const endHalfWidth = estimateHalfBarWidth(chart, endIndex, item.zd, bars.length)
       const leftX = Math.min(leftTop.x, rightBottom.x) - beginHalfWidth
       const rightX = Math.max(leftTop.x, rightBottom.x) + endHalfWidth
       return {
         ...item,
+        begin_index: beginIndex,
+        end_index: endIndex,
         x: leftX,
         y: Math.min(leftTop.y, rightBottom.y),
         width: Math.max(2, rightX - leftX),
