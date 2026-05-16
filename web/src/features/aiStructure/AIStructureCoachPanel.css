@@ -377,8 +377,63 @@
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
 }
 
-.ai-msg--assistant p {
+.ai-msg-content {
+  display: grid;
+  gap: 7px;
+}
+
+.ai-msg--assistant p,
+.ai-msg-list {
   margin: 0;
+}
+
+.ai-msg-heading,
+.ai-msg-subheading {
+  display: block;
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.ai-msg-heading {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.ai-msg-subheading {
+  color: var(--action-gold, #c8a832);
+  font-size: 11px;
+}
+
+.ai-msg-list {
+  display: grid;
+  gap: 4px;
+  padding-left: 15px;
+}
+
+.ai-msg-list li {
+  padding-left: 1px;
+}
+
+.ai-msg-content hr {
+  width: 100%;
+  height: 1px;
+  margin: 1px 0;
+  border: 0;
+  background: rgba(255,255,255,0.07);
+}
+
+.ai-msg-table-line {
+  display: block;
+  overflow-x: auto;
+  padding: 3px 5px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.035);
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre;
 }
 
 .ai-msg--assistant span {

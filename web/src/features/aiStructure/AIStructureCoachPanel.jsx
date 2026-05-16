@@ -42,6 +42,7 @@ export default function AIStructureCoachPanel({
   const [activeSessionId, setActiveSessionId] = useState('')
   const mountedRef = useRef(true)
   const symbolRef = useRef(symbol)
+  const messagesRef = useRef(null)
 
   const displayName = symbolName || symbol
   const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
@@ -287,6 +288,12 @@ export default function AIStructureCoachPanel({
     ask(pendingQuestion)
   }, [pendingQuestion, loading, canAsk, ask])
 
+  useEffect(() => {
+    const node = messagesRef.current
+    if (!node) return
+    node.scrollTop = node.scrollHeight
+  }, [messages])
+
   const createReminder = useCallback(async (answer, candidate) => {
     if (!answer?.session_id || !answer?.message_id || !candidate?.evidence_id) return
     setError('')
@@ -406,12 +413,13 @@ export default function AIStructureCoachPanel({
         </div>
       )}
 
-      <div className="ai-structure-messages">
+      <div className="ai-structure-messages" ref={messagesRef}>
         {messages.map((item, index) => (
           <Message
             key={`${item.role}-${index}`}
             item={item}
             onReminder={createReminder}
+            context={reasoningContext}
           />
         ))}
       </div>
@@ -602,7 +610,7 @@ function reminderStatusLabel(status) {
   return '盯盘中'
 }
 
-function Message({ item, onReminder }) {
+function Message({ item, onReminder, context }) {
   if (item.role === 'user') {
     return (
       <div className={`ai-msg ai-msg--user ${item.pending ? 'ai-msg--pending' : ''}`}>
@@ -614,12 +622,17 @@ function Message({ item, onReminder }) {
     return <div className="ai-msg ai-msg--system">{item.text}</div>
   }
   const answer = item.answer || {}
+  const answerText = answer.coach_answer || answer.answer || ''
+  const reminderCandidates = (answer.suggested_reminders || []).filter((candidate) => (
+    isLiveReminderCandidate(answer, candidate, context)
+  ))
+  const hasDisclaimerInAnswer = String(answerText).includes(answer.risk_disclaimer || '')
   return (
     <div className="ai-msg ai-msg--assistant">
-      <p>{answer.coach_answer || answer.answer}</p>
-      {!!answer.suggested_reminders?.length && (
+      <div className="ai-msg-content">{renderCoachText(answerText)}</div>
+      {!!reminderCandidates.length && (
         <div className="ai-reminder-list">
-          {answer.suggested_reminders.map((candidate) => (
+          {reminderCandidates.map((candidate) => (
             <button
               key={candidate.evidence_id}
               type="button"
@@ -630,9 +643,86 @@ function Message({ item, onReminder }) {
           ))}
         </div>
       )}
-      <span>{answer.risk_disclaimer}</span>
+      {answer.risk_disclaimer && !hasDisclaimerInAnswer && <span>{answer.risk_disclaimer}</span>}
     </div>
   )
+}
+
+function renderCoachText(text) {
+  const lines = String(text || '').split('\n')
+  const blocks = []
+  let listItems = []
+
+  const flushList = () => {
+    if (!listItems.length) return
+    blocks.push(
+      <ul key={`list-${blocks.length}`} className="ai-msg-list">
+        {listItems.map((item, index) => <li key={`${item}-${index}`}>{cleanMarkdownText(item)}</li>)}
+      </ul>,
+    )
+    listItems = []
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim()
+    if (!line) {
+      flushList()
+      return
+    }
+    if (/^-{3,}$/.test(line)) {
+      flushList()
+      blocks.push(<hr key={`hr-${blocks.length}`} />)
+      return
+    }
+    if (line.startsWith('## ')) {
+      flushList()
+      blocks.push(<strong key={`h-${blocks.length}`} className="ai-msg-heading">{cleanMarkdownText(line.slice(3))}</strong>)
+      return
+    }
+    if (line.startsWith('### ')) {
+      flushList()
+      blocks.push(<strong key={`h-${blocks.length}`} className="ai-msg-subheading">{cleanMarkdownText(line.slice(4))}</strong>)
+      return
+    }
+    if (/^[-*]\s+/.test(line)) {
+      listItems.push(line.replace(/^[-*]\s+/, ''))
+      return
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      listItems.push(line.replace(/^\d+\.\s+/, ''))
+      return
+    }
+    if (line.startsWith('|')) {
+      flushList()
+      blocks.push(<code key={`table-${blocks.length}`} className="ai-msg-table-line">{line}</code>)
+      return
+    }
+    flushList()
+    blocks.push(<p key={`p-${blocks.length}`}>{cleanMarkdownText(line)}</p>)
+  })
+  flushList()
+
+  return blocks.length ? blocks : <p>{text}</p>
+}
+
+function cleanMarkdownText(text) {
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .trim()
+}
+
+function isLiveReminderCandidate(answer, candidate, context) {
+  if (!candidate?.evidence_id) return false
+  if (answer?.context_id && context?.context_id && answer.context_id !== context.context_id) return false
+  const level = candidate.level || answer?.chart_focus?.level || ''
+  const levelItem = (((context?.boundary || {}).levels || {})[level] || {})
+  const currentPrice = Number(levelItem.current_price || 0)
+  const triggerPrice = Number(candidate.trigger_price || 0)
+  if (!currentPrice || !triggerPrice) return true
+  if (candidate.direction === 'ABOVE') return currentPrice < triggerPrice
+  if (candidate.direction === 'BELOW') return currentPrice > triggerPrice
+  return true
 }
 
 function restoreChatMessages(rows) {
