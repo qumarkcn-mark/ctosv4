@@ -49,6 +49,40 @@
   font-style: normal;
 }
 
+.base-kline__title small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--action-gold, #c8a832);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.base-kline__watchlist-btn {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-default, rgba(255,255,255,0.10));
+  border-radius: 3px;
+  background: var(--surface-2, #111115);
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.base-kline__watchlist-btn:hover {
+  color: var(--action-gold, #c8a832);
+  border-color: rgba(200,168,50,0.32);
+  background: rgba(200,168,50,0.10);
+}
+
+.base-kline__watchlist-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .base-kline__periods {
   display: inline-grid;
   grid-auto-flow: column;

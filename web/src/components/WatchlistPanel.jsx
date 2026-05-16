@@ -14,6 +14,8 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({
   const [collapsed, setCollapsed] = useState({})
   const [health, setHealth] = useState(null)
   const [healthLoading, setHealthLoading] = useState(false)
+  const [moveMenuKey, setMoveMenuKey] = useState(null)
+  const [movingStockKey, setMovingStockKey] = useState('')
 
   // 新增分组
   const [addingGroup, setAddingGroup] = useState(false)
@@ -173,15 +175,17 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({
     )
 
     try {
-      await apiFetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks`, {
+      const resp = await apiFetch(`/api/watchlist/groups/${encodeURIComponent(groupName)}/stocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: stock.symbol, name: stock.name })
       })
+      if (!resp.ok) throw new Error(`添加自选股失败 ${resp.status}`)
       // 不需要 await fetchWatchlist，乐观更新已经显示了
     } catch (err) {
       console.error('添加自选股失败:', err)
       fetchWatchlist() // 如果失败，回滚拉取真实数据
+      throw err
     }
   }, [])
 
@@ -203,6 +207,21 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({
       fetchWatchlist() // 失败回滚
     }
   }, [])
+
+  const moveStock = useCallback(async (fromGroup, targetGroup, stock) => {
+    if (!targetGroup || targetGroup === fromGroup) {
+      setMoveMenuKey(null)
+      return
+    }
+    const key = `${fromGroup}:${stock.symbol}`
+    setMovingStockKey(key)
+    setMoveMenuKey(null)
+    try {
+      await addToGroup(targetGroup, stock)
+    } finally {
+      setMovingStockKey('')
+    }
+  }, [addToGroup])
 
   // ─── 暴露给父组件
   useImperativeHandle(ref, () => ({
@@ -320,16 +339,38 @@ const WatchlistPanel = forwardRef(function WatchlistPanel({
                   >
                     <span className="stock-name">{stock.name}</span>
                     <span className="stock-code mono">{stock.symbol}</span>
-                    <button
-                      className="stock-remove"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeStock(group.name, stock.symbol)
-                      }}
-                      title="移除"
-                    >
-                      ×
-                    </button>
+                    <span className="stock-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="stock-move"
+                        onClick={() => setMoveMenuKey((current) => current === `${group.name}:${stock.symbol}` ? null : `${group.name}:${stock.symbol}`)}
+                        title="移动到其他分组"
+                        disabled={movingStockKey === `${group.name}:${stock.symbol}` || groups.length < 2}
+                      >
+                        {movingStockKey === `${group.name}:${stock.symbol}` ? '…' : '↔'}
+                      </button>
+                      {moveMenuKey === `${group.name}:${stock.symbol}` && (
+                        <div className="stock-move-menu">
+                          {groups
+                            .filter((targetGroup) => targetGroup.name !== group.name)
+                            .map((targetGroup) => (
+                              <button
+                                key={targetGroup.name}
+                                type="button"
+                                onClick={() => moveStock(group.name, targetGroup.name, stock)}
+                              >
+                                {targetGroup.name}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                      <button
+                        className="stock-remove"
+                        onClick={() => removeStock(group.name, stock.symbol)}
+                        title="移除"
+                      >
+                        ×
+                      </button>
+                    </span>
                   </div>
                 ))
               )}

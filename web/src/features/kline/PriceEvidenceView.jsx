@@ -37,7 +37,7 @@ const SUB_INDICATORS = [
   { value: 'NONE', label: '无' },
 ]
 
-export default function PriceEvidenceView({ symbol, symbolName, chartContext }) {
+export default function PriceEvidenceView({ symbol, symbolName, chartContext, onAddToWatchlist }) {
   const chartHostRef = useRef(null)
   const chartRef = useRef(null)
   const latestBarsRef = useRef([])
@@ -71,6 +71,8 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext }) 
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 })
   const [structureStatus, setStructureStatus] = useState('idle')
   const [momentumStatus, setMomentumStatus] = useState('idle')
+  const [addingToWatchlist, setAddingToWatchlist] = useState(false)
+  const [watchlistMessage, setWatchlistMessage] = useState('')
   const activePeriod = useMemo(() => getKlinePeriod(period), [period])
 
   const updatePriceLine = useCallback(() => {
@@ -532,6 +534,20 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext }) 
     }
   }
 
+  const handleAddToWatchlist = async () => {
+    if (!onAddToWatchlist || addingToWatchlist) return
+    setAddingToWatchlist(true)
+    setWatchlistMessage('')
+    try {
+      const result = await onAddToWatchlist()
+      setWatchlistMessage(result?.message || '已加入自选')
+    } catch (err) {
+      setWatchlistMessage(err?.message || '加入失败')
+    } finally {
+      setAddingToWatchlist(false)
+    }
+  }
+
   return (
     <section className="base-kline">
       <header className="base-kline__toolbar">
@@ -539,6 +555,16 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext }) 
           <span>K 线</span>
           <strong>{symbolName || symbol}</strong>
           <em>{symbol}</em>
+          <button
+            type="button"
+            className="base-kline__watchlist-btn"
+            onClick={handleAddToWatchlist}
+            disabled={!symbol || addingToWatchlist || !onAddToWatchlist}
+            title="加入左侧自选股"
+          >
+            {addingToWatchlist ? '加入中' : '+ 自选'}
+          </button>
+          {watchlistMessage && <small>{watchlistMessage}</small>}
         </div>
 
         <div className="base-kline__periods" role="tablist" aria-label="K 线周期">
