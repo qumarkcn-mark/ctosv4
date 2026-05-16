@@ -67,7 +67,7 @@ CZSC snapshot 是唯一结构来源；你不能重新计算结构，不能引入
 
 不要返回 JSON。"""
 
-SUMMARY_SYSTEM_PROMPT = """你是 CT-OS AI Native V5 的前端摘要层。
+SUMMARY_SYSTEM_PROMPT = """你是 CT-OS AI Native V5 的 Think 前端摘要层。
 
 你只负责把 DeepSeek Pro Think 的完整缠论推演原文压缩成前端和问答可消费的 JSON。
 不得重新计算中枢、笔、背驰或级别结构；不得引入新价格、新分支或新结论。
@@ -814,9 +814,10 @@ async def _generate_reasoning_payload_async(
             max_tokens=max(int(AI_NATIVE_MAX_TOKENS), 12000),
         )
         summary_route = AIModelRoute(
-            thinking_enabled=False,
-            timeout_seconds=90,
-            max_tokens=4096,
+            thinking_enabled=True,
+            reasoning_effort="high",
+            timeout_seconds=max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+            max_tokens=6000,
         )
         full_text = await service.infer_ai_native_markdown(
             FULL_REASONING_SYSTEM_PROMPT,
@@ -851,12 +852,15 @@ async def _generate_reasoning_payload_async(
                 "risk_disclaimer_required": "仅供参考，不构成投资建议",
             },
         }
-        payload = await service.infer_ai_native_json(
+        summary_text = await service.infer_ai_native_markdown(
             SUMMARY_SYSTEM_PROMPT,
             _json(summary_input),
             user_id=user_id,
             model_route=summary_route,
         )
+        from server.services.llm_service import _loads_lenient_json_object
+
+        payload = _loads_lenient_json_object(summary_text)
         normalized = normalize_reasoning_payload(payload, symbol=symbol, reasoning_input=reasoning_input)
         if normalized.get("front_panel_text") and not normalized.get("coach_summary"):
             normalized["coach_summary"] = str(normalized.get("front_panel_text") or "")
@@ -864,7 +868,7 @@ async def _generate_reasoning_payload_async(
         meta.update({
             "provider": "llm",
             "llm_status": "success",
-            "pipeline": "think_full_text_then_flash_summary",
+            "pipeline": "think_full_text_then_think_panel_summary",
             "full_reasoning_run_id": run["run_id"],
             "full_reasoning_available": True,
         })

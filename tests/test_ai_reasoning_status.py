@@ -84,6 +84,44 @@ def test_reasoning_payload_level_fields_strip_price_conditions():
     assert normalized["trigger_level"] == "30"
 
 
+def test_reasoning_payload_scrubs_unconfirmed_daily_down_bi():
+    reasoning_input = {
+        "structure_facts": {
+            "snapshots": [
+                {
+                    "level": "day",
+                    "raw_bi_context": {
+                        "levels": {
+                            "day": {
+                                "bi_sequence": [
+                                    {"direction": "UP", "is_sure": True},
+                                ]
+                            }
+                        }
+                    },
+                }
+            ],
+            "boundary": {"levels": {"5": {"active_center": {"zg": 260.51, "zd": 253.49}}}},
+        }
+    }
+    normalized = normalize_reasoning_payload(
+        {
+            "coach_summary": "日线回拉笔将延续。",
+            "trend_growth": {
+                "growth_path": "结束日线回拉。",
+                "failure_path": "日线向下笔可能延续。",
+            },
+        },
+        symbol="sh.688008",
+        reasoning_input=reasoning_input,
+    )
+
+    text = json.dumps(normalized, ensure_ascii=False)
+    assert "日线回拉笔" not in text
+    assert "日线向下笔" not in text
+    assert "日线顶分型后的待确认回落" in text
+
+
 def test_context_job_force_rebuild_requeues_existing_success(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
     database.init_db()

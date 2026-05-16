@@ -127,22 +127,19 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
         conn.close()
 
     async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
-        assert "缠论结构推演层" in system_prompt
         assert model_route.thinking_enabled is True
-        payload = json.loads(context_json)
-        assert payload["structure_facts"]["boundary"]["primary_level"] == "5"
-        return "完整 Think 推演：日线中枢边界内，5分钟触发观察。仅供参考，不构成投资建议"
-
-    async def fake_infer(self, system_prompt, context_json, *, user_id=1, model_route=None):
-        assert "前端摘要层" in system_prompt
+        if "缠论结构推演层" in system_prompt:
+            payload = json.loads(context_json)
+            assert payload["structure_facts"]["boundary"]["primary_level"] == "5"
+            return "完整 Think 推演：日线中枢边界内，5分钟触发观察。仅供参考，不构成投资建议"
+        assert "Think 前端摘要层" in system_prompt
         assert "不要写成逐级别笔走势清单" in system_prompt
         assert "不得提前写成“日线向下笔已形成”" in system_prompt
         assert "failure_path" in system_prompt and "风险演化" in system_prompt
-        assert model_route.thinking_enabled is False
         payload = json.loads(context_json)
         assert payload["structure_context"]["structure_facts"]["boundary"]["primary_level"] == "5"
         assert "完整 Think 推演" in payload["full_reasoning_text"]
-        return {
+        return json.dumps({
             "version": "ai_structure_reasoning.e1_dynamic_growth",
             "symbol": "sh.600519",
             "main_level": "day",
@@ -169,10 +166,9 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
             "key_boundaries": [],
             "coach_summary": "LLM 推演摘要。仅供参考，不构成投资建议",
             "risk_notes": ["仅供参考，不构成投资建议"],
-        }
+        }, ensure_ascii=False)
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
-    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_json", fake_infer)
 
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
@@ -181,7 +177,7 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
     assert result["status"] == "success"
     latest = context_service.get_latest_ai_structure_context(user_id=1, symbol="sh600519")
     assert latest["reasoning"]["reasoning_meta"]["provider"] == "llm"
-    assert latest["reasoning"]["reasoning_meta"]["pipeline"] == "think_full_text_then_flash_summary"
+    assert latest["reasoning"]["reasoning_meta"]["pipeline"] == "think_full_text_then_think_panel_summary"
     assert latest["reasoning"]["reasoning_meta"]["full_reasoning_available"] is True
     assert latest["reasoning"]["trend_growth"]["current_state"] == "test_llm"
     assert latest["main_level"] == "day"

@@ -229,6 +229,8 @@ def normalize_reasoning_payload(payload: dict[str, Any], *, symbol: str, reasoni
     normalized["scenario_branches"] = payload.get("scenario_branches") if isinstance(payload.get("scenario_branches"), list) else fallback["scenario_branches"]
     normalized["key_boundaries"] = payload.get("key_boundaries") if isinstance(payload.get("key_boundaries"), list) else fallback["key_boundaries"]
     normalized["risk_notes"] = payload.get("risk_notes") if isinstance(payload.get("risk_notes"), list) else fallback["risk_notes"]
+    if not _has_confirmed_daily_down_bi(reasoning_input):
+        normalized = _scrub_unconfirmed_daily_down_bi(normalized)
     return normalized
 
 
@@ -251,6 +253,43 @@ def _normalize_level_label(value: Any, fallback: Any = "") -> str:
     if "5" in text:
         return "5"
     return str(fallback or "")
+
+
+def _has_confirmed_daily_down_bi(reasoning_input: dict[str, Any]) -> bool:
+    snapshots = ((reasoning_input.get("structure_facts") or {}).get("snapshots") or [])
+    day_snapshot = next((item for item in snapshots if str(item.get("level") or "") == "day"), None)
+    levels = (((day_snapshot or {}).get("raw_bi_context") or {}).get("levels") or {})
+    bi_sequence = ((levels.get("day") or {}).get("bi_sequence") or [])
+    if not bi_sequence:
+        return False
+    last = bi_sequence[-1]
+    return str(last.get("direction") or "").upper() == "DOWN" and bool(last.get("is_sure"))
+
+
+def _scrub_unconfirmed_daily_down_bi(payload: dict[str, Any]) -> dict[str, Any]:
+    replacements = {
+        "日线回拉笔": "日线顶分型后的待确认回落",
+        "日线向下笔": "日线顶分型后的待确认回落",
+        "日线下跌笔": "日线顶分型后的待确认回落",
+        "日线回拉": "日线顶分型后的待确认回落",
+        "结束日线顶分型后的待确认回落": "确认日线顶分型后的回落结束",
+    }
+
+    def scrub_text(text: Any) -> Any:
+        if not isinstance(text, str):
+            return text
+        cleaned = text
+        for source, target in replacements.items():
+            cleaned = cleaned.replace(source, target)
+        return cleaned
+
+    cleaned = dict(payload)
+    for key in ("structure_summary", "coach_summary", "front_panel_text"):
+        cleaned[key] = scrub_text(cleaned.get(key))
+    trend_growth = cleaned.get("trend_growth")
+    if isinstance(trend_growth, dict):
+        cleaned["trend_growth"] = {key: scrub_text(value) for key, value in trend_growth.items()}
+    return cleaned
 
 
 def _primary_level(levels: dict[str, Any]) -> str:
