@@ -347,9 +347,20 @@ export default function AIStructureCoachPanel({
           <span className="ai-structure-kicker">AI Native V5</span>
           <h3>{displayName}</h3>
         </div>
-        <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
-          {statusLabel}
-        </span>
+        <div className="ai-structure-head-actions">
+          {status?.context && (
+            <button
+              type="button"
+              onClick={regenerateReasoning}
+              disabled={regenerating || pollingActive || !symbol}
+            >
+              {regenerating || pollingActive ? '生成中' : '重新生成'}
+            </button>
+          )}
+          <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
+            {statusLabel}
+          </span>
+        </div>
       </header>
 
       <PipelineStatus items={pipelineItems} />
