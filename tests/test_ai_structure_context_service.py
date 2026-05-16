@@ -135,6 +135,8 @@ def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch
 
     async def fake_infer(self, system_prompt, context_json, *, user_id=1, model_route=None):
         assert "前端摘要层" in system_prompt
+        assert "不要写成逐级别笔走势清单" in system_prompt
+        assert "不得提前写成“日线向下笔已形成”" in system_prompt
         assert model_route.thinking_enabled is False
         payload = json.loads(context_json)
         assert payload["structure_context"]["structure_facts"]["boundary"]["primary_level"] == "5"

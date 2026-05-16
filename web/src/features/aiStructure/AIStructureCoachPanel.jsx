@@ -464,7 +464,6 @@ function ReasoningBrief({ context }) {
 
 function buildGrowthText(growth = {}) {
   const items = [
-    growth.current_state,
     growth.growth_path,
     growth.next_confirmation ? `下一步确认：${growth.next_confirmation}` : '',
     growth.failure_path ? `失败路径：${growth.failure_path}` : '',
