@@ -277,7 +277,8 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         payload = json.loads(context_json)
         assert "Think全文" in payload["full_reasoning_text"]
         assert payload["question"] == "我先持仓2000股，成本135，要不要加仓？"
-        assert model_route.thinking_enabled is False
+        assert model_route.thinking_enabled is True
+        assert model_route.reasoning_effort == "high"
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)

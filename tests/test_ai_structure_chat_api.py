@@ -162,6 +162,27 @@ def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_p
     assert set(data["chart_focus"]["evidence_ids"]) <= overlay_ids
 
 
+def test_chat_skips_stale_price_cross_reminder_when_already_below_center(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    save_snapshot(price=9.8, zg=11.0, zd=10.0)
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["direction"] for item in data["suggested_reminders"]] == ["ABOVE"]
+    assert data["suggested_reminders"][0]["trigger_price"] == 11.0
+
+
 def test_chat_uses_fundamental_background_without_trade_instruction(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     ensure_user()

@@ -11,6 +11,7 @@ import asyncio
 import uuid
 from typing import Any
 
+from server.config import AI_NATIVE_LLM_TIMEOUT
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, now_text, stable_hash
@@ -529,7 +530,12 @@ def _build_ai_answer_from_full_reasoning(
                 system_prompt,
                 _json(prompt),
                 user_id=user_id,
-                model_route=AIModelRoute(thinking_enabled=False, timeout_seconds=90, max_tokens=1800),
+                model_route=AIModelRoute(
+                    thinking_enabled=True,
+                    reasoning_effort="high",
+                    timeout_seconds=max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+                    max_tokens=2400,
+                ),
             )
         )
     except Exception:
@@ -887,7 +893,8 @@ def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_foc
     candidates = []
     zg = _num(center.get("zg"))
     zd = _num(center.get("zd"))
-    if intent_type in {"buy_window", "reminder", "explain_structure"} and zg > 0:
+    current_price = _num(level_item.get("current_price"))
+    if intent_type in {"buy_window", "reminder", "explain_structure"} and zg > 0 and (current_price <= 0 or current_price < zg):
         candidates.append({
             "type": "price_cross",
             "direction": "ABOVE",
@@ -897,7 +904,7 @@ def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_foc
             "message": f"站上 {level} 级别中枢上沿后复核观察窗口",
             "risk_disclaimer": RISK_DISCLAIMER,
         })
-    if intent_type in {"invalidation", "hold_or_exit", "reminder", "buy_window"} and zd > 0:
+    if intent_type in {"invalidation", "hold_or_exit", "reminder", "buy_window"} and zd > 0 and (current_price <= 0 or current_price > zd):
         candidates.append({
             "type": "price_cross",
             "direction": "BELOW",
