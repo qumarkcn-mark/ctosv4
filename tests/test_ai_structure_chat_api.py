@@ -68,7 +68,26 @@ def build_context(user_id=1):
     job = context_service.claim_next_context_job(worker_id=f"ctx-worker-{user_id}")
     result = context_service.run_context_job_sync(job)
     assert result["status"] == "success"
+    mark_latest_context_llm_success(user_id=user_id)
     return context_service.get_latest_ai_structure_context(user_id=user_id, symbol="sh600519")
+
+
+def mark_latest_context_llm_success(user_id=1, symbol="sh600519"):
+    latest = context_service.get_latest_ai_structure_context(user_id=user_id, symbol=symbol)
+    assert latest
+    reasoning = latest["reasoning"]
+    meta = dict(reasoning.get("reasoning_meta") or {})
+    meta.update({"provider": "llm", "llm_status": "success"})
+    reasoning["reasoning_meta"] = meta
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE ai_structure_contexts SET reasoning_json = ? WHERE context_id = ?",
+            (json.dumps(reasoning, ensure_ascii=False), latest["context_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def seed_fundamental_background():
@@ -143,6 +162,27 @@ def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_p
     assert set(data["chart_focus"]["evidence_ids"]) <= overlay_ids
 
 
+def test_chat_skips_stale_price_cross_reminder_when_already_below_center(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    save_snapshot(price=9.8, zg=11.0, zd=10.0)
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "我现在能买吗？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["direction"] for item in data["suggested_reminders"]] == ["ABOVE"]
+    assert data["suggested_reminders"][0]["trigger_price"] == 11.0
+
+
 def test_chat_uses_fundamental_background_without_trade_instruction(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     ensure_user()
@@ -151,6 +191,7 @@ def test_chat_uses_fundamental_background_without_trade_instruction(monkeypatch,
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
     assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
     client = make_client()
 
     response = client.post(
@@ -184,6 +225,62 @@ def test_chat_answers_invalidation_question(monkeypatch, tmp_path):
     assert "10.00" in data["coach_answer"]
     assert "仅供参考，不构成投资建议" in data["coach_answer"]
     assert any(item["role"] == "invalidation" for item in data["referenced_boundaries"])
+
+
+def test_chat_explains_trend_growth_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这个走势接下来怎么生长？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "trend_growth"
+    assert "走势生长路径" in data["coach_answer"]
+    assert "下一步确认" in data["coach_answer"]
+    assert "失败路径" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_explains_divergence_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这里有没有背驰？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "divergence"
+    assert "背驰观察" in data["coach_answer"]
+    assert "unclear" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
+
+
+def test_chat_explains_level_resonance_from_reasoning(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    build_context()
+    client = make_client()
+
+    response = client.post(
+        "/api/ai-structure/chat",
+        json={"symbol": "sh600519", "question": "这里是什么级别共振？"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["intent_type"] == "resonance"
+    assert "级别关系" in data["coach_answer"]
+    assert "触发观察" in data["coach_answer"]
+    assert "共振类型" in data["coach_answer"]
+    assert data["coach_answer"].endswith("仅供参考，不构成投资建议")
 
 
 def test_chat_marks_stale_context_without_recomputing(monkeypatch, tmp_path):
@@ -242,6 +339,7 @@ def test_chat_guardrails_out_of_scope_even_when_boundary_missing(monkeypatch, tm
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
     assert context_service.run_context_job_sync(job)["status"] == "success"
+    mark_latest_context_llm_success()
     client = make_client()
 
     response = client.post(

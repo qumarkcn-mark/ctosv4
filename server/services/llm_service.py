@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from openai import AsyncOpenAI
@@ -8,6 +9,15 @@ import logging
 from server import config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AIModelRoute:
+    model_name: str = ""
+    thinking_enabled: bool = False
+    reasoning_effort: str = "high"
+    timeout_seconds: float = 150
+    max_tokens: int = 4096
 
 
 def _safe_qwen_base_url(candidate: Optional[str]) -> str:
@@ -23,6 +33,7 @@ def _safe_qwen_base_url(candidate: Optional[str]) -> str:
 
 def _loads_lenient_json_object(raw_content: str) -> dict:
     """Parse model JSON with small repairs for common response_format drift."""
+    raw_content = raw_content or ""
     try:
         return json.loads(raw_content, object_pairs_hook=_merge_duplicate_json_pairs)
     except json.JSONDecodeError:
@@ -54,6 +65,31 @@ def _loads_lenient_json_object(raw_content: str) -> dict:
         except json.JSONDecodeError as exc:
             last_error = exc
     raise last_error or ValueError("Unable to parse model JSON")
+
+
+def _message_content_text(message) -> str:
+    """Extract final assistant content, excluding provider reasoning fields."""
+    content = getattr(message, "content", None) or ""
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(getattr(item, "text", "") or getattr(item, "content", "") or ""))
+        content = "".join(parts)
+    if str(content).strip():
+        return str(content)
+    return ""
+
+
+def _message_reasoning_text(message) -> str:
+    """Extract provider reasoning text for telemetry/debug, never for JSON parsing."""
+    for attr in ("reasoning_content", "reasoning", "text"):
+        value = getattr(message, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def _merge_duplicate_json_pairs(pairs: list) -> dict:
@@ -370,8 +406,27 @@ class LLMService:
             request["extra_body"] = {"thinking": {"type": "disabled"}}
 
         response = await client.chat.completions.create(**request)
-        raw_content = response.choices[0].message.content
-        return _loads_lenient_json_object(raw_content)
+        message = response.choices[0].message
+        raw_content = _message_content_text(message)
+        try:
+            return _loads_lenient_json_object(raw_content)
+        except Exception as first_exc:
+            if not thinking_enabled:
+                raise
+            reasoning_text = _message_reasoning_text(message)
+            logger.warning(
+                "AI Native JSON content parse failed with thinking enabled; retrying without thinking: %s; content_len=%s reasoning_len=%s",
+                first_exc,
+                len(raw_content or ""),
+                len(reasoning_text or ""),
+            )
+            retry_request = dict(request)
+            retry_request.pop("reasoning_effort", None)
+            retry_request["temperature"] = 0.3
+            retry_request["extra_body"] = {"thinking": {"type": "disabled"}}
+            retry_response = await client.chat.completions.create(**retry_request)
+            retry_content = _message_content_text(retry_response.choices[0].message)
+            return _loads_lenient_json_object(retry_content)
 
     async def infer_ai_native_markdown(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None) -> str:
         """AI Native Markdown 推演。调用方负责语义过滤和确定性门禁。"""

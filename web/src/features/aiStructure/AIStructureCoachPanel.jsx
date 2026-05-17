@@ -6,7 +6,8 @@ import './AIStructureCoachPanel.css'
 const QUICK_QUESTIONS = [
   '我现在能买吗？',
   '跌破哪里就不看了？',
-  '我上次错在哪里？',
+  '走势怎么生长？',
+  '这里有没有背驰？',
   '帮我设提醒',
 ]
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
@@ -32,29 +33,35 @@ export default function AIStructureCoachPanel({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [booting, setBooting] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
   const [pollUntil, setPollUntil] = useState(0)
   const [error, setError] = useState('')
   const [pendingQuestion, setPendingQuestion] = useState('')
+  const [activeQuestion, setActiveQuestion] = useState('')
+  const [commandStartedAt, setCommandStartedAt] = useState(0)
+  const [now, setNow] = useState(Date.now())
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
   const [reminders, setReminders] = useState([])
-  const [outcomeReview, setOutcomeReview] = useState(null)
   const [activeSessionId, setActiveSessionId] = useState('')
   const mountedRef = useRef(true)
   const symbolRef = useRef(symbol)
+  const messagesRef = useRef(null)
 
   const displayName = symbolName || symbol
-  const canAsk = Boolean(status?.context)
-  const pollingActive = pollUntil > Date.now() && !['fresh', 'failed'].includes(status?.status)
+  const pollingActive = pollUntil > Date.now() && shouldPollContextStatus(status)
+  const reasoningContext = status?.context || null
+  const aiReasoningReady = isAiReasoningReady(status)
+  const canAsk = Boolean(status?.context && aiReasoningReady)
+  const displayStatus = status?.context && !aiReasoningReady
+    ? `reasoning-${aiReasoningStatus(status) || 'pending'}`
+    : (status?.status || 'idle')
+  const commandActive = loading || Boolean(pendingQuestion && !canAsk)
 
   const applyWorkspaceSymbolState = useCallback((state) => {
     if (!state || !sameSymbol(state.symbol, symbolRef.current)) return
-    setStatus(normalizeWorkspaceStatus(state))
+    const nextStatus = normalizeWorkspaceStatus(state)
+    setStatus((prev) => (shouldApplyWorkspaceStatus(prev, nextStatus) ? nextStatus : prev))
     setReminders(state.reminders?.items || [])
-    setOutcomeReview({
-      symbol: state.symbol,
-      count: state.outcomes?.count || 0,
-      items: state.outcomes?.items || [],
-      memory: state.outcomes?.memory || {},
-    })
   }, [])
 
   const loadStatus = useCallback(async () => {
@@ -78,16 +85,6 @@ export default function AIStructureCoachPanel({
     }
   }, [symbol])
 
-  const loadOutcomeReview = useCallback(async () => {
-    if (!symbol) return
-    try {
-      const json = await apiJson(`${API_BASE}/ai-structure/outcomes/${encodeURIComponent(symbol)}?limit=8`)
-      if (mountedRef.current) setOutcomeReview(json.data)
-    } catch {
-      if (mountedRef.current) setOutcomeReview(null)
-    }
-  }, [symbol])
-
   const loadChartEvidence = useCallback(async (answer) => {
     const focus = answer?.chart_focus
     if (!focus?.context_id || !focus?.level) return
@@ -106,13 +103,26 @@ export default function AIStructureCoachPanel({
     if (!symbol) return
     const requestedSymbol = symbol
     try {
+      const levels = CONTEXT_LEVELS.join(',')
+      const statusJson = await apiJson(`${API_BASE}/ai-structure/contexts/status/${encodeURIComponent(symbol)}?levels=${levels}`)
+      const currentContextId = statusJson.data?.context?.context_id || ''
       const sessionsJson = await apiJson(`${API_BASE}/ai-structure/chat/sessions/${encodeURIComponent(symbol)}`)
       const latestSession = sessionsJson.data?.sessions?.[0]
       if (!latestSession?.session_id) return
+      if (currentContextId && latestSession.latest_context_id !== currentContextId) {
+        if (mountedRef.current && symbolRef.current === requestedSymbol) {
+          setActiveSessionId('')
+          setMessages([])
+          onEvidenceContext?.(null)
+        }
+        return
+      }
       const messagesJson = await apiJson(
         `${API_BASE}/ai-structure/chat/messages?session_id=${encodeURIComponent(latestSession.session_id)}`,
       )
-      const restored = restoreChatMessages(messagesJson.data?.messages || [])
+      const restored = restoreChatMessages(
+        (messagesJson.data?.messages || []).filter((row) => !currentContextId || row.context_id === currentContextId)
+      )
       if (mountedRef.current && symbolRef.current === requestedSymbol) {
         setActiveSessionId(latestSession.session_id)
         setMessages(restored)
@@ -127,7 +137,7 @@ export default function AIStructureCoachPanel({
         setMessages([])
       }
     }
-  }, [symbol, loadChartEvidence])
+  }, [symbol, loadChartEvidence, onEvidenceContext])
 
   useEffect(() => {
     mountedRef.current = true
@@ -138,17 +148,16 @@ export default function AIStructureCoachPanel({
     setStatus(null)
     setPollUntil(0)
     setPendingQuestion('')
+    setCommandStartedAt(0)
+    setSuggestionsOpen(false)
     setReminders([])
-    setOutcomeReview(null)
     setActiveSessionId('')
     onEvidenceContext?.(null)
     if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
       applyWorkspaceSymbolState(workspaceSymbolState)
-    } else {
-      loadStatus()
-      loadReminders()
-      loadOutcomeReview()
     }
+    loadStatus()
+    loadReminders()
     loadChatHistory()
     return () => {
       mountedRef.current = false
@@ -157,7 +166,6 @@ export default function AIStructureCoachPanel({
     symbol,
     loadStatus,
     loadReminders,
-    loadOutcomeReview,
     loadChatHistory,
     onEvidenceContext,
   ])
@@ -170,7 +178,7 @@ export default function AIStructureCoachPanel({
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
-    if (status?.status === 'fresh' || status?.status === 'failed') {
+    if (!shouldPollContextStatus(status)) {
       setPollUntil(0)
       return undefined
     }
@@ -208,11 +216,38 @@ export default function AIStructureCoachPanel({
     }
   }, [symbol, booting, pollingActive, loadStatus, onWorkspaceRefresh])
 
+  const regenerateReasoning = useCallback(async () => {
+    if (!symbol || regenerating || pollingActive) return
+    setRegenerating(true)
+    setError('')
+    try {
+      await apiJson(`${API_BASE}/ai-structure/contexts/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbols: [symbol],
+          levels: CONTEXT_LEVELS,
+          reason: 'web_ai_structure_regenerate',
+          force_rebuild: true,
+          priority: 100,
+        }),
+      })
+      setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
+      await loadStatus()
+    } catch (err) {
+      setError(err?.message || '重新生成推演失败')
+    } finally {
+      setRegenerating(false)
+    }
+  }, [symbol, regenerating, pollingActive, loadStatus])
+
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
     if (!question || loading || !symbol) return
+    setSuggestionsOpen(false)
     if (!canAsk) {
       setPendingQuestion(question)
+      setActiveQuestion(question)
       setInput('')
       setMessages((prev) => {
         const next = [...prev]
@@ -225,6 +260,7 @@ export default function AIStructureCoachPanel({
       return
     }
     setLoading(true)
+    setActiveQuestion(question)
     setError('')
     setInput('')
     try {
@@ -247,6 +283,7 @@ export default function AIStructureCoachPanel({
       setError(err?.message || 'AI 问答失败')
     } finally {
       setLoading(false)
+      setActiveQuestion('')
     }
   }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence, activeSessionId])
 
@@ -254,6 +291,23 @@ export default function AIStructureCoachPanel({
     if (!pendingQuestion || loading || !canAsk) return
     ask(pendingQuestion)
   }, [pendingQuestion, loading, canAsk, ask])
+
+  useEffect(() => {
+    const node = messagesRef.current
+    if (!node) return
+    node.scrollTop = node.scrollHeight
+  }, [messages])
+
+  useEffect(() => {
+    if (!commandActive) {
+      setCommandStartedAt(0)
+      return undefined
+    }
+    setCommandStartedAt((value) => value || Date.now())
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [commandActive])
 
   const createReminder = useCallback(async (answer, candidate) => {
     if (!answer?.session_id || !answer?.message_id || !candidate?.evidence_id) return
@@ -294,16 +348,18 @@ export default function AIStructureCoachPanel({
       })
       setMessages((prev) => [...prev, { role: 'system', text: labels[action] || '提醒已更新' }])
       await loadReminders()
-      await loadOutcomeReview()
     } catch (err) {
       setError(err?.message || '提醒状态更新失败')
     }
-  }, [loadReminders, loadOutcomeReview])
+  }, [loadReminders])
 
   const statusLabel = useMemo(() => {
     if (workspaceLoading && !status) return '启动中'
     if (pollingActive) return '生成中'
     if (!status) return '检测中'
+    const aiStatus = aiReasoningStatus(status)
+    if (status.context && ['failed', 'unavailable'].includes(aiStatus)) return '推演暂未完成'
+    if (status.context && aiStatus !== 'success') return '推演中'
     if (status.status === 'fresh') return '结构就绪'
     if (status.status === 'stale') return '结构待刷新'
     if (status.status === 'pending') return '生成中'
@@ -315,9 +371,11 @@ export default function AIStructureCoachPanel({
   const pipelineItems = useMemo(() => buildPipelineItems(status, {
     booting: booting || (workspaceLoading && !status),
     canAsk,
+    loading,
+    activeQuestion,
     pendingQuestion,
     pollingActive,
-  }), [status, booting, workspaceLoading, canAsk, pendingQuestion, pollingActive])
+  }), [status, booting, workspaceLoading, canAsk, loading, activeQuestion, pendingQuestion, pollingActive])
 
   return (
     <section className="ai-structure-panel">
@@ -326,26 +384,41 @@ export default function AIStructureCoachPanel({
           <span className="ai-structure-kicker">AI Native V5</span>
           <h3>{displayName}</h3>
         </div>
-        <span className={`ai-structure-status ai-structure-status--${status?.status || 'idle'}`}>
-          {statusLabel}
-        </span>
+        <div className="ai-structure-head-actions">
+          {status?.context && (
+            <button
+              type="button"
+              onClick={regenerateReasoning}
+              disabled={regenerating || pollingActive || !symbol}
+            >
+              {regenerating || pollingActive ? '生成中' : '重新生成'}
+            </button>
+          )}
+          <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
+            {statusLabel}
+          </span>
+        </div>
       </header>
 
       <PipelineStatus items={pipelineItems} />
 
-      <StatusNotice status={status} pollingActive={pollingActive} />
+      <StatusNotice
+        status={status}
+        pollingActive={pollingActive}
+        onRetry={regenerateReasoning}
+        retrying={regenerating}
+      />
+
+      <ReasoningBrief context={reasoningContext} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
-      <OutcomeReviewStatus review={outcomeReview} />
-
-      <div className="ai-structure-quick">
-        {QUICK_QUESTIONS.map((item) => (
-          <button key={item} type="button" onClick={() => ask(item)} disabled={loading || !symbol}>
-            {item}
-          </button>
-        ))}
-      </div>
+      {commandActive && (
+        <ThinkingStatusBar
+          phase={loading ? 'thinking' : 'context'}
+          elapsedSeconds={elapsedSeconds(commandStartedAt, now)}
+        />
+      )}
 
       {!canAsk && (
         <div className="ai-structure-empty">
@@ -364,12 +437,13 @@ export default function AIStructureCoachPanel({
         </div>
       )}
 
-      <div className="ai-structure-messages">
+      <div className="ai-structure-messages" ref={messagesRef}>
         {messages.map((item, index) => (
           <Message
             key={`${item.role}-${index}`}
             item={item}
             onReminder={createReminder}
+            context={reasoningContext}
           />
         ))}
       </div>
@@ -380,10 +454,28 @@ export default function AIStructureCoachPanel({
         event.preventDefault()
         ask()
       }}>
+        {suggestionsOpen && !loading && (
+          <div className="ai-structure-input-suggestions">
+            {QUICK_QUESTIONS.map((item) => (
+              <button
+                key={item}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  ask(item)
+                }}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={canAsk ? '问：跌破哪里就不看了？' : '直接提问，会先生成结构上下文'}
+          onFocus={() => setSuggestionsOpen(true)}
+          onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
           disabled={loading || !symbol}
         />
         <button type="submit" disabled={loading || !input.trim()}>
@@ -392,6 +484,42 @@ export default function AIStructureCoachPanel({
       </form>
     </section>
   )
+}
+
+function ReasoningBrief({ context }) {
+  if (!context) return null
+  if (!isAiReasoningReady({ context })) return null
+  const reasoning = context.reasoning || context
+  const isUnified = String(reasoning.version || context.prompt_version || '').startsWith('unified_reasoning')
+  const growth = reasoning.trend_growth || {}
+  const summary = reasoning.coach_summary || context.coach_summary || context.summary_text || ''
+  const mainLevel = formatLevel(reasoning.main_level || context.main_level)
+  const growthText = isUnified ? '' : buildGrowthText(growth)
+  if (!summary && !growthText && !mainLevel) return null
+  return (
+    <section className="ai-reasoning-brief" aria-label="AI 当前推演">
+      <div className="ai-reasoning-brief-head">
+        <strong>当前推演</strong>
+        <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
+      </div>
+      {summary && <p className={isUnified ? 'is-one-line' : ''}>{summary}</p>}
+      {growthText && (
+        <div className="ai-reasoning-growth">
+          <span>走势如何生长</span>
+          <em>{growthText}</em>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function buildGrowthText(growth = {}) {
+  const items = [
+    growth.growth_path,
+    growth.next_confirmation ? `下一步确认：${growth.next_confirmation}` : '',
+    growth.failure_path ? `风险演化：${growth.failure_path}` : '',
+  ]
+  return items.map((item) => String(item || '').trim()).filter(Boolean).join('\n')
 }
 
 function PipelineStatus({ items }) {
@@ -408,75 +536,43 @@ function PipelineStatus({ items }) {
   )
 }
 
-function StatusNotice({ status, pollingActive }) {
+function ThinkingStatusBar({ phase, elapsedSeconds }) {
+  const isThinking = phase === 'thinking'
+  const slowHint = elapsedSeconds >= 20
+  const label = isThinking ? 'Think 正在推演' : '正在读取推演上下文'
+  const detail = slowHint
+    ? '结构问题会稍慢一些'
+    : isThinking
+      ? '结合完整推演与当前价格'
+      : '读取结构、边界和持仓背景'
+  return (
+    <div className="ai-thinking-bar" aria-live="polite">
+      <span className="ai-thinking-bar-light" aria-hidden="true" />
+      <div className="ai-thinking-bar-main">
+        <strong>{label}</strong>
+        <em>{detail}</em>
+      </div>
+      <span className="ai-thinking-bar-time">{elapsedSeconds}s</span>
+    </div>
+  )
+}
+
+function StatusNotice({ status, pollingActive, onRetry, retrying }) {
   const notice = statusNotice(status, pollingActive)
   if (!notice) return null
   return (
     <div className={`ai-status-notice ai-status-notice--${notice.tone}`}>
-      <strong>{notice.title}</strong>
-      <span>{notice.text}</span>
-    </div>
-  )
-}
-
-function OutcomeReviewStatus({ review }) {
-  const items = review?.items || []
-  const stats = review?.memory?.stats || {}
-  if (!items.length && !stats.total_outcomes) return null
-  return (
-    <div className="ai-outcome-review" aria-label="AI 结构复盘">
-      <div className="ai-outcome-review-head">
-        <strong>复盘</strong>
-        <span>{stats.total_outcomes || items.length} 次 / {stats.mistake_count_30d || 0} 个纪律问题</span>
+      <div className="ai-status-notice-copy">
+        <strong>{notice.title}</strong>
+        <span>{notice.text}</span>
       </div>
-      {!!review?.memory?.profile?.active_warnings?.length && (
-        <div className="ai-outcome-warning">
-          {review.memory.profile.active_warnings[0].text}
-        </div>
+      {notice.retryable && (
+        <button type="button" onClick={onRetry} disabled={retrying || pollingActive}>
+          {retrying || pollingActive ? '生成中' : '重新生成'}
+        </button>
       )}
-      <div className="ai-outcome-list">
-        {items.slice(0, 4).map((item) => (
-          <div key={item.outcome_id} className={`ai-outcome-item ai-outcome-item--${item.outcome}`}>
-            <div className="ai-outcome-main">
-              <span>{outcomeLabel(item)}</span>
-              <em>{formatOutcomeTime(item.checked_at)}</em>
-            </div>
-            <div className="ai-outcome-meta">
-              <span>{branchTypeLabel(item.branch?.branch_type)}</span>
-              <span>{item.settlement_window || 'manual'}</span>
-              <span>{outcomePrice(item)}</span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
-}
-
-function outcomeLabel(item) {
-  if (item.is_mistake) return '失效未处理'
-  if (item.outcome === 'triggered') return '触发'
-  if (item.outcome === 'invalidated') return '失效'
-  if (item.outcome === 'expired') return '过期'
-  return '观察中'
-}
-
-function branchTypeLabel(type) {
-  if (type === 'observe_breakout') return '突破观察'
-  if (type === 'invalidation_watch') return '失效观察'
-  if (type === 'holding_defense') return '持仓防守'
-  return type || '结构分支'
-}
-
-function outcomePrice(item) {
-  const price = item.triggered_price || item.invalidated_price || item.trigger_price
-  return Number(price || 0) > 0 ? Number(price).toFixed(2) : '--'
-}
-
-function formatOutcomeTime(value) {
-  if (!value) return ''
-  const text = String(value)
-  return text.slice(5, 16).replace('T', ' ')
 }
 
 function ReminderStatus({ reminders, onAck }) {
@@ -518,7 +614,7 @@ function reminderStatusLabel(status) {
   return '盯盘中'
 }
 
-function Message({ item, onReminder }) {
+function Message({ item, onReminder, context }) {
   if (item.role === 'user') {
     return (
       <div className={`ai-msg ai-msg--user ${item.pending ? 'ai-msg--pending' : ''}`}>
@@ -530,12 +626,17 @@ function Message({ item, onReminder }) {
     return <div className="ai-msg ai-msg--system">{item.text}</div>
   }
   const answer = item.answer || {}
+  const answerText = answer.coach_answer || answer.answer || ''
+  const reminderCandidates = (answer.suggested_reminders || []).filter((candidate) => (
+    isLiveReminderCandidate(answer, candidate, context)
+  ))
+  const hasDisclaimerInAnswer = String(answerText).includes(answer.risk_disclaimer || '')
   return (
     <div className="ai-msg ai-msg--assistant">
-      <p>{answer.coach_answer || answer.answer}</p>
-      {!!answer.suggested_reminders?.length && (
+      <div className="ai-msg-content">{renderCoachText(answerText)}</div>
+      {!!reminderCandidates.length && (
         <div className="ai-reminder-list">
-          {answer.suggested_reminders.map((candidate) => (
+          {reminderCandidates.map((candidate) => (
             <button
               key={candidate.evidence_id}
               type="button"
@@ -546,9 +647,86 @@ function Message({ item, onReminder }) {
           ))}
         </div>
       )}
-      <span>{answer.risk_disclaimer}</span>
+      {answer.risk_disclaimer && !hasDisclaimerInAnswer && <span>{answer.risk_disclaimer}</span>}
     </div>
   )
+}
+
+function renderCoachText(text) {
+  const lines = String(text || '').split('\n')
+  const blocks = []
+  let listItems = []
+
+  const flushList = () => {
+    if (!listItems.length) return
+    blocks.push(
+      <ul key={`list-${blocks.length}`} className="ai-msg-list">
+        {listItems.map((item, index) => <li key={`${item}-${index}`}>{cleanMarkdownText(item)}</li>)}
+      </ul>,
+    )
+    listItems = []
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim()
+    if (!line) {
+      flushList()
+      return
+    }
+    if (/^-{3,}$/.test(line)) {
+      flushList()
+      blocks.push(<hr key={`hr-${blocks.length}`} />)
+      return
+    }
+    if (line.startsWith('## ')) {
+      flushList()
+      blocks.push(<strong key={`h-${blocks.length}`} className="ai-msg-heading">{cleanMarkdownText(line.slice(3))}</strong>)
+      return
+    }
+    if (line.startsWith('### ')) {
+      flushList()
+      blocks.push(<strong key={`h-${blocks.length}`} className="ai-msg-subheading">{cleanMarkdownText(line.slice(4))}</strong>)
+      return
+    }
+    if (/^[-*]\s+/.test(line)) {
+      listItems.push(line.replace(/^[-*]\s+/, ''))
+      return
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      listItems.push(line.replace(/^\d+\.\s+/, ''))
+      return
+    }
+    if (line.startsWith('|')) {
+      flushList()
+      blocks.push(<code key={`table-${blocks.length}`} className="ai-msg-table-line">{line}</code>)
+      return
+    }
+    flushList()
+    blocks.push(<p key={`p-${blocks.length}`}>{cleanMarkdownText(line)}</p>)
+  })
+  flushList()
+
+  return blocks.length ? blocks : <p>{text}</p>
+}
+
+function cleanMarkdownText(text) {
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .trim()
+}
+
+function isLiveReminderCandidate(answer, candidate, context) {
+  if (!candidate?.evidence_id) return false
+  if (answer?.context_id && context?.context_id && answer.context_id !== context.context_id) return false
+  const level = candidate.level || answer?.chart_focus?.level || ''
+  const levelItem = (((context?.boundary || {}).levels || {})[level] || {})
+  const currentPrice = Number(levelItem.current_price || 0)
+  const triggerPrice = Number(candidate.trigger_price || 0)
+  if (!currentPrice || !triggerPrice) return true
+  if (candidate.direction === 'ABOVE') return currentPrice < triggerPrice
+  if (candidate.direction === 'BELOW') return currentPrice > triggerPrice
+  return true
 }
 
 function restoreChatMessages(rows) {
@@ -564,6 +742,11 @@ function restoreChatMessages(rows) {
   })
 }
 
+function elapsedSeconds(startedAt, now) {
+  if (!startedAt) return 0
+  return Math.max(0, Math.floor((now - startedAt) / 1000))
+}
+
 function normalizeWorkspaceStatus(state) {
   const contextStatus = state?.context_status || {}
   const latestContext = state?.latest_context || null
@@ -576,6 +759,32 @@ function normalizeWorkspaceStatus(state) {
     missing_levels: contextStatus.missing_levels || [],
     job: contextStatus.job || null,
   }
+}
+
+function shouldApplyWorkspaceStatus(prev, next) {
+  if (!next) return false
+  if (!prev) return true
+  const prevReady = isAiReasoningReady(prev)
+  const nextReady = isAiReasoningReady(next)
+  const prevTime = statusFreshnessTime(prev)
+  const nextTime = statusFreshnessTime(next)
+  if (prevReady && !nextReady && !hasActiveContextJob(next)) return false
+  if (prev.status === 'fresh' && next.status === 'pending' && !hasActiveContextJob(next)) return false
+  if (prevTime && nextTime && nextTime < prevTime) return false
+  if (prev.context?.context_id && next.context?.context_id && prev.context.context_id === next.context.context_id) {
+    return nextReady || !prevReady || hasActiveContextJob(next)
+  }
+  return true
+}
+
+function statusFreshnessTime(status) {
+  const value = status?.context?.updated_at
+    || status?.updated_at
+    || status?.job?.updated_at
+    || status?.job?.created_at
+    || ''
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : 0
 }
 
 function sameSymbol(left, right) {
@@ -594,6 +803,8 @@ function failureText(status) {
 
 function emptyText(status, pollingActive) {
   if (status?.status === 'failed') return failureText(status)
+  const ai = aiReasoning(status)
+  if (status?.context && !ai.ready) return ai.message || 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。'
   if (pollingActive || status?.status === 'pending') return '后台正在生成结构上下文，完成后会自动回答已排队的问题。'
   if (status?.missing_levels?.length) return `缺少 ${formatLevels(status.missing_levels)} 的 CZSC 快照。可以先生成上下文，后台会补齐。`
   return '还没有结构上下文。可以直接提问，我会先生成再回答。'
@@ -602,6 +813,22 @@ function emptyText(status, pollingActive) {
 function statusNotice(status, pollingActive) {
   if (!status && !pollingActive) return null
   const reason = statusReason(status)
+  const ai = aiReasoning(status)
+  if (status?.context && !ai.ready) {
+    if (pollingActive || hasActiveContextJob(status)) {
+      return {
+        tone: 'working',
+        title: 'AI 推演生成中',
+        text: '新的 AI 推演任务已经触发，后台完成后会自动替换当前结果。',
+      }
+    }
+    return {
+      tone: ['failed', 'unavailable'].includes(ai.status) ? 'error' : 'working',
+      title: ai.title || 'AI 推演暂未完成',
+      text: ai.message || 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+      retryable: ['failed', 'unavailable'].includes(ai.status),
+    }
+  }
   if (reason === 'NO_DATA') {
     return {
       tone: 'error',
@@ -655,13 +882,13 @@ function statusNotice(status, pollingActive) {
 }
 
 function buildPipelineItems(status, flags) {
-  const { booting, canAsk, pendingQuestion, pollingActive } = flags
+  const { booting, canAsk, loading, activeQuestion, pendingQuestion, pollingActive } = flags
   const reason = statusReason(status)
   const isFailed = status?.status === 'failed'
   const isNoData = reason === 'NO_DATA'
   const isCzscUnavailable = reason === 'CZSC_UNAVAILABLE'
   const hasMissingLevels = Boolean(status?.missing_levels?.length)
-  const isWorking = booting || pollingActive || status?.status === 'pending'
+  const isWorking = booting || pollingActive || status?.status === 'pending' || hasActiveContextJob(status)
   const contextTone = contextStatusTone(status, isWorking)
 
   return [
@@ -686,8 +913,8 @@ function buildPipelineItems(status, flags) {
     {
       key: 'chat',
       label: '问答',
-      tone: canAsk ? 'ready' : pendingQuestion ? 'working' : 'waiting',
-      detail: canAsk ? '可提问' : pendingQuestion ? '已排队' : '可先问',
+      tone: loading || pendingQuestion ? 'working' : canAsk ? 'ready' : 'waiting',
+      detail: loading ? '回答中' : activeQuestion || pendingQuestion ? '已收到' : canAsk ? '可提问' : '可先问',
     },
   ]
 }
@@ -715,6 +942,10 @@ function snapshotStatusDetail(status, flags) {
 function contextStatusTone(status, isWorking) {
   if (!status) return 'checking'
   if (status.status === 'failed') return 'error'
+  const ai = aiReasoning(status)
+  if (isWorking) return 'working'
+  if (status.context && ['failed', 'unavailable'].includes(ai.status)) return 'error'
+  if (status.context && !ai.ready) return 'working'
   if (status.status === 'stale') return 'warn'
   if (status.context) return 'ready'
   if (isWorking) return 'working'
@@ -725,10 +956,61 @@ function contextStatusDetail(status, flags) {
   const { canAsk, isFailed, isWorking } = flags
   if (!status) return '检测中'
   if (isFailed) return '失败'
+  const ai = aiReasoning(status)
+  if (isWorking) return '生成中'
+  if (status.context && ['failed', 'unavailable'].includes(ai.status)) return '推演失败'
+  if (status.context && !ai.ready) return '推演中'
   if (status.status === 'stale') return '待刷新'
   if (canAsk) return '已就绪'
   if (isWorking) return '生成中'
   return '未生成'
+}
+
+function shouldPollContextStatus(status) {
+  if (!status) return true
+  if (hasActiveContextJob(status)) return true
+  const ai = aiReasoning(status)
+  if (status.context && ai.ready) return false
+  if (status.context && ['failed', 'unavailable'].includes(ai.status)) return false
+  return !['fresh', 'failed'].includes(status.status)
+}
+
+function hasActiveContextJob(status) {
+  return ['PENDING', 'RUNNING', 'FAILED_RETRYABLE'].includes(status?.job?.status)
+}
+
+function aiReasoning(statusOrContext) {
+  const directStatus = statusOrContext?.reasoning_status
+  if (directStatus) return directStatus
+  const context = statusOrContext?.context || statusOrContext
+  if (!context) return { status: 'pending', ready: false, title: 'AI 推演生成中', message: 'AI 推演正在生成中，完成后会自动展示完整走势推演。' }
+  const meta = (context.reasoning && context.reasoning.reasoning_meta) || context.reasoning_meta || {}
+  if (meta.provider === 'llm' && meta.llm_status === 'success') return { status: 'success', ready: true }
+  if (meta.llm_status === 'failed') {
+    return {
+      status: 'failed',
+      ready: false,
+      title: 'AI 推演暂未完成',
+      message: 'AI 推演返回异常，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+    }
+  }
+  if (meta.provider === 'local_fallback' || meta.llm_status === 'not_invoked' || !meta.llm_status) {
+    return {
+      status: 'unavailable',
+      ready: false,
+      title: 'AI 推演暂未完成',
+      message: 'AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。',
+    }
+  }
+  return { status: meta.llm_status || 'pending', ready: false, title: 'AI 推演生成中', message: 'AI 推演正在生成中，完成后会自动展示完整走势推演。' }
+}
+
+function aiReasoningStatus(statusOrContext) {
+  return aiReasoning(statusOrContext).status
+}
+
+function isAiReasoningReady(statusOrContext) {
+  return Boolean(aiReasoning(statusOrContext).ready)
 }
 
 function statusReason(status) {
@@ -737,4 +1019,20 @@ function statusReason(status) {
 
 function formatLevels(levels = []) {
   return levels.map((level) => LEVEL_LABELS[level] || level).join('/')
+}
+
+function formatLevel(level) {
+  const normalized = normalizeLevelKey(level)
+  return normalized ? LEVEL_LABELS[normalized] : ''
+}
+
+function normalizeLevelKey(level) {
+  const text = String(level || '').trim().toLowerCase()
+  if (!text) return ''
+  if (LEVEL_LABELS[text]) return text
+  if (text.includes('周') || text.includes('week')) return 'week'
+  if (text.includes('日') || text.includes('day')) return 'day'
+  if (text.includes('30')) return '30'
+  if (text.includes('5')) return '5'
+  return ''
 }

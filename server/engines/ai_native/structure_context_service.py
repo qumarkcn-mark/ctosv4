@@ -7,6 +7,7 @@ heavy structure computation and never reads legacy radar outputs.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import uuid
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 
-from server.config import STRUCTURE_JOB_TIMEOUT_SECONDS
+from server.config import AI_NATIVE_LLM_TIMEOUT, AI_NATIVE_MAX_TOKENS, STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import (
@@ -30,9 +31,75 @@ from server.engines.ai_native.scenario_branch_service import (
     list_scenario_branches,
     upsert_scenario_branches_for_context,
 )
+from server.prompts.ai_structure_reasoning_prompt import (
+    AI_STRUCTURE_REASONING_PROMPT_VERSION,
+    AI_STRUCTURE_REASONING_SYSTEM_PROMPT,
+    build_local_reasoning_fallback,
+    build_reasoning_input,
+    normalize_reasoning_payload,
+)
 
 
-PROMPT_VERSION = "ai_structure_context.v1"
+PROMPT_VERSION = AI_STRUCTURE_REASONING_PROMPT_VERSION
+
+
+FULL_REASONING_PROMPT_VERSION = f"{AI_STRUCTURE_REASONING_PROMPT_VERSION}.full_text"
+
+FULL_REASONING_SYSTEM_PROMPT = """你是 CT-OS AI Native V5 的缠论结构推演层。
+
+你的任务不是给买卖指令，而是基于 CZSC 已经计算完成的结构事实，解释当前走势可能如何生长。
+
+你只能使用输入中的 structure_facts、position_context、symbol_memory 和 background_context。
+CZSC snapshot 是唯一结构来源；你不能重新计算结构，不能引入旧 radar、旧 chan.py、旧 matrix 或任何其他结构引擎。
+
+请输出完整自然语言推演全文，使用纯净缠论语言。重点说明：
+- 周线、日线、30分钟、5分钟分别在干什么，以及它们之间是共振还是冲突。
+- 当前笔、中枢、离开段、回拉段可能如何继续生长。
+- 是否存在背驰、不背驰延伸、潜在背驰或背驰尚不清楚。
+- 如果是 A+小b，请解释“大级别中枢上沿/历史关键位置 + 小级别震荡承接”的含义。
+- 分支数量由结构决定，不强制三条。每条分支说明触发、失效、观察级别和图表 focus。
+
+边界：
+- 不要使用 Commander、战星、绝对分类等叙事。
+- 不要直接说买入、卖出、满仓、清仓。
+- 允许回答“进入观察窗口”“分支失效”“等待确认”“提醒复核”。
+- 必须保留“仅供参考，不构成投资建议”的风险边界。
+
+不要返回 JSON。"""
+
+SUMMARY_SYSTEM_PROMPT = """你是 CT-OS AI Native V5 的 Think 前端摘要层。
+
+你只负责把 DeepSeek Pro Think 的完整缠论推演原文压缩成前端和问答可消费的 JSON。
+不得重新计算中枢、笔、背驰或级别结构；不得引入新价格、新分支或新结论。
+前端摘要要服务右侧雷达面板，不要写成逐级别笔走势清单。
+
+走势生长字段只写当前最关键的演化链条：
+- 小级别中枢如何下破、背驰、回拉、回不到中枢后形成三卖、再试探下一支撑。
+- 不要逐条罗列周线、日线、30分钟、5分钟每一笔怎么走。
+- 日线若只是顶分型或高位回落，必须写“顶分型/待确认”，不得提前写成“日线向下笔已形成”。
+- `main_level` 和 `trigger_level` 只能填 week/day/30/5，不要填“30分钟中枢上沿177.36元”这种条件文本。
+- `failure_path` 在前端会显示为“风险演化”，必须写小级别转弱后的下探路径和下一观察位，例如“回不到5分钟中枢则形成三卖，跌破243后先试探231/233-236区域”。不要把它写成空头路径的失效条件。
+
+只返回 JSON 对象，不要 Markdown 代码块。"""
+
+SUMMARY_OUTPUT_CONTRACT = {
+    "main_level": "string",
+    "trigger_level": "string",
+    "structure_summary": "string",
+    "trend_growth": {
+        "current_state": "string",
+        "growth_path": "string",
+        "next_confirmation": "string",
+        "failure_path": "string",
+    },
+    "divergence_view": "object",
+    "resonance_view": "object",
+    "scenario_branches": "array",
+    "key_boundaries": "array",
+    "coach_summary": "string",
+    "front_panel_text": "string",
+    "risk_notes": "array",
+}
 
 
 def context_job_key(
@@ -58,6 +125,7 @@ def prewarm_ai_structure_contexts(
     compute_profile: str = DEFAULT_COMPUTE_PROFILE,
     priority: int = 70,
     reason: str = "manual_context_prewarm",
+    force_rebuild: bool = False,
 ) -> dict[str, Any]:
     items = []
     for raw_symbol in symbols:
@@ -78,6 +146,7 @@ def prewarm_ai_structure_contexts(
             source_snapshot_ids=snapshot_set["snapshot_ids"],
             priority=priority,
             reason=reason,
+            force_rebuild=force_rebuild,
         )
         job["missing_levels"] = snapshot_set["missing_levels"]
         items.append(job)
@@ -92,6 +161,7 @@ def enqueue_context_job(
     source_snapshot_ids: list[str],
     priority: int = 70,
     reason: str = "",
+    force_rebuild: bool = False,
 ) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     snapshot_ids = sorted({item for item in source_snapshot_ids if item})
@@ -108,6 +178,32 @@ def enqueue_context_job(
         existing = conn.execute("SELECT * FROM ai_structure_context_jobs WHERE idempotency_key = ?", (key,)).fetchone()
         if existing:
             row = dict(existing)
+            if force_rebuild and row["status"] != "RUNNING":
+                new_job_id = _new_id("v5ctxjob")
+                conn.execute(
+                    """
+                    UPDATE ai_structure_context_jobs
+                       SET job_id = ?,
+                           priority = ?,
+                           status = 'PENDING',
+                           reason = CASE WHEN ? != '' THEN ? ELSE reason END,
+                           retry_count = 0,
+                           next_run_at = ?,
+                           locked_by = '',
+                           locked_at = NULL,
+                           started_at = NULL,
+                           finished_at = NULL,
+                           result_context_id = '',
+                           error_code = '',
+                           error_message = '',
+                           updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (new_job_id, int(priority), reason, reason, now, now, row["id"]),
+                )
+                conn.commit()
+                rebuilt = conn.execute("SELECT * FROM ai_structure_context_jobs WHERE id = ?", (row["id"],)).fetchone()
+                return _job_row(rebuilt, enqueued=True, bumped=False, forced=True)
             if row["status"] in JOB_ACTIVE_STATUSES:
                 conn.execute(
                     """
@@ -186,19 +282,20 @@ def get_latest_ai_structure_context(*, user_id: int, symbol: str) -> dict[str, A
     canonical = normalize_symbol(symbol)
     conn = get_connection()
     try:
-        row = conn.execute(
+        rows = conn.execute(
             """
             SELECT *
               FROM ai_structure_contexts
              WHERE user_id = ? AND symbol = ?
              ORDER BY updated_at DESC, id DESC
-             LIMIT 1
+             LIMIT 12
             """,
             (int(user_id), canonical),
-        ).fetchone()
-        if not row:
+        ).fetchall()
+        if not rows:
             return None
-        context = _context_row(row)
+        contexts = [_context_row(row) for row in rows]
+        context = next((item for item in contexts if reasoning_availability(item).get("ready")), contexts[0])
         context["branches"] = list_scenario_branches(user_id=int(user_id), symbol=canonical, context_id=context["context_id"])
         return context
     finally:
@@ -233,6 +330,7 @@ def get_ai_structure_context_status(
                 "status": status,
                 "stale_reason": stale_reason,
                 "context": latest,
+                "reasoning_status": reasoning_availability(latest),
                 "job": _job_row(job) if job else None,
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -244,6 +342,7 @@ def get_ai_structure_context_status(
                 "status": "pending",
                 "stale_reason": "",
                 "context": None,
+                "reasoning_status": reasoning_availability(None),
                 "job": _job_row(job),
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -254,6 +353,7 @@ def get_ai_structure_context_status(
                 "status": snapshot_gate["status"],
                 "stale_reason": snapshot_gate["stale_reason"],
                 "context": None,
+                "reasoning_status": reasoning_availability(None),
                 "job": snapshot_gate["job"],
                 "missing_levels": snapshot_set["missing_levels"],
             }
@@ -263,11 +363,62 @@ def get_ai_structure_context_status(
             "status": "no_snapshot" if not latest_ids else "pending",
             "stale_reason": "NO_SNAPSHOT" if not latest_ids else "",
             "context": None,
+            "reasoning_status": reasoning_availability(None),
             "job": _job_row(job) if job else None,
             "missing_levels": snapshot_set["missing_levels"],
         }
     finally:
         conn.close()
+
+
+def reasoning_availability(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not context:
+        return {
+            "status": "pending",
+            "ready": False,
+            "title": "AI 推演生成中",
+            "message": "AI 推演正在生成中，完成后会自动展示完整走势推演。",
+            "provider": "",
+            "llm_status": "",
+            "error": "",
+            "context_updated_at": "",
+        }
+    meta = ((context.get("reasoning") or {}).get("reasoning_meta") or context.get("reasoning_meta") or {})
+    provider = str(meta.get("provider") or "")
+    llm_status = str(meta.get("llm_status") or "")
+    if provider == "llm" and llm_status == "success":
+        return {
+            "status": "success",
+            "ready": True,
+            "title": "AI 推演已完成",
+            "message": "",
+            "provider": provider,
+            "llm_status": llm_status,
+            "error": str(meta.get("error") or ""),
+            "context_updated_at": str(context.get("updated_at") or ""),
+        }
+    if llm_status == "failed":
+        status = "failed"
+        title = "AI 推演暂未完成"
+        message = "AI 推演返回异常，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
+    elif provider == "local_fallback" or llm_status in {"not_invoked", ""}:
+        status = "unavailable"
+        title = "AI 推演暂未完成"
+        message = "AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
+    else:
+        status = "pending"
+        title = "AI 推演生成中"
+        message = "AI 推演正在生成中，完成后会自动展示完整走势推演。"
+    return {
+        "status": status,
+        "ready": False,
+        "title": title,
+        "message": message,
+        "provider": provider,
+        "llm_status": llm_status,
+        "error": str(meta.get("error") or ""),
+        "context_updated_at": str(context.get("updated_at") or ""),
+    }
 
 
 def _snapshot_gate_status(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any] | None:
@@ -371,7 +522,33 @@ def claim_next_context_job(
 
 
 async def run_context_job(job: dict[str, Any]) -> dict[str, Any]:
-    return await run_in_threadpool(run_context_job_sync, job)
+    job_id = job["job_id"]
+    try:
+        source_snapshot_ids = json.loads(job.get("source_snapshot_ids_json") or "[]")
+        snapshots = _load_snapshots_by_ids(source_snapshot_ids)
+        if not snapshots:
+            _fail_job(job_id, code="NO_SNAPSHOT", message="No CZSC snapshots available", retryable=False)
+            return {"status": "failed", "error_code": "NO_SNAPSHOT"}
+        source_levels = [item["level"] for item in snapshots]
+        current_set = _latest_snapshot_set(symbol=job["symbol"], levels=source_levels, compute_profile=job["compute_profile"])
+        if set(source_snapshot_ids) != set(current_set["snapshot_ids"]):
+            _skip_job(job_id, reason="STALE_INPUT")
+            return {"status": "skipped", "reason": "STALE_INPUT"}
+
+        context = await build_ai_structure_context_async(
+            user_id=int(job["user_id"]),
+            symbol=job["symbol"],
+            snapshots=snapshots,
+            prompt_version=job["prompt_version"],
+        )
+        saved = save_ai_structure_context(**context)
+        attach_reasoning_run_to_context(saved)
+        branches = upsert_scenario_branches_for_context(saved)
+        _complete_job(job_id, context_id=saved["context_id"])
+        return {"status": "success", "context_id": saved["context_id"], "branch_count": len(branches)}
+    except Exception as exc:
+        _fail_job(job_id, code="CONTEXT_ERROR", message=str(exc)[:300], retryable=True)
+        return {"status": "failed", "error_code": "CONTEXT_ERROR", "error_message": str(exc)[:300]}
 
 
 def run_context_job_sync(job: dict[str, Any]) -> dict[str, Any]:
@@ -425,23 +602,108 @@ def build_ai_structure_context(
         "background_context": background,
         "snapshots": [_compact_snapshot(item) for item in ordered],
     }
-    summary_text = _summary_text(canonical, boundary, position)
+    reasoning_input = build_reasoning_input(
+        symbol=canonical,
+        source_snapshot_ids=source_snapshot_ids,
+        raw_context=raw_context,
+        boundary=boundary,
+        background=background,
+    )
+    reasoning = _generate_reasoning_payload(symbol=canonical, reasoning_input=reasoning_input)
+    return _context_payload(
+        user_id=user_id,
+        symbol=canonical,
+        prompt_version=prompt_version,
+        source_snapshot_ids=source_snapshot_ids,
+        position=position,
+        background=background,
+        boundary=boundary,
+        raw_context=raw_context,
+        reasoning=reasoning,
+    )
+
+
+async def build_ai_structure_context_async(
+    *,
+    user_id: int,
+    symbol: str,
+    snapshots: list[dict[str, Any]],
+    prompt_version: str = PROMPT_VERSION,
+) -> dict[str, Any]:
+    canonical = normalize_symbol(symbol)
+    ordered = sorted(snapshots, key=lambda item: _level_rank(item.get("level")))
+    source_snapshot_ids = [item["snapshot_id"] for item in ordered]
+    position = _position_context(user_id=user_id, symbol=canonical)
+    boundary = _boundary_payload(ordered)
+    background = _background_context(symbol=canonical, boundary=boundary, position=position, snapshots=ordered)
+    raw_context = {
+        "version": prompt_version,
+        "symbol": canonical,
+        "source": "czsc_snapshot",
+        "source_snapshot_ids": source_snapshot_ids,
+        "position_context": position,
+        "background_context": background,
+        "snapshots": [_compact_snapshot(item) for item in ordered],
+    }
+    reasoning_input = build_reasoning_input(
+        symbol=canonical,
+        source_snapshot_ids=source_snapshot_ids,
+        raw_context=raw_context,
+        boundary=boundary,
+        background=background,
+    )
+    reasoning = await _generate_reasoning_payload_async(
+        user_id=int(user_id),
+        symbol=canonical,
+        reasoning_input=reasoning_input,
+    )
+    return _context_payload(
+        user_id=user_id,
+        symbol=canonical,
+        prompt_version=prompt_version,
+        source_snapshot_ids=source_snapshot_ids,
+        position=position,
+        background=background,
+        boundary=boundary,
+        raw_context=raw_context,
+        reasoning=reasoning,
+    )
+
+
+def _context_payload(
+    *,
+    user_id: int,
+    symbol: str,
+    prompt_version: str,
+    source_snapshot_ids: list[str],
+    position: dict[str, Any],
+    background: dict[str, Any],
+    boundary: dict[str, Any],
+    raw_context: dict[str, Any],
+    reasoning: dict[str, Any],
+) -> dict[str, Any]:
+    summary_text = str(reasoning.get("coach_summary") or reasoning.get("front_panel_text") or "") or _summary_text(symbol, boundary, position)
     fingerprint = stable_hash({
         "user_id": int(user_id),
-        "symbol": canonical,
+        "symbol": symbol,
         "prompt_version": prompt_version,
         "source_snapshot_ids": source_snapshot_ids,
         "boundary": boundary,
         "position": position,
         "background": background,
+        "reasoning": reasoning,
     })
     return {
         "user_id": int(user_id),
-        "symbol": canonical,
+        "symbol": symbol,
         "prompt_version": prompt_version,
         "context_fingerprint": fingerprint,
         "source_snapshot_ids": source_snapshot_ids,
         "raw_context": raw_context,
+        "reasoning": reasoning,
+        "main_level": str(reasoning.get("main_level") or ""),
+        "trigger_level": str(reasoning.get("trigger_level") or ""),
+        "coach_summary": str(reasoning.get("coach_summary") or reasoning.get("front_panel_text") or ""),
         "background": background,
         "boundary": boundary,
         "summary_text": summary_text,
@@ -458,9 +720,13 @@ def save_ai_structure_context(
     context_fingerprint: str,
     source_snapshot_ids: list[str],
     raw_context: dict[str, Any],
+    reasoning: dict[str, Any],
     background: dict[str, Any],
     boundary: dict[str, Any],
     summary_text: str,
+    main_level: str = "",
+    trigger_level: str = "",
+    coach_summary: str = "",
     status: str = "fresh",
     stale_reason: str = "",
 ) -> dict[str, Any]:
@@ -473,14 +739,19 @@ def save_ai_structure_context(
             """
             INSERT INTO ai_structure_contexts (
                 context_id, user_id, symbol, prompt_version, context_fingerprint,
-                source_snapshot_ids_json, raw_context_json, background_json,
+                source_snapshot_ids_json, raw_context_json, reasoning_json,
+                main_level, trigger_level, coach_summary, background_json,
                 boundary_json, summary_text, status, stale_reason, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, symbol, context_fingerprint)
             DO UPDATE SET
                 source_snapshot_ids_json = excluded.source_snapshot_ids_json,
                 raw_context_json = excluded.raw_context_json,
+                reasoning_json = excluded.reasoning_json,
+                main_level = excluded.main_level,
+                trigger_level = excluded.trigger_level,
+                coach_summary = excluded.coach_summary,
                 background_json = excluded.background_json,
                 boundary_json = excluded.boundary_json,
                 summary_text = excluded.summary_text,
@@ -496,6 +767,10 @@ def save_ai_structure_context(
                 context_fingerprint,
                 _json(source_snapshot_ids),
                 _json(raw_context),
+                _json(reasoning),
+                main_level,
+                trigger_level,
+                coach_summary,
                 _json(background),
                 _json(boundary),
                 summary_text,
@@ -510,6 +785,300 @@ def save_ai_structure_context(
         return _context_row(row)
     finally:
         conn.close()
+
+
+def _generate_reasoning_payload(*, symbol: str, reasoning_input: dict[str, Any]) -> dict[str, Any]:
+    # P0 先使用本地推演契约兜底，避免 worker 在无 API Key 环境下伪造 LLM 成功。
+    # 后续接入 LLM 时仍必须经过 normalize，保证落库 schema 稳定。
+    fallback = build_local_reasoning_fallback(symbol=symbol, reasoning_input=reasoning_input)
+    return normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+
+
+async def _generate_reasoning_payload_async(
+    *,
+    user_id: int,
+    symbol: str,
+    reasoning_input: dict[str, Any],
+) -> dict[str, Any]:
+    fallback = build_local_reasoning_fallback(symbol=symbol, reasoning_input=reasoning_input)
+    if not _has_configured_ai_native_key(user_id):
+        return normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+    try:
+        from server.services.llm_service import AIModelRoute, LLMService
+
+        service = LLMService()
+        think_route = AIModelRoute(
+            thinking_enabled=True,
+            reasoning_effort="high",
+            timeout_seconds=max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+            max_tokens=max(int(AI_NATIVE_MAX_TOKENS), 12000),
+        )
+        summary_route = AIModelRoute(
+            thinking_enabled=True,
+            reasoning_effort="high",
+            timeout_seconds=max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+            max_tokens=6000,
+        )
+        full_text = await service.infer_ai_native_markdown(
+            FULL_REASONING_SYSTEM_PROMPT,
+            _json(reasoning_input),
+            user_id=user_id,
+            model_route=think_route,
+        )
+        if not str(full_text or "").strip():
+            raise RuntimeError("AI Think full reasoning returned empty content")
+        run = save_reasoning_run(
+            user_id=user_id,
+            symbol=symbol,
+            source_snapshot_ids=reasoning_input.get("source_snapshot_ids") or [],
+            prompt_version=FULL_REASONING_PROMPT_VERSION,
+            think_model=think_route.model_name,
+            summary_model=summary_route.model_name,
+            status="THINK_SUCCESS",
+            full_reasoning_text=str(full_text),
+            summary={},
+            error_message="",
+        )
+        summary_input = {
+            "version": "ai_structure_reasoning_summary_input.v1",
+            "symbol": symbol,
+            "structure_context": reasoning_input,
+            "full_reasoning_text": full_text,
+            "output_contract": SUMMARY_OUTPUT_CONTRACT,
+            "rules": {
+                "summarize_only": True,
+                "do_not_recalculate_structure": True,
+                "do_not_add_new_prices": True,
+                "risk_disclaimer_required": "仅供参考，不构成投资建议",
+            },
+        }
+        summary_text = await service.infer_ai_native_markdown(
+            SUMMARY_SYSTEM_PROMPT,
+            _json(summary_input),
+            user_id=user_id,
+            model_route=summary_route,
+        )
+        from server.services.llm_service import _loads_lenient_json_object
+
+        payload = _loads_lenient_json_object(summary_text)
+        normalized = normalize_reasoning_payload(payload, symbol=symbol, reasoning_input=reasoning_input)
+        if normalized.get("front_panel_text") and not normalized.get("coach_summary"):
+            normalized["coach_summary"] = str(normalized.get("front_panel_text") or "")
+        meta = dict(normalized.get("reasoning_meta") or {})
+        meta.update({
+            "provider": "llm",
+            "llm_status": "success",
+            "pipeline": "think_full_text_then_think_panel_summary",
+            "full_reasoning_run_id": run["run_id"],
+            "full_reasoning_available": True,
+        })
+        normalized["reasoning_meta"] = meta
+        save_reasoning_run(
+            user_id=user_id,
+            symbol=symbol,
+            source_snapshot_ids=reasoning_input.get("source_snapshot_ids") or [],
+            prompt_version=FULL_REASONING_PROMPT_VERSION,
+            think_model=think_route.model_name,
+            summary_model=summary_route.model_name,
+            status="SUCCESS",
+            full_reasoning_text=str(full_text),
+            summary=normalized,
+            error_message="",
+        )
+        return normalized
+    except Exception as exc:
+        save_reasoning_run(
+            user_id=user_id,
+            symbol=symbol,
+            source_snapshot_ids=reasoning_input.get("source_snapshot_ids") or [],
+            prompt_version=FULL_REASONING_PROMPT_VERSION,
+            think_model="",
+            summary_model="",
+            status="FAILED",
+            full_reasoning_text="",
+            summary={},
+            error_message=str(exc)[:300],
+        )
+        degraded = normalize_reasoning_payload(fallback, symbol=symbol, reasoning_input=reasoning_input)
+        meta = dict(degraded.get("reasoning_meta") or {})
+        meta.update({
+            "provider": "local_fallback",
+            "llm_status": "failed",
+            "error": str(exc)[:180],
+        })
+        degraded["reasoning_meta"] = meta
+        return degraded
+
+
+def save_reasoning_run(
+    *,
+    user_id: int,
+    symbol: str,
+    source_snapshot_ids: list[str],
+    prompt_version: str,
+    think_model: str = "",
+    summary_model: str = "",
+    status: str = "PENDING",
+    full_reasoning_text: str = "",
+    summary: dict[str, Any] | None = None,
+    error_message: str = "",
+    context_id: str = "",
+) -> dict[str, Any]:
+    canonical = normalize_symbol(symbol)
+    snapshot_ids = sorted({item for item in source_snapshot_ids if item})
+    source_json = _json(snapshot_ids)
+    run_id = f"v5reason_{stable_hash({'user_id': int(user_id), 'symbol': canonical, 'prompt_version': prompt_version, 'source_snapshot_ids': snapshot_ids})[:16]}"
+    now = now_text()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO ai_structure_reasoning_runs (
+                run_id, user_id, symbol, context_id, source_snapshot_ids_json,
+                prompt_version, think_model, summary_model, status,
+                full_reasoning_text, summary_json, error_message, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, symbol, prompt_version, source_snapshot_ids_json)
+            DO UPDATE SET
+                context_id = CASE WHEN excluded.context_id != '' THEN excluded.context_id ELSE context_id END,
+                think_model = excluded.think_model,
+                summary_model = excluded.summary_model,
+                status = CASE
+                    WHEN status = 'SUCCESS' AND excluded.status = 'FAILED' THEN status
+                    ELSE excluded.status
+                END,
+                full_reasoning_text = CASE
+                    WHEN excluded.full_reasoning_text != '' THEN excluded.full_reasoning_text
+                    ELSE full_reasoning_text
+                END,
+                summary_json = CASE
+                    WHEN status = 'SUCCESS' AND excluded.status = 'FAILED' THEN summary_json
+                    ELSE excluded.summary_json
+                END,
+                error_message = CASE
+                    WHEN status = 'SUCCESS' AND excluded.status = 'FAILED' THEN error_message
+                    ELSE excluded.error_message
+                END,
+                updated_at = excluded.updated_at
+            """,
+            (
+                run_id,
+                int(user_id),
+                canonical,
+                context_id,
+                source_json,
+                prompt_version,
+                think_model,
+                summary_model,
+                status,
+                full_reasoning_text,
+                _json(summary or {}),
+                error_message,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM ai_structure_reasoning_runs WHERE run_id = ?", (run_id,)).fetchone()
+        return _reasoning_run_row(row)
+    finally:
+        conn.close()
+
+
+def attach_reasoning_run_to_context(context: dict[str, Any]) -> None:
+    meta = ((context.get("reasoning") or {}).get("reasoning_meta") or {})
+    run_id = str(meta.get("full_reasoning_run_id") or "")
+    if not run_id:
+        return
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE ai_structure_reasoning_runs
+               SET context_id = ?,
+                   updated_at = ?
+             WHERE run_id = ? AND user_id = ? AND symbol = ?
+            """,
+            (context.get("context_id") or "", now_text(), run_id, int(context.get("user_id") or 0), normalize_symbol(context.get("symbol") or "")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_reasoning_run_for_context(
+    *,
+    user_id: int,
+    symbol: str,
+    context_id: str = "",
+    source_snapshot_ids: list[str] | None = None,
+) -> dict[str, Any] | None:
+    canonical = normalize_symbol(symbol)
+    conn = get_connection()
+    try:
+        if context_id:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM ai_structure_reasoning_runs
+                 WHERE user_id = ? AND symbol = ? AND context_id = ? AND status = 'SUCCESS'
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (int(user_id), canonical, context_id),
+            ).fetchone()
+            if row:
+                return _reasoning_run_row(row)
+        snapshot_ids = sorted({item for item in (source_snapshot_ids or []) if item})
+        if snapshot_ids:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM ai_structure_reasoning_runs
+                 WHERE user_id = ?
+                   AND symbol = ?
+                   AND source_snapshot_ids_json = ?
+                   AND status = 'SUCCESS'
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (int(user_id), canonical, _json(snapshot_ids)),
+            ).fetchone()
+            if row:
+                return _reasoning_run_row(row)
+        if context_id:
+            return None
+        row = conn.execute(
+            """
+            SELECT *
+              FROM ai_structure_reasoning_runs
+             WHERE user_id = ? AND symbol = ? AND status = 'SUCCESS'
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1
+            """,
+            (int(user_id), canonical),
+        ).fetchone()
+        return _reasoning_run_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def _has_configured_ai_native_key(user_id: int) -> bool:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT settings_json FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        settings = json.loads(row["settings_json"]) if row and row["settings_json"] else {}
+    except Exception:
+        settings = {}
+    finally:
+        conn.close()
+    provider = str(settings.get("ai_native_provider") or "deepseek").strip().lower()
+    if provider == "gemini":
+        key = settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+    else:
+        key = settings.get("deepseek_api_key") or os.environ.get("LLM_API_KEY")
+    return bool(key and key != "dummy_key_replace_in_prod")
 
 
 def _latest_snapshot_set(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any]:
@@ -732,8 +1301,16 @@ def _context_row(row) -> dict[str, Any]:
     data = dict(row)
     data["source_snapshot_ids"] = json.loads(data.pop("source_snapshot_ids_json") or "[]")
     data["raw_context"] = json.loads(data.pop("raw_context_json") or "{}")
+    data["reasoning"] = json.loads(data.pop("reasoning_json", "{}") or "{}")
     data["background"] = json.loads(data.pop("background_json") or "{}")
     data["boundary"] = json.loads(data.pop("boundary_json") or "{}")
+    return data
+
+
+def _reasoning_run_row(row) -> dict[str, Any]:
+    data = dict(row)
+    data["source_snapshot_ids"] = json.loads(data.pop("source_snapshot_ids_json") or "[]")
+    data["summary"] = json.loads(data.pop("summary_json") or "{}")
     return data
 
 

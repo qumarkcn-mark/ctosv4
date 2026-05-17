@@ -27,6 +27,8 @@ FORBIDDEN_SNIPPETS = [
     "analyze_structure_with_engine",
     "structure_engine=\"dual\"",
     "structure_engine='dual'",
+    "server.prompts.czsc_agent",
+    "CZSC_SYSTEM_PROMPT",
 ]
 
 

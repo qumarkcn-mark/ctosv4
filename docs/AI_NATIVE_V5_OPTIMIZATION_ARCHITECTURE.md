@@ -266,6 +266,16 @@ Evidence Contract:
 
 - `ai_structure_reasoning.e1_dynamic_growth`
 
+当前实现链路：
+
+```text
+CZSC snapshot / raw BI context
+-> DeepSeek Pro Think full reasoning text
+-> ai_structure_reasoning_runs.full_reasoning_text
+-> DeepSeek Pro Think panel summary JSON
+-> ai_structure_contexts.reasoning_json / coach_summary
+```
+
 E1 约束：
 
 - E1 是 CZSC snapshot 的纯下游 reasoning layer，不是第二结构引擎。
@@ -443,10 +453,12 @@ GET /api/ai-structure/chat/messages?session_id=...
 
 - 回答用户问题，不堆完整结构报告。
 - 引用最新 AI Structure Context。
+- 优先读取已保存的 DeepSeek Pro Think 完整推演原文、摘要、持仓、单票记忆和最近对话，用 Think 生成解释回答。
 - 支持同一只票连续追问，后续问题默认继承同一个 chat session 的 symbol、context 和最近 evidence。
 - 区分空仓、持仓、重仓、成本。
 - 输出 chart focus，让 K 线图高亮对应证据。
 - 不重新计算结构。
+- 不引入新的结构价格；提醒候选只来自同源 evidence，并跳过已经被当前价穿越过的过期价格条件。
 - 不直接给交易指令，只给条件化观察、风险边界和提醒建议。
 - 每次回答必须包含“仅供参考，不构成投资建议”。
 - 意图识别至少覆盖：`buy_window` / `hold_or_exit` / `invalidation` / `reminder` / `explain_structure` / `review`。
@@ -850,7 +862,8 @@ Worker Contract:
 - 最新结构背景
 - 用户自然提问
 - 可转提醒
-- 可追踪分支
+- 走势生长承担当前可跟踪主线
+- 复盘不进入雷达面板，留给复盘页和单票档案
 
 底层：
 

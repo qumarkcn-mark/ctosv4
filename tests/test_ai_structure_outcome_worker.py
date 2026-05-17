@@ -129,8 +129,10 @@ def test_settle_due_scenario_outcomes_waits_for_window(monkeypatch, tmp_path):
 
 def test_due_outcome_symbols_are_user_and_symbol_unique(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
-    build_branches(user_id=1)
-    build_branches(user_id=2)
+    for branch in build_branches(user_id=1):
+        set_branch_created_at(branch["branch_id"], "2026-05-14T10:00:00+08:00")
+    for branch in build_branches(user_id=2):
+        set_branch_created_at(branch["branch_id"], "2026-05-14T10:00:00+08:00")
 
     symbols = outcome_settlement_service.list_due_outcome_symbols(
         windows=("same_day",),
@@ -140,9 +142,32 @@ def test_due_outcome_symbols_are_user_and_symbol_unique(monkeypatch, tmp_path):
     assert symbols == ["sh.600519"]
 
 
+def test_same_day_outcome_waits_for_observation_age(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    branches = build_branches()
+    branch = branches[0]
+    keep_only_branch(branch["branch_id"])
+    set_branch_created_at(branch["branch_id"], "2026-05-14T14:50:00+08:00")
+
+    early = outcome_settlement_service.settle_due_scenario_outcomes(
+        {"sh600519": {"price": 10.5}},
+        windows=("same_day",),
+        checked_at="2026-05-14T15:05:00+08:00",
+    )
+    due = outcome_settlement_service.settle_due_scenario_outcomes(
+        {"sh600519": {"price": 10.5}},
+        windows=("same_day",),
+        checked_at="2026-05-14T15:20:00+08:00",
+    )
+
+    assert early["count"] == 0
+    assert due["count"] == 1
+
+
 def test_outcome_worker_tick_fetches_prices_and_settles(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
-    build_branches()
+    for branch in build_branches():
+        set_branch_created_at(branch["branch_id"], "2026-05-14T10:00:00+08:00")
 
     async def fake_prices(symbols):
         assert symbols == ["sh.600519"]

@@ -126,6 +126,10 @@ def save_scenario_branch(
 
 
 def _derive_branches(context: dict[str, Any]) -> list[dict[str, Any]]:
+    reasoning_branches = _derive_reasoning_branches(context)
+    if reasoning_branches:
+        return reasoning_branches
+
     boundary = context.get("boundary") or {}
     position = (context.get("raw_context") or {}).get("position_context") or {}
     base = {
@@ -196,6 +200,49 @@ def _derive_branches(context: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_refs": _refs(primary, ["active_center", "invalidation_line"]),
         })
     return branches
+
+
+def _derive_reasoning_branches(context: dict[str, Any]) -> list[dict[str, Any]]:
+    reasoning = context.get("reasoning") or {}
+    raw_branches = reasoning.get("scenario_branches") or []
+    if not isinstance(raw_branches, list):
+        return []
+    base = {
+        "user_id": int(context["user_id"]),
+        "context_id": context["context_id"],
+        "symbol": context["symbol"],
+        "source_context_version": reasoning.get("version") or context.get("prompt_version") or "",
+    }
+    branches = []
+    for index, item in enumerate(raw_branches):
+        if not isinstance(item, dict):
+            continue
+        trigger = item.get("trigger_condition") if isinstance(item.get("trigger_condition"), dict) else {}
+        invalidate = item.get("invalidate_condition") if isinstance(item.get("invalidate_condition"), dict) else {}
+        if not trigger or not invalidate:
+            continue
+        branch_type = str(item.get("branch_type") or f"reasoning_branch_{index + 1}")
+        branches.append({
+            **base,
+            "branch_type": branch_type,
+            "main_level": str(item.get("main_level") or reasoning.get("main_level") or ""),
+            "trigger_level": str(item.get("trigger_level") or reasoning.get("trigger_level") or ""),
+            "trigger_condition": trigger,
+            "invalidate_condition": invalidate,
+            "next_recheck": str(item.get("next_recheck") or ""),
+            "evidence_refs": _reasoning_refs(item),
+        })
+    return branches
+
+
+def _reasoning_refs(item: dict[str, Any]) -> list[str]:
+    refs = item.get("evidence_refs")
+    if isinstance(refs, list):
+        return [str(ref) for ref in refs if ref]
+    focus = item.get("chart_focus")
+    if isinstance(focus, list):
+        return [str(ref) for ref in focus if ref]
+    return []
 
 
 def _primary_boundary(boundary: dict[str, Any]) -> dict[str, Any] | None:

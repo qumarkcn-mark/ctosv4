@@ -118,6 +118,9 @@ def test_structure_view_service_returns_chart_ready_geometry(monkeypatch, tmp_pa
     assert view["centers"][0]["active"] is True
     assert view["active_center"]["begin_index"] == 0
     assert view["active_center"]["end_index"] == 2
+    assert view["active_center"]["begin_bar_time"] == "2026-05-10"
+    assert view["active_center"]["end_bar_time"] == "2026-05-12"
+    assert view["active_center"]["exit_status"] == "open"
     assert view["active_center"]["raw_begin_index"] == 0
     assert view["active_center"]["raw_end_index"] == 2
 
@@ -138,24 +141,34 @@ def test_structure_view_center_uses_entry_and_exit_bar_boundaries(monkeypatch, t
                 {"time": "2026-05-11", "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.3},
                 {"time": "2026-05-12", "open": 10.3, "high": 10.8, "low": 10.2, "close": 10.6},
                 {"time": "2026-05-13", "open": 10.6, "high": 10.9, "low": 10.4, "close": 10.7},
-                {"time": "2026-05-14", "open": 10.7, "high": 11.3, "low": 10.6, "close": 11.2},
-                {"time": "2026-05-15", "open": 11.2, "high": 11.5, "low": 11.0, "close": 11.4},
+                {"time": "2026-05-14", "open": 10.7, "high": 10.8, "low": 10.4, "close": 10.7},
+                {"time": "2026-05-15", "open": 10.7, "high": 11.2, "low": 10.7, "close": 11.0},
+                {"time": "2026-05-16", "open": 11.0, "high": 11.5, "low": 11.0, "close": 11.4},
             ],
             "bis": [
                 {
                     "direction": "up",
                     "is_up": True,
                     "is_sure": True,
-                    "x0": "2026-05-10",
-                    "x1": "2026-05-14",
+                    "x0": "2026-05-11",
+                    "x1": "2026-05-13",
                     "y0": 10.0,
-                    "y1": 11.2,
-                }
+                    "y1": 10.7,
+                },
+                {
+                    "direction": "up",
+                    "is_up": True,
+                    "is_sure": True,
+                    "x0": "2026-05-14",
+                    "x1": "2026-05-16",
+                    "y0": 10.7,
+                    "y1": 11.4,
+                },
             ],
             "bi_zhongshus": [
                 {
-                    "begin_date": "2026-05-10",
-                    "end_date": "2026-05-14",
+                    "begin_date": "2026-05-13",
+                    "end_date": "2026-05-16",
                     "zd": 10.2,
                     "zg": 10.9,
                     "zz": 10.55,
@@ -173,10 +186,68 @@ def test_structure_view_center_uses_entry_and_exit_bar_boundaries(monkeypatch, t
     view = get_structure_view(symbol="sh600519", level="day")
 
     center = view["centers"][0]
-    assert center["raw_begin_index"] == 0
-    assert center["raw_end_index"] == 4
+    assert center["raw_begin_index"] == 3
+    assert center["raw_end_index"] == 6
+    assert center["begin_index"] == 1
+    assert center["end_index"] == 6
+    assert center["begin_bar_time"] == "2026-05-11"
+    assert center["end_bar_time"] == "2026-05-16"
+    assert center["exit_status"] == "closed"
+
+
+def test_structure_view_active_center_extends_to_latest_bar_when_not_fully_left(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-active-center-open",
+        data_as_of="2026-05-16",
+        snapshot_payload={
+            "level": "day",
+            "price": 10.7,
+            "klines": [
+                {"time": "2026-05-10", "open": 9.8, "high": 10.1, "low": 9.7, "close": 10.0},
+                {"time": "2026-05-11", "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.3},
+                {"time": "2026-05-12", "open": 10.3, "high": 10.8, "low": 10.2, "close": 10.6},
+                {"time": "2026-05-13", "open": 10.6, "high": 10.9, "low": 10.4, "close": 10.7},
+                {"time": "2026-05-14", "open": 10.7, "high": 11.1, "low": 10.6, "close": 10.8},
+            ],
+            "bis": [
+                {
+                    "direction": "up",
+                    "is_up": True,
+                    "is_sure": True,
+                    "x0": "2026-05-10",
+                    "x1": "2026-05-13",
+                    "y0": 10.0,
+                    "y1": 10.7,
+                }
+            ],
+            "bi_zhongshus": [],
+            "active_zhongshu": {
+                "begin_date": "2026-05-13",
+                "end_date": "2026-05-13",
+                "zd": 10.2,
+                "zg": 10.9,
+                "zz": 10.55,
+                "bi_count": 3,
+                "is_valid": True,
+            },
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    center = view["active_center"]
     assert center["begin_index"] == 1
     assert center["end_index"] == 4
+    assert center["begin_bar_time"] == "2026-05-11"
+    assert center["end_bar_time"] == "2026-05-14"
+    assert center["exit_status"] == "open"
 
 
 def test_structure_view_api_returns_public_snapshot_view(monkeypatch, tmp_path):

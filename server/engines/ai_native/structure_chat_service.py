@@ -7,16 +7,22 @@ CZSC, old radar, or any heavy structure path.
 from __future__ import annotations
 
 import json
+import asyncio
 import uuid
 from typing import Any
 
+from server.config import AI_NATIVE_LLM_TIMEOUT
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, now_text, stable_hash
 from server.engines.ai_native.structure_context_service import (
+    _has_configured_ai_native_key,
     get_ai_structure_context_status,
     get_latest_ai_structure_context,
+    get_reasoning_run_for_context,
+    reasoning_availability,
 )
+from server.engines.ai_native.unified_reasoning_service import UNIFIED_FULL_TEXT_VERSION
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
@@ -43,6 +49,14 @@ def answer_structure_question(
             question=question,
             session_id=session_id,
         )
+    if not _is_llm_reasoning_ready(context):
+        return _answer_reasoning_unavailable(
+            user_id=user_id,
+            symbol=canonical,
+            question=question,
+            session_id=session_id,
+            context=context,
+        )
     session = upsert_chat_session(
         user_id=user_id,
         symbol=canonical,
@@ -60,13 +74,26 @@ def answer_structure_question(
     chart_focus = chart_focus_for_intent(context, intent_type)
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
+    runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
         if intent_type == "review"
         else None
     )
-    answer = _build_answer(
+    answer = _build_ai_answer_from_full_reasoning(
+        user_id=user_id,
+        symbol=canonical,
+        question=question,
+        intent_type=intent_type,
+        context=context,
+        chart_focus=chart_focus,
+        runtime_context=runtime_context,
+        data_status=data_status,
+        memory_context=memory_context,
+        review_context=review_context,
+        conversation_context=conversation_context,
+    ) or _build_answer(
         question=question,
         intent_type=intent_type,
         context=context,
@@ -84,6 +111,7 @@ def answer_structure_question(
         "intent_type": intent_type,
         "referenced_boundaries": answer["referenced_boundaries"],
         "chart_focus": chart_focus,
+        "runtime_context": runtime_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
         "memory_context": memory_context,
@@ -101,6 +129,64 @@ def answer_structure_question(
         answer_payload=payload,
         evidence_refs=chart_focus["evidence_ids"],
         reminder_candidates=reminder_candidates,
+    )
+    payload["message_id"] = message["message_id"]
+    return payload
+
+
+def _answer_reasoning_unavailable(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    session_id: str | None = None,
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context.get("context_id") or "",
+        session_id=session_id,
+    )
+    if not session:
+        return None
+    conversation_context = get_recent_conversation_context(
+        user_id=user_id,
+        session_id=session["session_id"],
+    )
+    intent_type = classify_intent(question, conversation_context=conversation_context)
+    data_status = _context_data_status(user_id=user_id, symbol=symbol, context=context)
+    answer = _build_reasoning_unavailable_answer(context)
+    payload = {
+        "session_id": session["session_id"],
+        "context_id": context.get("context_id") or "",
+        "answer": answer,
+        "coach_answer": answer,
+        "intent_type": intent_type,
+        "referenced_boundaries": [],
+        "chart_focus": {
+            "level": "",
+            "snapshot_id": "",
+            "evidence_ids": [],
+            "prices": [],
+        },
+        "suggested_reminders": [],
+        "data_status": data_status,
+        "memory_context": get_memory_context_for_chat(user_id=user_id, symbol=symbol),
+        "review_context": None,
+        "conversation_context": conversation_context,
+        "risk_disclaimer": RISK_DISCLAIMER,
+    }
+    message = save_chat_message(
+        user_id=user_id,
+        symbol=symbol,
+        session_id=session["session_id"],
+        context_id=context.get("context_id") or "",
+        question_text=question,
+        intent_type=intent_type,
+        answer_payload=payload,
+        evidence_refs=[],
+        reminder_candidates=[],
     )
     payload["message_id"] = message["message_id"]
     return payload
@@ -167,6 +253,15 @@ def _answer_without_context(
     return payload
 
 
+def _is_llm_reasoning_ready(context: dict[str, Any]) -> bool:
+    return bool(reasoning_availability(context).get("ready"))
+
+
+def _build_reasoning_unavailable_answer(context: dict[str, Any]) -> str:
+    status = reasoning_availability(context)
+    return status.get("message") or "AI 推演暂未完成，当前不展示本地算法边界。系统会在下一次刷新时重新生成完整推演。"
+
+
 def classify_intent(question: str, conversation_context: dict[str, Any] | None = None) -> str:
     text = (question or "").strip().lower()
     if _is_out_of_scope_question(text):
@@ -179,6 +274,12 @@ def classify_intent(question: str, conversation_context: dict[str, Any] | None =
         return "hold_or_exit"
     if any(token in text for token in ("提醒", "盯", "到了叫", "到价")):
         return "reminder"
+    if any(token in text for token in ("背驰", "背离")):
+        return "divergence"
+    if any(token in text for token in ("共振", "级别", "大级别", "小级别", "a+小b", "a＋小b")):
+        return "resonance"
+    if any(token in text for token in ("走势", "生长", "怎么走", "演化", "推演", "发展")):
+        return "trend_growth"
     if any(token in text for token in ("为什么", "解释", "结构", "中枢")):
         return "explain_structure"
     followup_intent = _followup_intent(text, conversation_context)
@@ -365,6 +466,121 @@ def save_chat_message(
         conn.close()
 
 
+def _build_ai_answer_from_full_reasoning(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    intent_type: str,
+    context: dict[str, Any],
+    chart_focus: dict[str, Any],
+    runtime_context: dict[str, Any] | None = None,
+    data_status: dict[str, Any] | None = None,
+    memory_context: dict[str, Any] | None = None,
+    review_context: dict[str, Any] | None = None,
+    conversation_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not _has_configured_ai_native_key(user_id):
+        return None
+    run = get_reasoning_run_for_context(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context.get("context_id") or "",
+        source_snapshot_ids=context.get("source_snapshot_ids") or [],
+    )
+    full_text = str((run or {}).get("full_reasoning_text") or "").strip()
+    if not full_text:
+        return None
+    is_unified = str((run or {}).get("prompt_version") or "") == UNIFIED_FULL_TEXT_VERSION
+    if is_unified:
+        prompt = {
+            "version": "unified_reasoning_chat.v1",
+            "symbol": symbol,
+            "question": question,
+            "full_reasoning_text": full_text,
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "memory_context": memory_context or {},
+            "conversation_context": conversation_context or {},
+            "chart_focus": chart_focus,
+        }
+        system_prompt = (
+            "你是缠中说禅，用户的盯盘搭档。"
+            "根据完整推演和用户问题，聚焦这一次问题，回答该怎么看、怎么做、错了怎么办。"
+            f"{RISK_DISCLAIMER}。"
+        )
+    else:
+        prompt = {
+            "version": "ai_structure_chat_from_full_reasoning.v1",
+            "symbol": symbol,
+            "question": question,
+            "intent_type": intent_type,
+            "full_reasoning_text": full_text,
+            "summary": {
+                "coach_summary": context.get("coach_summary") or "",
+                "reasoning": context.get("reasoning") or {},
+            },
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "memory_context": memory_context or {},
+            "review_context": review_context or {},
+            "conversation_context": conversation_context or {},
+            "data_status": data_status or {},
+            "runtime_context": runtime_context or {},
+            "chart_focus": chart_focus,
+        }
+        prompt["rules"] = {
+            "answer_from_full_reasoning_only": True,
+            "do_not_recalculate_structure": True,
+            "do_not_add_new_price_levels": True,
+            "no_direct_trade_instruction": True,
+            "required_risk_disclaimer": RISK_DISCLAIMER,
+        }
+        system_prompt = (
+            "你是 CT-OS AI Native V5 的问答解释层。"
+            "你只能根据已保存的完整推演全文、摘要、持仓和历史记忆回答。"
+            "不要重新计算中枢、笔、背驰或级别结构，不要引入新价格。"
+            "回答用户真实问题，给条件化观察、风险边界、提醒/复盘建议。"
+            "不要直接给买入、卖出、满仓、清仓指令。"
+            f"结尾必须包含：{RISK_DISCLAIMER}"
+        )
+    try:
+        from server.services.llm_service import AIModelRoute, LLMService
+        try:
+            asyncio.get_running_loop()
+            return None
+        except RuntimeError:
+            pass
+        answer_text = asyncio.run(
+            LLMService().infer_ai_native_markdown(
+                system_prompt,
+                _json(prompt),
+                user_id=user_id,
+                model_route=AIModelRoute(
+                    model_name="deepseek-v4-flash" if is_unified else "",
+                    thinking_enabled=False if is_unified else True,
+                    reasoning_effort="high",
+                    timeout_seconds=45 if is_unified else max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+                    max_tokens=1200 if is_unified else 2400,
+                ),
+            )
+        )
+    except Exception:
+        return None
+    answer_text = str(answer_text or "").strip()
+    if not answer_text:
+        return None
+    if RISK_DISCLAIMER not in answer_text:
+        answer_text = f"{answer_text.rstrip('。')}。{RISK_DISCLAIMER}"
+    answer_text = _apply_memory_warning(answer_text, memory_context)
+    return {
+        "coach_answer": answer_text,
+        "referenced_boundaries": _referenced_boundaries(
+            chart_focus.get("level") or "",
+            _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zg")),
+            _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zd")),
+        ),
+    }
+
+
 def _build_answer(
     *,
     question: str,
@@ -383,6 +599,12 @@ def _build_answer(
     zd = _num(center.get("zd"))
     background_note = _background_note(context)
     freshness_note = _freshness_note(data_status)
+    reasoning = context.get("reasoning") or {}
+    trend_growth = reasoning.get("trend_growth") or {}
+    divergence_view = reasoning.get("divergence_view") or {}
+    resonance_view = reasoning.get("resonance_view") or {}
+    coach_summary = str(context.get("coach_summary") or reasoning.get("coach_summary") or "").strip()
+    reasoning_intro = _reasoning_intro(reasoning)
     position = (context.get("raw_context") or {}).get("position_context") or {}
     holding_text = "你现在有持仓，先把防守线看清楚" if position.get("has_position") else "你现在是空仓，重点是等触发条件而不是追问结论"
     if intent_type == "out_of_scope":
@@ -400,13 +622,15 @@ def _build_answer(
         coach = f"{freshness_note}{symbol} 目前结构边界不足，无法判断。先等 CZSC 快照刷新出有效中枢，再讨论观察窗口。{RISK_DISCLAIMER}"
         return {"coach_answer": coach, "referenced_boundaries": []}
     if intent_type == "invalidation":
+        failure_path = str(trend_growth.get("failure_path") or "").strip()
         coach = (
             f"{freshness_note}这只票先看 {level} 级别下沿 {zd:.2f}。如果有效跌破这里，当前观察分支就要降级；"
-            f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。{RISK_DISCLAIMER}"
+            f"重新站回 {zg:.2f} 上方，弱化信号才算缓和。"
+            f"{failure_path}{RISK_DISCLAIMER}"
         )
     elif intent_type == "hold_or_exit":
         coach = (
-            f"{freshness_note}{holding_text}：{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
+            f"{freshness_note}{holding_text}：{reasoning_intro}{level} 级别 {zd:.2f} 是当前防守边界，{zg:.2f} 是重新转强观察线。"
             f"我不能替你下卖出结论，但可以把跌破 {zd:.2f} 设成复核提醒。{RISK_DISCLAIMER}"
         )
     elif intent_type == "reminder":
@@ -415,10 +639,36 @@ def _build_answer(
             f"提醒只帮助你复核，不代表交易指令。{RISK_DISCLAIMER}"
         )
     elif intent_type == "explain_structure":
+        summary = str(reasoning.get("structure_summary") or coach_summary or "").strip()
         coach = (
-            f"{freshness_note}当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
+            f"{freshness_note}{summary}当前回答只引用 {level} 级别中枢：上沿 {zg:.2f}、下沿 {zd:.2f}。"
             f"站上上沿是观察增强，跌破下沿是观察失效；中间区域不适合给确定性判断。"
             f"{background_note}{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "trend_growth":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"走势生长路径：{trend_growth.get('growth_path') or '当前推演里还没有足够清晰的生长路径。'}"
+            f"下一步确认：{trend_growth.get('next_confirmation') or '等待触发级别收线确认。'}"
+            f"失败路径：{trend_growth.get('failure_path') or f'跌破 {zd:.2f} 后复核分支失效。'}"
+            f"{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "divergence":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"背驰观察：{divergence_view.get('status') or 'unclear'}，级别 {divergence_view.get('level') or level}。"
+            f"{divergence_view.get('evidence') or '当前推演没有确认背驰，只能继续观察离开段和回拉段的力度。'}"
+            f"{divergence_view.get('risk_note') or '若离开后不能延续，需要在触发级别复核潜在背驰。'}"
+            f"{RISK_DISCLAIMER}"
+        )
+    elif intent_type == "resonance":
+        coach = (
+            f"{freshness_note}{reasoning_intro}"
+            f"级别关系：{resonance_view.get('higher_level_context') or f'{level} 级别中枢边界'}；"
+            f"触发观察：{resonance_view.get('lower_level_trigger') or f'{level} 级别承接'}。"
+            f"共振类型：{resonance_view.get('resonance_type') or 'unclear'}。"
+            f"{resonance_view.get('conflict_note') or '若背景和结构冲突，仍以触发线和失败线为纪律边界。'}"
+            f"{RISK_DISCLAIMER}"
         )
     elif intent_type == "review":
         coach = _review_answer(
@@ -428,8 +678,10 @@ def _build_answer(
             freshness_note=freshness_note,
         )
     else:
+        branch_text = _branch_answer_text(reasoning)
         coach = (
-            f"{freshness_note}不能直接回答“现在买”。更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
+            f"{freshness_note}不能直接回答“现在买”。{reasoning_intro}{branch_text}"
+            f"更稳的说法是：只有站上 {level} 级别上沿 {zg:.2f}，"
             f"并且回踩不跌回 {zd:.2f} 下方，才进入观察窗口；跌破 {zd:.2f} 就先不看这条分支。"
             f"{background_note}{RISK_DISCLAIMER}"
         )
@@ -515,6 +767,35 @@ def _referenced_boundaries(level: str, zg: float, zd: float) -> list[dict[str, A
     return items
 
 
+def _reasoning_intro(reasoning: dict[str, Any]) -> str:
+    main_level = str(reasoning.get("main_level") or "")
+    trigger_level = str(reasoning.get("trigger_level") or "")
+    summary = str(reasoning.get("structure_summary") or "").strip()
+    parts = []
+    if main_level or trigger_level:
+        parts.append(f"当前推演主级别 {main_level or '未知'}，触发级别 {trigger_level or main_level or '未知'}。")
+    if summary:
+        parts.append(summary)
+    return "".join(parts)
+
+
+def _branch_answer_text(reasoning: dict[str, Any]) -> str:
+    branches = reasoning.get("scenario_branches") or []
+    if not isinstance(branches, list) or not branches:
+        return ""
+    first = next((item for item in branches if isinstance(item, dict)), None)
+    if not first:
+        return ""
+    title = str(first.get("title") or "").strip()
+    trigger = (first.get("trigger_condition") or {}) if isinstance(first.get("trigger_condition"), dict) else {}
+    invalidate = (first.get("invalidate_condition") or {}) if isinstance(first.get("invalidate_condition"), dict) else {}
+    trigger_label = str(trigger.get("label") or "").strip()
+    invalidate_label = str(invalidate.get("label") or "").strip()
+    if not (title or trigger_label or invalidate_label):
+        return ""
+    return f"当前优先分支：{title or '结构观察'}。{trigger_label}{invalidate_label}"
+
+
 def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) -> dict[str, Any]:
     levels = list(DEFAULT_LEVELS)
     status = get_ai_structure_context_status(user_id=user_id, symbol=symbol, levels=levels or None)
@@ -522,7 +803,49 @@ def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) 
         "status": status.get("status") or "unknown",
         "stale_reason": status.get("stale_reason") or "",
         "missing_levels": status.get("missing_levels") or [],
+        "reasoning_status": status.get("reasoning_status") or reasoning_availability(context or None),
         "context_id": context.get("context_id") or "",
+    }
+
+
+def _chat_runtime_context(
+    *,
+    context: dict[str, Any],
+    data_status: dict[str, Any],
+    chart_focus: dict[str, Any],
+) -> dict[str, Any]:
+    level = chart_focus.get("level") or ((context.get("boundary") or {}).get("primary_level") or "")
+    levels = (context.get("boundary") or {}).get("levels") or {}
+    level_item = levels.get(level) or {}
+    position = (context.get("raw_context") or {}).get("position_context") or {}
+    meta = ((context.get("reasoning") or {}).get("reasoning_meta") or context.get("reasoning_meta") or {})
+    current_price = _num(level_item.get("current_price"))
+    price_source = f"snapshot:{level}" if current_price > 0 else ""
+    if current_price <= 0:
+        current_price = _num(position.get("current_price"))
+        price_source = "position_context" if current_price > 0 else ""
+    if current_price <= 0:
+        current_price = _num(meta.get("price"))
+        price_source = "reasoning_meta" if current_price > 0 else ""
+    return {
+        "current_price": current_price,
+        "price_source": price_source,
+        "focus_level": level,
+        "context_id": context.get("context_id") or "",
+        "context_updated_at": context.get("updated_at") or "",
+        "reasoning_status": data_status.get("reasoning_status") or reasoning_availability(context or None),
+        "data_status": {
+            "status": data_status.get("status") or "unknown",
+            "stale_reason": data_status.get("stale_reason") or "",
+            "missing_levels": data_status.get("missing_levels") or [],
+        },
+        "think": {
+            "ready": bool((data_status.get("reasoning_status") or {}).get("ready")),
+            "provider": str(meta.get("provider") or ""),
+            "llm_status": str(meta.get("llm_status") or ""),
+            "full_reasoning_available": bool(meta.get("full_reasoning_available")),
+            "full_reasoning_run_id": str(meta.get("full_reasoning_run_id") or ""),
+        },
     }
 
 
@@ -636,7 +959,8 @@ def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_foc
     candidates = []
     zg = _num(center.get("zg"))
     zd = _num(center.get("zd"))
-    if intent_type in {"buy_window", "reminder", "explain_structure"} and zg > 0:
+    current_price = _num(level_item.get("current_price"))
+    if intent_type in {"buy_window", "reminder", "explain_structure"} and zg > 0 and (current_price <= 0 or current_price < zg):
         candidates.append({
             "type": "price_cross",
             "direction": "ABOVE",
@@ -646,7 +970,7 @@ def _reminder_candidates(*, intent_type: str, context: dict[str, Any], chart_foc
             "message": f"站上 {level} 级别中枢上沿后复核观察窗口",
             "risk_disclaimer": RISK_DISCLAIMER,
         })
-    if intent_type in {"invalidation", "hold_or_exit", "reminder", "buy_window"} and zd > 0:
+    if intent_type in {"invalidation", "hold_or_exit", "reminder", "buy_window"} and zd > 0 and (current_price <= 0 or current_price > zd):
         candidates.append({
             "type": "price_cross",
             "direction": "BELOW",

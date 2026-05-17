@@ -230,6 +230,7 @@
 }
 
 .stock-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -262,21 +263,74 @@
   color: var(--text-tertiary, #5a5c66);
 }
 
-.stock-remove {
+.stock-actions {
   display: none;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+}
+
+.stock-item:hover .stock-actions,
+.stock-item:focus-within .stock-actions {
+  display: inline-flex;
+}
+
+.stock-move,
+.stock-remove {
   background: none;
   border: none;
   color: var(--text-tertiary, #5a5c66);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   padding: 0 2px;
   line-height: 1;
+  min-width: 16px;
+  height: 18px;
+  border-radius: 3px;
 }
 
-.stock-item:hover .stock-remove {
-  display: block;
+.stock-move:hover {
+  color: var(--action-gold, #f0b90b);
+  background: rgba(240,185,11,0.10);
+}
+
+.stock-move:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .stock-remove:hover {
   color: var(--warning-red, #e74c3c);
+  background: rgba(231,76,60,0.10);
+}
+
+.stock-move-menu {
+  position: absolute;
+  top: 22px;
+  right: 18px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  background: var(--bg-elevated, #1a1b24);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+}
+
+.stock-move-menu button {
+  min-height: 24px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary, #8b8d97);
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.stock-move-menu button:hover {
+  color: var(--action-gold, #f0b90b);
+  background: rgba(240,185,11,0.10);
 }

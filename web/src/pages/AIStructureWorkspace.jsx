@@ -4,7 +4,7 @@ import { apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchlistPanel from '../components/WatchlistPanel.jsx'
 import AIStructureCoachPanel from '../features/aiStructure/AIStructureCoachPanel.jsx'
-import BaseKlineChart from '../features/kline/BaseKlineChart.jsx'
+import PriceEvidenceView from '../features/kline/PriceEvidenceView.jsx'
 import { readLastViewedSymbol } from '../utils/symbolStorage.js'
 import './AIStructureWorkspace.css'
 
@@ -71,6 +71,19 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
     }
   }, [onSymbolChange])
 
+  const handleAddCurrentToWatchlist = useCallback(async () => {
+    if (!symbol || !watchlistRef.current) return { ok: false, message: '自选股还没加载完' }
+    const groups = watchlistRef.current.getGroupNames?.() || []
+    const groupName = groups[0]
+    if (!groupName) return { ok: false, message: '自选股还没加载完' }
+    await watchlistRef.current.addToGroup(groupName, {
+      symbol,
+      name: symbolName || symbol,
+    })
+    void loadWorkspace()
+    return { ok: true, message: `已加入 ${groupName}` }
+  }, [loadWorkspace, symbol, symbolName])
+
   return (
     <div className="ai-workspace">
       <aside className="ai-workspace-watchlist">
@@ -103,10 +116,11 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
         </div>
 
         <div className="ai-workspace-body">
-          <BaseKlineChart
+          <PriceEvidenceView
             symbol={symbol}
             symbolName={symbolName}
             chartContext={aiEvidenceContext}
+            onAddToWatchlist={handleAddCurrentToWatchlist}
           />
           <aside className="ai-workspace-coach">
             <AIStructureCoachPanel

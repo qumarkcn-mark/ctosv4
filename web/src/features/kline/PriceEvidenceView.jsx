@@ -14,7 +14,11 @@ import {
   readKlinePreferences,
   writeKlinePreference,
 } from './klinePreferences.js'
-import './BaseKlineChart.css'
+import {
+  buildKlineTimeIndex,
+  resolveOverlayIndex,
+} from './klineOverlayProjection.js'
+import './PriceEvidenceView.css'
 
 const KLINE_COUNT = 1200
 const CANDLE_PANE_ID = 'candle_pane'
@@ -33,7 +37,7 @@ const SUB_INDICATORS = [
   { value: 'NONE', label: '无' },
 ]
 
-export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
+export default function PriceEvidenceView({ symbol, symbolName, chartContext, onAddToWatchlist }) {
   const chartHostRef = useRef(null)
   const chartRef = useRef(null)
   const latestBarsRef = useRef([])
@@ -67,6 +71,8 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 })
   const [structureStatus, setStructureStatus] = useState('idle')
   const [momentumStatus, setMomentumStatus] = useState('idle')
+  const [addingToWatchlist, setAddingToWatchlist] = useState(false)
+  const [watchlistMessage, setWatchlistMessage] = useState('')
   const activePeriod = useMemo(() => getKlinePeriod(period), [period])
 
   const updatePriceLine = useCallback(() => {
@@ -121,57 +127,76 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
       height: host.clientHeight,
       range: chart.getVisibleRange(),
     }
+    const timeIndex = buildKlineTimeIndex(bars)
     const bis = (view.bis || [])
-      .filter((item) => isStructureItemVisible(item.start_index, item.end_index, viewport.range, 2))
       .map((item) => {
+      const startIndex = resolveOverlayIndex(timeIndex, item.start_timestamp, item.start_time, item.start_index)
+      const endIndex = resolveOverlayIndex(timeIndex, item.end_timestamp, item.end_time, item.end_index)
+      if (!isStructureItemVisible(startIndex, endIndex, viewport.range, 2)) return null
       const start = chart.convertToPixel(
-        { dataIndex: item.start_index, value: item.start_price },
+        { dataIndex: startIndex, value: item.start_price },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       const end = chart.convertToPixel(
-        { dataIndex: item.end_index, value: item.end_price },
+        { dataIndex: endIndex, value: item.end_price },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(start) || !validPoint(end)) return null
       const clipped = clipLineToViewport(start, end, viewport)
       if (!clipped) return null
-      return { ...item, start: clipped.start, end: clipped.end }
+      return { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
     }).filter(Boolean)
     const segments = (view.segments || [])
-      .filter((item) => isStructureItemVisible(item.start_index, item.end_index, viewport.range, 2))
       .map((item) => {
+        const startIndex = resolveOverlayIndex(timeIndex, item.start_timestamp, item.start_time, item.start_index)
+        const endIndex = resolveOverlayIndex(timeIndex, item.end_timestamp, item.end_time, item.end_index)
+        if (!isStructureItemVisible(startIndex, endIndex, viewport.range, 2)) return null
         const start = chart.convertToPixel(
-          { dataIndex: item.start_index, value: item.start_price },
+          { dataIndex: startIndex, value: item.start_price },
           { paneId: CANDLE_PANE_ID, absolute: false }
         )
         const end = chart.convertToPixel(
-          { dataIndex: item.end_index, value: item.end_price },
+          { dataIndex: endIndex, value: item.end_price },
           { paneId: CANDLE_PANE_ID, absolute: false }
         )
         if (!validPoint(start) || !validPoint(end)) return null
         const clipped = clipLineToViewport(start, end, viewport)
         if (!clipped) return null
-        return { ...item, start: clipped.start, end: clipped.end }
+        return { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
       })
       .filter(Boolean)
     const centers = (view.centers || [])
-      .filter((item) => isStructureItemVisible(item.begin_index, item.end_index, viewport.range, 2))
       .map((item) => {
+      const beginIndex = resolveOverlayIndex(
+        timeIndex,
+        item.begin_bar_timestamp || item.begin_timestamp,
+        item.begin_bar_time || item.begin_time,
+        item.begin_index
+      )
+      const endIndex = resolveOverlayIndex(
+        timeIndex,
+        item.end_bar_timestamp || item.end_timestamp,
+        item.end_bar_time || item.end_time,
+        item.end_index
+      )
+      if (!isStructureItemVisible(beginIndex, endIndex, viewport.range, 2)) return null
       const leftTop = chart.convertToPixel(
-        { dataIndex: item.begin_index, value: item.zg },
+        { dataIndex: beginIndex, value: item.zg },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       const rightBottom = chart.convertToPixel(
-        { dataIndex: item.end_index, value: item.zd },
+        { dataIndex: endIndex, value: item.zd },
         { paneId: CANDLE_PANE_ID, absolute: false }
       )
       if (!validPoint(leftTop) || !validPoint(rightBottom)) return null
-      const beginHalfWidth = estimateHalfBarWidth(chart, item.begin_index, item.zg, bars.length)
-      const endHalfWidth = estimateHalfBarWidth(chart, item.end_index, item.zd, bars.length)
+      const beginHalfWidth = estimateHalfBarWidth(chart, beginIndex, item.zg, bars.length)
+      const endHalfWidth = estimateHalfBarWidth(chart, endIndex, item.zd, bars.length)
       const leftX = Math.min(leftTop.x, rightBottom.x) - beginHalfWidth
       const rightX = Math.max(leftTop.x, rightBottom.x) + endHalfWidth
       return {
         ...item,
+        begin_index: beginIndex,
+        end_index: endIndex,
         x: leftX,
         y: Math.min(leftTop.y, rightBottom.y),
         width: Math.max(2, rightX - leftX),
@@ -215,8 +240,10 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
       range: chart.getVisibleRange(),
     }
     const overlays = context.overlays || {}
-    const center = evidenceCenterToOverlay(chart, overlays.active_center, viewport)
+    const centerSource = overlays.active_center || null
+    const center = evidenceCenterToOverlay(chart, centerSource, viewport)
     const lines = (Array.isArray(overlays.lines) ? overlays.lines : [])
+      .filter((item) => !isCenterBoundaryEvidence(item, centerSource))
       .map((item) => evidenceLineToOverlay(chart, item, viewport))
       .filter(Boolean)
     setAiEvidenceOverlay(center || lines.length ? { center, lines, level: context.level } : null)
@@ -509,6 +536,20 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
     }
   }
 
+  const handleAddToWatchlist = async () => {
+    if (!onAddToWatchlist || addingToWatchlist) return
+    setAddingToWatchlist(true)
+    setWatchlistMessage('')
+    try {
+      const result = await onAddToWatchlist()
+      setWatchlistMessage(result?.message || '已加入自选')
+    } catch (err) {
+      setWatchlistMessage(err?.message || '加入失败')
+    } finally {
+      setAddingToWatchlist(false)
+    }
+  }
+
   return (
     <section className="base-kline">
       <header className="base-kline__toolbar">
@@ -516,6 +557,16 @@ export default function BaseKlineChart({ symbol, symbolName, chartContext }) {
           <span>K 线</span>
           <strong>{symbolName || symbol}</strong>
           <em>{symbol}</em>
+          <button
+            type="button"
+            className="base-kline__watchlist-btn"
+            onClick={handleAddToWatchlist}
+            disabled={!symbol || addingToWatchlist || !onAddToWatchlist}
+            title="加入左侧自选股"
+          >
+            {addingToWatchlist ? '加入中' : '+ 自选'}
+          </button>
+          {watchlistMessage && <small>{watchlistMessage}</small>}
         </div>
 
         <div className="base-kline__periods" role="tablist" aria-label="K 线周期">
@@ -871,6 +922,19 @@ function evidenceLineToOverlay(chart, item, viewport) {
     x2: Math.max(0, viewport.width - 56),
     labelX,
   }
+}
+
+function isCenterBoundaryEvidence(item, center) {
+  if (!center) return false
+  const role = String(item?.role || '')
+  if (!['trigger', 'invalidation'].includes(role)) return false
+  const price = Number(item?.price)
+  const zg = Number(center?.zg)
+  const zd = Number(center?.zd)
+  if (!Number.isFinite(price)) return false
+  if (role === 'trigger' && Number.isFinite(zg)) return Math.abs(price - zg) < 0.0001
+  if (role === 'invalidation' && Number.isFinite(zd)) return Math.abs(price - zd) < 0.0001
+  return false
 }
 
 function evidenceCenterToOverlay(chart, item, viewport) {

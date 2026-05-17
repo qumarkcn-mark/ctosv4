@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
 import json
 
 from server.db import database
@@ -95,6 +96,13 @@ def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path)
     assert latest["source_snapshot_ids"] == [snap["snapshot_id"]]
     assert latest["raw_context"]["position_context"]["has_position"] is True
     assert latest["background"]["rules"]["structure_source"] == "czsc_snapshot_only"
+    assert latest["prompt_version"] == "ai_structure_reasoning.e1_dynamic_growth"
+    assert latest["reasoning"]["version"] == "ai_structure_reasoning.e1_dynamic_growth"
+    assert latest["reasoning"]["trend_growth"]["growth_path"]
+    assert latest["reasoning"]["scenario_branches"]
+    assert latest["main_level"] == "5"
+    assert latest["trigger_level"] == "5"
+    assert latest["coach_summary"]
     assert "仅供参考，不构成投资建议" in latest["summary_text"]
     assert latest["branches"]
     assert {branch["branch_type"] for branch in latest["branches"]} >= {
@@ -102,6 +110,87 @@ def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path)
         "invalidation_watch",
         "holding_defense",
     }
+
+
+def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    save_snapshot()
+    ensure_user()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET settings_json = ? WHERE id = 1",
+            (json.dumps({"deepseek_api_key": "sk-test", "ai_native_thinking_enabled": False}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
+        assert model_route.thinking_enabled is True
+        if "缠论结构推演层" in system_prompt:
+            payload = json.loads(context_json)
+            assert payload["structure_facts"]["boundary"]["primary_level"] == "5"
+            return "完整 Think 推演：日线中枢边界内，5分钟触发观察。仅供参考，不构成投资建议"
+        assert "Think 前端摘要层" in system_prompt
+        assert "不要写成逐级别笔走势清单" in system_prompt
+        assert "不得提前写成“日线向下笔已形成”" in system_prompt
+        assert "failure_path" in system_prompt and "风险演化" in system_prompt
+        payload = json.loads(context_json)
+        assert payload["structure_context"]["structure_facts"]["boundary"]["primary_level"] == "5"
+        assert "完整 Think 推演" in payload["full_reasoning_text"]
+        return json.dumps({
+            "version": "ai_structure_reasoning.e1_dynamic_growth",
+            "symbol": "sh.600519",
+            "main_level": "day",
+            "trigger_level": "5",
+            "structure_summary": "日线中枢边界内，5分钟触发观察。",
+            "trend_growth": {
+                "current_state": "test_llm",
+                "growth_path": "日线等待，5分钟承接后再看离开。",
+                "next_confirmation": "5分钟回踩不破。",
+                "failure_path": "跌破5分钟下沿。",
+            },
+            "divergence_view": {"status": "potential", "level": "5", "evidence": "离开段力度待比较", "risk_note": "关注潜在背驰"},
+            "resonance_view": {"higher_level_context": "日线中枢", "lower_level_trigger": "5分钟承接", "resonance_type": "A+小b"},
+            "scenario_branches": [
+                {
+                    "branch_type": "llm_a_plus_b",
+                    "main_level": "day",
+                    "trigger_level": "5",
+                    "trigger_condition": {"type": "price_above", "price": 11.0, "level": "5", "label": "5分钟站上上沿"},
+                    "invalidate_condition": {"type": "price_below", "price": 10.0, "level": "5", "label": "跌破5分钟下沿"},
+                    "chart_focus": [],
+                }
+            ],
+            "key_boundaries": [],
+            "coach_summary": "LLM 推演摘要。仅供参考，不构成投资建议",
+            "risk_notes": ["仅供参考，不构成投资建议"],
+        }, ensure_ascii=False)
+
+    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
+
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    result = asyncio.run(context_service.run_context_job(job))
+
+    assert result["status"] == "success"
+    latest = context_service.get_latest_ai_structure_context(user_id=1, symbol="sh600519")
+    assert latest["reasoning"]["reasoning_meta"]["provider"] == "llm"
+    assert latest["reasoning"]["reasoning_meta"]["pipeline"] == "think_full_text_then_think_panel_summary"
+    assert latest["reasoning"]["reasoning_meta"]["full_reasoning_available"] is True
+    assert latest["reasoning"]["trend_growth"]["current_state"] == "test_llm"
+    assert latest["main_level"] == "day"
+    assert latest["trigger_level"] == "5"
+    assert latest["branches"][0]["branch_type"] == "llm_a_plus_b"
+    conn = database.get_connection()
+    try:
+        run = conn.execute("SELECT * FROM ai_structure_reasoning_runs WHERE context_id = ?", (latest["context_id"],)).fetchone()
+    finally:
+        conn.close()
+    assert run is not None
+    assert run["status"] == "SUCCESS"
+    assert "完整 Think 推演" in run["full_reasoning_text"]
 
 
 def test_context_background_contract_keeps_fundamental_context_only(monkeypatch, tmp_path):
@@ -145,6 +234,7 @@ def test_context_background_contract_keeps_fundamental_context_only(monkeypatch,
     assert background["fundamental"]["verdict"] == "支持"
     assert "结构确认" in background["fundamental"]["summary"]
     assert context["raw_context"]["background_context"]["fundamental"]["role"] == "context_only"
+    assert context["reasoning"]["resonance_view"]["conflict_note"]
 
 
 def test_context_status_turns_stale_when_new_snapshot_exists(monkeypatch, tmp_path):
