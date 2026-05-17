@@ -285,33 +285,34 @@
 }
 
 .base-kline__center {
-  fill: rgba(200, 168, 50, 0.08);
-  stroke: rgba(200, 168, 50, 0.38);
-  stroke-width: 1;
+  fill: rgba(200, 168, 50, 0.12);
+  stroke: rgba(200, 168, 50, 0.58);
+  stroke-width: 1.35;
   stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
 }
 
 .base-kline__center.is-active {
-  fill: rgba(6, 182, 212, 0.08);
-  stroke: rgba(6, 182, 212, 0.52);
+  fill: rgba(6, 182, 212, 0.12);
+  stroke: rgba(6, 182, 212, 0.72);
 }
 
 .base-kline__bi {
-  stroke: rgba(255, 255, 255, 0.68);
-  stroke-width: 1.05;
+  stroke: rgba(255, 255, 255, 0.86);
+  stroke-width: 1.8;
   vector-effect: non-scaling-stroke;
 }
 
 .base-kline__bi.is-up {
-  stroke: rgba(255, 255, 255, 0.68);
+  stroke: rgba(244, 63, 94, 0.82);
 }
 
 .base-kline__bi.is-down {
-  stroke: rgba(255, 255, 255, 0.68);
+  stroke: rgba(16, 185, 129, 0.82);
 }
 
 .base-kline__bi.is-unsure {
-  opacity: 0.46;
+  opacity: 0.56;
   stroke-dasharray: 4 3;
 }
 

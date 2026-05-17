@@ -240,8 +240,10 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
       range: chart.getVisibleRange(),
     }
     const overlays = context.overlays || {}
-    const center = evidenceCenterToOverlay(chart, overlays.active_center, viewport)
+    const centerSource = overlays.active_center || null
+    const center = evidenceCenterToOverlay(chart, centerSource, viewport)
     const lines = (Array.isArray(overlays.lines) ? overlays.lines : [])
+      .filter((item) => !isCenterBoundaryEvidence(item, centerSource))
       .map((item) => evidenceLineToOverlay(chart, item, viewport))
       .filter(Boolean)
     setAiEvidenceOverlay(center || lines.length ? { center, lines, level: context.level } : null)
@@ -920,6 +922,19 @@ function evidenceLineToOverlay(chart, item, viewport) {
     x2: Math.max(0, viewport.width - 56),
     labelX,
   }
+}
+
+function isCenterBoundaryEvidence(item, center) {
+  if (!center) return false
+  const role = String(item?.role || '')
+  if (!['trigger', 'invalidation'].includes(role)) return false
+  const price = Number(item?.price)
+  const zg = Number(center?.zg)
+  const zd = Number(center?.zd)
+  if (!Number.isFinite(price)) return false
+  if (role === 'trigger' && Number.isFinite(zg)) return Math.abs(price - zg) < 0.0001
+  if (role === 'invalidation' && Number.isFinite(zd)) return Math.abs(price - zd) < 0.0001
+  return false
 }
 
 function evidenceCenterToOverlay(chart, item, viewport) {
