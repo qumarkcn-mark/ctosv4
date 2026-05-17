@@ -73,11 +73,12 @@ async def position_overview(current_user_id: int = Depends(get_current_user_id))
     finally:
         conn.close()
 
+    positions = _attach_unified_summaries(res["positions"], user_id=user_id)
     return {
         "total_value": res["total_market_value"],
-        "position_count": len(res["positions"]),
+        "position_count": len(positions),
         "health_score": res["health_score"],
-        "positions": res["positions"],
+        "positions": positions,
         "warnings": res["warnings"],
         "t1_locked": t1_locked,
     }
@@ -115,3 +116,23 @@ def get_position(symbol: str, current_user_id: int = Depends(get_current_user_id
         return item
     finally:
         conn.close()
+
+
+def _attach_unified_summaries(positions: list[dict], *, user_id: int) -> list[dict]:
+    try:
+        from server.engines.ai_native.unified_reasoning_service import get_latest_unified_reasoning
+    except Exception:
+        return positions
+    result = []
+    for item in positions:
+        enriched = dict(item)
+        try:
+            run = get_latest_unified_reasoning(user_id=user_id, symbol=str(item.get("symbol") or ""))
+            summary = (run or {}).get("summary") or {}
+            if summary.get("coach_summary"):
+                enriched["ai_reasoning_summary"] = summary.get("coach_summary")
+                enriched["ai_reasoning_updated_at"] = (run or {}).get("updated_at") or ""
+        except Exception:
+            pass
+        result.append(enriched)
+    return result

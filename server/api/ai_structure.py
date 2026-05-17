@@ -42,6 +42,10 @@ from server.engines.ai_native.structure_reminder_service import (
     create_reminder_from_chat_evidence,
     list_structure_reminders,
 )
+from server.engines.ai_native.unified_reasoning_service import (
+    get_latest_unified_reasoning,
+    trigger_unified_reasoning,
+)
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
@@ -92,6 +96,12 @@ class StructureChatRequest(BaseModel):
     symbol: str
     question: str = Field(min_length=1, max_length=500)
     session_id: Optional[str] = None
+
+
+class UnifiedReasoningRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list, min_length=1, max_length=10)
+    levels: list[str] = Field(default_factory=lambda: list(DEFAULT_LEVELS), max_length=6)
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE
 
 
 class ReminderCreateRequest(BaseModel):
@@ -295,6 +305,63 @@ def context_status(
             levels=normalized_levels,
             compute_profile=compute_profile,
         ),
+    }
+
+
+@router.post("/unified-reasoning/trigger")
+async def unified_reasoning_trigger(
+    request: UnifiedReasoningRequest,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    _validate_compute_profile(request.compute_profile)
+    levels = [_validate_level(level) for level in request.levels]
+    items = []
+    for raw_symbol in request.symbols:
+        try:
+            items.append(await trigger_unified_reasoning(
+                user_id=current_user_id,
+                symbol=normalize_symbol(raw_symbol),
+                levels=levels,
+                compute_profile=request.compute_profile,
+            ))
+        except ValueError as exc:
+            items.append({"symbol": normalize_symbol(raw_symbol), "status": "skipped", "error": str(exc)})
+    return {"status": "success", "data": {"count": len(items), "items": items}}
+
+
+@router.get("/unified-reasoning/full/{symbol}")
+def unified_reasoning_full(symbol: str, current_user_id: int = Depends(get_current_user_id)):
+    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=normalize_symbol(symbol))
+    if not run:
+        raise HTTPException(status_code=404, detail="unified reasoning not found")
+    return {
+        "status": "success",
+        "data": {
+            "symbol": run["symbol"],
+            "context_id": run.get("context_id") or "",
+            "run_id": run["run_id"],
+            "full_text": run.get("full_reasoning_text") or "",
+            "summary": run.get("summary") or {},
+            "updated_at": run.get("updated_at") or "",
+        },
+    }
+
+
+@router.get("/unified-reasoning/summary/{symbol}")
+def unified_reasoning_summary(symbol: str, current_user_id: int = Depends(get_current_user_id)):
+    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=normalize_symbol(symbol))
+    if not run:
+        raise HTTPException(status_code=404, detail="unified reasoning not found")
+    summary = run.get("summary") or {}
+    return {
+        "status": "success",
+        "data": {
+            "symbol": run["symbol"],
+            "context_id": run.get("context_id") or "",
+            "run_id": run["run_id"],
+            "summary": summary.get("coach_summary") or "",
+            "updated_at": run.get("updated_at") or "",
+        },
     }
 
 

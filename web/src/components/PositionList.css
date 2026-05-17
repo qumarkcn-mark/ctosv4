@@ -136,6 +136,34 @@
   color: var(--text-secondary);
 }
 
+.position-ai-summary {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(6, 182, 212, 0.06);
+}
+
+.position-ai-summary span {
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+.position-ai-summary p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stop-loss-watchdog.warning .watchdog-status,
 .stop-loss-watchdog.warning .watchdog-header .label { 
   color: var(--action-gold); 
@@ -166,4 +194,3 @@
 .pos-view-btn:hover {
   background: rgba(240,185,11,0.15);
 }
-

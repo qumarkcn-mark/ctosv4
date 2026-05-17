@@ -277,6 +277,9 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         payload = json.loads(context_json)
         assert "Think全文" in payload["full_reasoning_text"]
         assert payload["question"] == "我先持仓2000股，成本135，要不要加仓？"
+        assert payload["runtime_context"]["current_price"] == 247.98
+        assert payload["runtime_context"]["think"]["ready"] is True
+        assert payload["runtime_context"]["think"]["llm_status"] == "success"
         assert model_route.thinking_enabled is True
         assert model_route.reasoning_effort == "high"
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
@@ -290,6 +293,8 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
     )
 
     assert answer["context_id"] == context["context_id"]
+    assert answer["runtime_context"]["current_price"] == 247.98
+    assert answer["runtime_context"]["think"]["ready"] is True
     assert "不适合加仓" in answer["coach_answer"]
     assert "253.49" in answer["coach_answer"]
     assert answer["coach_answer"].endswith("仅供参考，不构成投资建议")

@@ -79,6 +79,13 @@ export default function PositionList({ positions, onViewInAI }) {
               </div>
             )}
 
+            {p.ai_reasoning_summary && (
+              <div className="position-ai-summary">
+                <span>AI</span>
+                <p>{p.ai_reasoning_summary}</p>
+              </div>
+            )}
+
             {/* 仓位占比条 */}
             {p.weight !== undefined && (
               <div className="position-weight">

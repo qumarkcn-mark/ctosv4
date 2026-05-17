@@ -22,6 +22,7 @@ from server.engines.ai_native.structure_context_service import (
     get_reasoning_run_for_context,
     reasoning_availability,
 )
+from server.engines.ai_native.unified_reasoning_service import UNIFIED_FULL_TEXT_VERSION
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
@@ -73,6 +74,7 @@ def answer_structure_question(
     chart_focus = chart_focus_for_intent(context, intent_type)
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
+    runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
@@ -86,6 +88,7 @@ def answer_structure_question(
         intent_type=intent_type,
         context=context,
         chart_focus=chart_focus,
+        runtime_context=runtime_context,
         data_status=data_status,
         memory_context=memory_context,
         review_context=review_context,
@@ -108,6 +111,7 @@ def answer_structure_question(
         "intent_type": intent_type,
         "referenced_boundaries": answer["referenced_boundaries"],
         "chart_focus": chart_focus,
+        "runtime_context": runtime_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
         "memory_context": memory_context,
@@ -470,6 +474,7 @@ def _build_ai_answer_from_full_reasoning(
     intent_type: str,
     context: dict[str, Any],
     chart_focus: dict[str, Any],
+    runtime_context: dict[str, Any] | None = None,
     data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
     review_context: dict[str, Any] | None = None,
@@ -486,38 +491,57 @@ def _build_ai_answer_from_full_reasoning(
     full_text = str((run or {}).get("full_reasoning_text") or "").strip()
     if not full_text:
         return None
-    prompt = {
-        "version": "ai_structure_chat_from_full_reasoning.v1",
-        "symbol": symbol,
-        "question": question,
-        "intent_type": intent_type,
-        "full_reasoning_text": full_text,
-        "summary": {
-            "coach_summary": context.get("coach_summary") or "",
-            "reasoning": context.get("reasoning") or {},
-        },
-        "position_context": (context.get("raw_context") or {}).get("position_context") or {},
-        "memory_context": memory_context or {},
-        "review_context": review_context or {},
-        "conversation_context": conversation_context or {},
-        "data_status": data_status or {},
-        "chart_focus": chart_focus,
-        "rules": {
+    is_unified = str((run or {}).get("prompt_version") or "") == UNIFIED_FULL_TEXT_VERSION
+    if is_unified:
+        prompt = {
+            "version": "unified_reasoning_chat.v1",
+            "symbol": symbol,
+            "question": question,
+            "full_reasoning_text": full_text,
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "memory_context": memory_context or {},
+            "conversation_context": conversation_context or {},
+            "chart_focus": chart_focus,
+        }
+        system_prompt = (
+            "你是缠中说禅，用户的盯盘搭档。"
+            "根据完整推演和用户问题，聚焦这一次问题，回答该怎么看、怎么做、错了怎么办。"
+            f"{RISK_DISCLAIMER}。"
+        )
+    else:
+        prompt = {
+            "version": "ai_structure_chat_from_full_reasoning.v1",
+            "symbol": symbol,
+            "question": question,
+            "intent_type": intent_type,
+            "full_reasoning_text": full_text,
+            "summary": {
+                "coach_summary": context.get("coach_summary") or "",
+                "reasoning": context.get("reasoning") or {},
+            },
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "memory_context": memory_context or {},
+            "review_context": review_context or {},
+            "conversation_context": conversation_context or {},
+            "data_status": data_status or {},
+            "runtime_context": runtime_context or {},
+            "chart_focus": chart_focus,
+        }
+        prompt["rules"] = {
             "answer_from_full_reasoning_only": True,
             "do_not_recalculate_structure": True,
             "do_not_add_new_price_levels": True,
             "no_direct_trade_instruction": True,
             "required_risk_disclaimer": RISK_DISCLAIMER,
-        },
-    }
-    system_prompt = (
-        "你是 CT-OS AI Native V5 的问答解释层。"
-        "你只能根据已保存的 DeepSeek Pro Think 完整推演原文、摘要、持仓和历史记忆回答。"
-        "不要重新计算中枢、笔、背驰或级别结构，不要引入新价格。"
-        "回答用户真实问题，给条件化观察、风险边界、提醒/复盘建议。"
-        "不要直接给买入、卖出、满仓、清仓指令。"
-        f"结尾必须包含：{RISK_DISCLAIMER}"
-    )
+        }
+        system_prompt = (
+            "你是 CT-OS AI Native V5 的问答解释层。"
+            "你只能根据已保存的完整推演全文、摘要、持仓和历史记忆回答。"
+            "不要重新计算中枢、笔、背驰或级别结构，不要引入新价格。"
+            "回答用户真实问题，给条件化观察、风险边界、提醒/复盘建议。"
+            "不要直接给买入、卖出、满仓、清仓指令。"
+            f"结尾必须包含：{RISK_DISCLAIMER}"
+        )
     try:
         from server.services.llm_service import AIModelRoute, LLMService
         try:
@@ -531,10 +555,11 @@ def _build_ai_answer_from_full_reasoning(
                 _json(prompt),
                 user_id=user_id,
                 model_route=AIModelRoute(
-                    thinking_enabled=True,
+                    model_name="deepseek-v4-flash" if is_unified else "",
+                    thinking_enabled=False if is_unified else True,
                     reasoning_effort="high",
-                    timeout_seconds=max(float(AI_NATIVE_LLM_TIMEOUT), 150),
-                    max_tokens=2400,
+                    timeout_seconds=45 if is_unified else max(float(AI_NATIVE_LLM_TIMEOUT), 150),
+                    max_tokens=1200 if is_unified else 2400,
                 ),
             )
         )
@@ -780,6 +805,47 @@ def _context_data_status(*, user_id: int, symbol: str, context: dict[str, Any]) 
         "missing_levels": status.get("missing_levels") or [],
         "reasoning_status": status.get("reasoning_status") or reasoning_availability(context or None),
         "context_id": context.get("context_id") or "",
+    }
+
+
+def _chat_runtime_context(
+    *,
+    context: dict[str, Any],
+    data_status: dict[str, Any],
+    chart_focus: dict[str, Any],
+) -> dict[str, Any]:
+    level = chart_focus.get("level") or ((context.get("boundary") or {}).get("primary_level") or "")
+    levels = (context.get("boundary") or {}).get("levels") or {}
+    level_item = levels.get(level) or {}
+    position = (context.get("raw_context") or {}).get("position_context") or {}
+    meta = ((context.get("reasoning") or {}).get("reasoning_meta") or context.get("reasoning_meta") or {})
+    current_price = _num(level_item.get("current_price"))
+    price_source = f"snapshot:{level}" if current_price > 0 else ""
+    if current_price <= 0:
+        current_price = _num(position.get("current_price"))
+        price_source = "position_context" if current_price > 0 else ""
+    if current_price <= 0:
+        current_price = _num(meta.get("price"))
+        price_source = "reasoning_meta" if current_price > 0 else ""
+    return {
+        "current_price": current_price,
+        "price_source": price_source,
+        "focus_level": level,
+        "context_id": context.get("context_id") or "",
+        "context_updated_at": context.get("updated_at") or "",
+        "reasoning_status": data_status.get("reasoning_status") or reasoning_availability(context or None),
+        "data_status": {
+            "status": data_status.get("status") or "unknown",
+            "stale_reason": data_status.get("stale_reason") or "",
+            "missing_levels": data_status.get("missing_levels") or [],
+        },
+        "think": {
+            "ready": bool((data_status.get("reasoning_status") or {}).get("ready")),
+            "provider": str(meta.get("provider") or ""),
+            "llm_status": str(meta.get("llm_status") or ""),
+            "full_reasoning_available": bool(meta.get("full_reasoning_available")),
+            "full_reasoning_run_id": str(meta.get("full_reasoning_run_id") or ""),
+        },
     }
 
 
