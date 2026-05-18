@@ -11,7 +11,7 @@ const QUICK_QUESTIONS = [
   '帮我设提醒',
 ]
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
-const CONTEXT_POLL_WINDOW_MS = 30_000
+const CONTEXT_POLL_WINDOW_MS = 300_000
 const CONTEXT_POLL_INTERVAL_MS = 2_000
 const LEVEL_LABELS = {
   week: '周线',
@@ -409,7 +409,7 @@ export default function AIStructureCoachPanel({
         retrying={regenerating}
       />
 
-      <ReasoningBrief context={reasoningContext} />
+      <ReasoningBrief context={reasoningContext} status={status} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
@@ -486,13 +486,13 @@ export default function AIStructureCoachPanel({
   )
 }
 
-function ReasoningBrief({ context }) {
+function ReasoningBrief({ context, status }) {
   if (!context) return null
   if (!isAiReasoningReady({ context })) return null
   const reasoning = context.reasoning || context
   const isUnified = String(reasoning.version || context.prompt_version || '').startsWith('unified_reasoning')
   const growth = reasoning.trend_growth || {}
-  const summary = reasoning.coach_summary || context.coach_summary || context.summary_text || ''
+  const summary = panelSummary(reasoning, context)
   const mainLevel = formatLevel(reasoning.main_level || context.main_level)
   const growthText = isUnified ? '' : buildGrowthText(growth)
   if (!summary && !growthText && !mainLevel) return null
@@ -502,6 +502,7 @@ function ReasoningBrief({ context }) {
         <strong>当前推演</strong>
         <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
       </div>
+      <DataFreshnessStrip status={status} context={context} />
       {summary && <p className={isUnified ? 'is-one-line' : ''}>{summary}</p>}
       {growthText && (
         <div className="ai-reasoning-growth">
@@ -511,6 +512,69 @@ function ReasoningBrief({ context }) {
       )}
     </section>
   )
+}
+
+function DataFreshnessStrip({ status, context }) {
+  const rows = buildFreshnessRows(status, context)
+  if (!rows.length) return null
+  return (
+    <div className="ai-data-freshness" aria-label="推演数据截止时间">
+      {rows.map((item) => (
+        <span key={item.level} className={item.stale ? 'is-stale' : ''}>
+          {formatLevel(item.level)} {formatAsOf(item.data_as_of)}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function buildFreshnessRows(status, context) {
+  const contextRows = (context?.raw_context?.snapshots || context?.snapshots || []).map((item) => ({
+    level: item.level,
+    data_as_of: item.data_as_of,
+    status: 'fresh',
+  }))
+  const latestRows = status?.level_freshness || []
+  const latestByLevel = new Map(latestRows.map((item) => [item.level, item]))
+  const rows = contextRows.length ? contextRows : latestRows
+  const stale = new Set(status?.stale_levels || [])
+  return rows
+    .filter((item) => item?.level && item?.data_as_of)
+    .map((item) => {
+      const latest = latestByLevel.get(item.level)
+      return {
+        level: item.level,
+        data_as_of: item.data_as_of,
+        stale: stale.has(item.level)
+          || ['stale', 'pending', 'failed'].includes(item.status)
+          || Boolean(latest?.data_as_of && latest.data_as_of !== item.data_as_of),
+      }
+    })
+}
+
+function panelSummary(reasoning = {}, context = {}) {
+  const raw = String(
+    reasoning.front_panel_text ||
+    context.front_panel_text ||
+    reasoning.coach_summary ||
+    context.coach_summary ||
+    context.summary_text ||
+    '',
+  ).trim()
+  const badMarkers = ['收到数据', '看了数据', '开始', '请坐', '下面', '我的分析']
+  const preferredMarkers = ['当前', '核心', '结构', '走势', '中枢', '三买', '三卖', '回拉', '突破', '跌破', '观察']
+  const parts = raw
+    .replace(/[*_`]+/g, '')
+    .split(/[。！？\n]/)
+    .map((item) => item.replace(/^[#>*\-\d.、\s]+/, '').trim())
+    .filter(Boolean)
+  const preferred = parts.find((item) => !badMarkers.some((marker) => item.includes(marker)) && preferredMarkers.some((marker) => item.includes(marker)))
+  if (preferred) return preferred
+  const clean = parts.find((item) => !badMarkers.some((marker) => item.includes(marker)))
+  if (clean) return clean
+  const boundary = context.boundary || reasoning.boundary || {}
+  const primary = formatLevel(boundary.primary_level || context.main_level || reasoning.main_level)
+  return primary ? `${primary}结构已生成，围绕触发线和失败线观察` : ''
 }
 
 function buildGrowthText(growth = {}) {
@@ -757,6 +821,8 @@ function normalizeWorkspaceStatus(state) {
     status: contextStatus.status || (latestContext ? 'fresh' : 'no_snapshot'),
     stale_reason: contextStatus.stale_reason || latestContext?.stale_reason || '',
     missing_levels: contextStatus.missing_levels || [],
+    stale_levels: contextStatus.stale_levels || [],
+    level_freshness: contextStatus.level_freshness || [],
     job: contextStatus.job || null,
   }
 }
@@ -844,6 +910,13 @@ function statusNotice(status, pollingActive) {
     }
   }
   if (status?.status === 'stale') {
+    if (status.stale_levels?.length) {
+      return {
+        tone: hasActiveContextJob(status) ? 'working' : 'warn',
+        title: hasActiveContextJob(status) ? '结构快照刷新中' : '部分级别数据过期',
+        text: `${formatLevels(status.stale_levels)} 结构还没追上最新 K 线，当前推演先按旧快照展示；刷新完成后会重跑上下文。`,
+      }
+    }
     return {
       tone: 'warn',
       title: '基于上一版结构',
@@ -888,8 +961,10 @@ function buildPipelineItems(status, flags) {
   const isNoData = reason === 'NO_DATA'
   const isCzscUnavailable = reason === 'CZSC_UNAVAILABLE'
   const hasMissingLevels = Boolean(status?.missing_levels?.length)
-  const isWorking = booting || pollingActive || status?.status === 'pending' || hasActiveContextJob(status)
-  const contextTone = contextStatusTone(status, isWorking)
+  // 分离快照和上下文的工作状态，避免上下文生成中时快照也误显示"生成中"
+  const isSnapshotWorking = booting || pollingActive || status?.status === 'pending'
+  const isContextWorking = isSnapshotWorking || hasActiveContextJob(status)
+  const contextTone = contextStatusTone(status, isContextWorking)
 
   return [
     {
@@ -901,14 +976,14 @@ function buildPipelineItems(status, flags) {
     {
       key: 'snapshot',
       label: 'CZSC快照',
-      tone: snapshotStatusTone(status, isWorking),
-      detail: snapshotStatusDetail(status, { hasMissingLevels, isCzscUnavailable, isFailed, isNoData, isWorking }),
+      tone: snapshotStatusTone(status, isSnapshotWorking),
+      detail: snapshotStatusDetail(status, { hasMissingLevels, isCzscUnavailable, isFailed, isNoData, isWorking: isSnapshotWorking }),
     },
     {
       key: 'context',
       label: 'AI上下文',
       tone: contextTone,
-      detail: contextStatusDetail(status, { canAsk, isFailed, isWorking }),
+      detail: contextStatusDetail(status, { canAsk, isFailed, isWorking: isContextWorking }),
     },
     {
       key: 'chat',
@@ -933,6 +1008,7 @@ function snapshotStatusDetail(status, flags) {
   if (isCzscUnavailable) return '不可用'
   if (isNoData) return '缺K线'
   if (isFailed) return '失败'
+  if (status?.stale_levels?.length && hasActiveContextJob(status)) return '快照刷新中'
   if (isWorking) return '生成中'
   if (hasMissingLevels) return `缺${formatLevels(status.missing_levels)}`
   if (status.status === 'no_snapshot') return '待生成'
@@ -957,7 +1033,8 @@ function contextStatusDetail(status, flags) {
   if (!status) return '检测中'
   if (isFailed) return '失败'
   const ai = aiReasoning(status)
-  if (isWorking) return '生成中'
+  if (isWorking && status?.context && !ai.ready) return 'LLM推演中'
+  if (isWorking) return status?.stale_levels?.length ? '等待快照' : '生成中'
   if (status.context && ['failed', 'unavailable'].includes(ai.status)) return '推演失败'
   if (status.context && !ai.ready) return '推演中'
   if (status.status === 'stale') return '待刷新'
@@ -1024,6 +1101,12 @@ function formatLevels(levels = []) {
 function formatLevel(level) {
   const normalized = normalizeLevelKey(level)
   return normalized ? LEVEL_LABELS[normalized] : ''
+}
+
+function formatAsOf(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.length >= 16 ? text.slice(5, 16) : text.slice(5, 10) || text
 }
 
 function normalizeLevelKey(level) {

@@ -31,7 +31,7 @@ def _safe_qwen_base_url(candidate: Optional[str]) -> str:
     return normalized + "/"
 
 
-def _loads_lenient_json_object(raw_content: str) -> dict:
+def loads_lenient_json_object(raw_content: str) -> dict:
     """Parse model JSON with small repairs for common response_format drift."""
     raw_content = raw_content or ""
     try:
@@ -65,6 +65,11 @@ def _loads_lenient_json_object(raw_content: str) -> dict:
         except json.JSONDecodeError as exc:
             last_error = exc
     raise last_error or ValueError("Unable to parse model JSON")
+
+
+def _loads_lenient_json_object(raw_content: str) -> dict:
+    """Backward-compatible alias for older internal imports."""
+    return loads_lenient_json_object(raw_content)
 
 
 def _message_content_text(message) -> str:

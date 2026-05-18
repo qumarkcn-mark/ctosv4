@@ -56,6 +56,17 @@ def save_snapshot(symbol="sh600519", level="5", price=10.5, zg=11.0, zd=10.0):
     )
 
 
+def fresh_signature_for_saved_snapshot(symbol: str, freq: str, *args, **kwargs):
+    compact = str(symbol).replace(".", "")
+    return {
+        "source": "baostock",
+        "row_count": 120,
+        "first_date": "2026-01-01",
+        "last_date": "2026-05-12",
+        "signature": f"sig-{compact}-{freq}",
+    }
+
+
 def build_context(user_id=1, symbol="sh600519"):
     ensure_user(user_id)
     context_service.prewarm_ai_structure_contexts(user_id=user_id, symbols=[symbol], levels=["5"])
@@ -92,6 +103,7 @@ def seed_universe():
 
 def test_workspace_bootstrap_returns_user_scoped_workspace_state(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(snapshot_service, "get_kline_window_signature", fresh_signature_for_saved_snapshot)
     seed_universe()
     save_snapshot()
     build_context(user_id=1)
@@ -151,6 +163,7 @@ def test_workspace_bootstrap_returns_user_scoped_workspace_state(monkeypatch, tm
 
 def test_workspace_bootstrap_miniprogram_profile_is_compact(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(snapshot_service, "get_kline_window_signature", fresh_signature_for_saved_snapshot)
     seed_universe()
     save_snapshot()
     build_context(user_id=1)

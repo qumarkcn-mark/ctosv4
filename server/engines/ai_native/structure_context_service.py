@@ -24,6 +24,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
     JOB_ACTIVE_STATUSES,
     get_latest_snapshot,
     get_snapshot_status,
+    get_snapshot_status_batch,
     now_text,
     stable_hash,
 )
@@ -308,11 +309,23 @@ def get_ai_structure_context_status(
     symbol: str,
     levels: list[str] | None = None,
     compute_profile: str = DEFAULT_COMPUTE_PROFILE,
+    snapshot_statuses: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     requested_levels = levels or list(DEFAULT_LEVELS)
     latest = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
-    snapshot_set = _latest_snapshot_set(symbol=canonical, levels=requested_levels, compute_profile=compute_profile)
+    snapshot_statuses = snapshot_statuses or get_snapshot_status_batch(
+        symbols=[canonical],
+        levels=requested_levels,
+        compute_profile=compute_profile,
+    ).get(canonical, {})
+    snapshot_set = _snapshot_set_from_statuses(levels=requested_levels, status_items=snapshot_statuses)
+    freshness_report = _snapshot_freshness_report(
+        symbol=canonical,
+        levels=requested_levels,
+        compute_profile=compute_profile,
+        statuses_by_level=snapshot_statuses,
+    )
     latest_ids = set(snapshot_set["snapshot_ids"])
     conn = get_connection()
     try:
@@ -322,8 +335,15 @@ def get_ai_structure_context_status(
             job = conn.execute("SELECT * FROM ai_structure_context_jobs WHERE idempotency_key = ?", (key,)).fetchone()
         if latest:
             source_ids = set(latest.get("source_snapshot_ids") or [])
-            status = "fresh" if latest_ids and source_ids == latest_ids else "stale"
-            stale_reason = "" if status == "fresh" else "SOURCE_SNAPSHOT_CHANGED"
+            snapshot_stale = bool(freshness_report["stale_levels"])
+            source_changed = not latest_ids or source_ids != latest_ids
+            status = "stale" if source_changed or snapshot_stale else "fresh"
+            if source_changed:
+                stale_reason = "SOURCE_SNAPSHOT_CHANGED"
+            elif snapshot_stale:
+                stale_reason = "SNAPSHOT_REFRESH_PENDING" if freshness_report.get("active_job") else "KLINE_AHEAD_OF_SNAPSHOT"
+            else:
+                stale_reason = ""
             return {
                 "symbol": canonical,
                 "user_id": int(user_id),
@@ -331,10 +351,17 @@ def get_ai_structure_context_status(
                 "stale_reason": stale_reason,
                 "context": latest,
                 "reasoning_status": reasoning_availability(latest),
-                "job": _job_row(job) if job else None,
+                "job": _job_row(job) if job else freshness_report.get("active_job"),
                 "missing_levels": snapshot_set["missing_levels"],
+                "stale_levels": freshness_report["stale_levels"],
+                "level_freshness": freshness_report["levels"],
             }
-        snapshot_gate = _snapshot_gate_status(symbol=canonical, levels=requested_levels, compute_profile=compute_profile)
+        snapshot_gate = _snapshot_gate_status(
+            symbol=canonical,
+            levels=requested_levels,
+            compute_profile=compute_profile,
+            status_items=freshness_report["raw_statuses"],
+        )
         if job and job["status"] in JOB_ACTIVE_STATUSES:
             return {
                 "symbol": canonical,
@@ -345,6 +372,8 @@ def get_ai_structure_context_status(
                 "reasoning_status": reasoning_availability(None),
                 "job": _job_row(job),
                 "missing_levels": snapshot_set["missing_levels"],
+                "stale_levels": freshness_report["stale_levels"],
+                "level_freshness": freshness_report["levels"],
             }
         if snapshot_gate:
             return {
@@ -356,6 +385,8 @@ def get_ai_structure_context_status(
                 "reasoning_status": reasoning_availability(None),
                 "job": snapshot_gate["job"],
                 "missing_levels": snapshot_set["missing_levels"],
+                "stale_levels": freshness_report["stale_levels"],
+                "level_freshness": freshness_report["levels"],
             }
         return {
             "symbol": canonical,
@@ -366,9 +397,39 @@ def get_ai_structure_context_status(
             "reasoning_status": reasoning_availability(None),
             "job": _job_row(job) if job else None,
             "missing_levels": snapshot_set["missing_levels"],
+            "stale_levels": freshness_report["stale_levels"],
+            "level_freshness": freshness_report["levels"],
         }
     finally:
         conn.close()
+
+
+def get_ai_structure_context_statuses(
+    *,
+    user_id: int,
+    symbols: list[str],
+    levels: list[str] | None = None,
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE,
+) -> dict[str, dict[str, Any]]:
+    requested_levels = levels or list(DEFAULT_LEVELS)
+    canonical_symbols = _unique_symbols(symbols)
+    if not canonical_symbols:
+        return {}
+    snapshot_statuses = get_snapshot_status_batch(
+        symbols=canonical_symbols,
+        levels=requested_levels,
+        compute_profile=compute_profile,
+    )
+    return {
+        symbol: get_ai_structure_context_status(
+            user_id=user_id,
+            symbol=symbol,
+            levels=requested_levels,
+            compute_profile=compute_profile,
+            snapshot_statuses=snapshot_statuses.get(symbol, {}),
+        )
+        for symbol in canonical_symbols
+    }
 
 
 def reasoning_availability(context: dict[str, Any] | None) -> dict[str, Any]:
@@ -421,10 +482,64 @@ def reasoning_availability(context: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _snapshot_gate_status(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any] | None:
-    pending = None
+def _snapshot_freshness_report(
+    *,
+    symbol: str,
+    levels: list[str],
+    compute_profile: str,
+    statuses_by_level: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    items = []
+    raw_statuses = []
+    stale_levels = []
+    active_job = None
+    statuses_by_level = statuses_by_level or get_snapshot_status_batch(
+        symbols=[symbol],
+        levels=levels,
+        compute_profile=compute_profile,
+    ).get(normalize_symbol(symbol), {})
     for level in levels:
-        status = get_snapshot_status(symbol=symbol, level=level, compute_profile=compute_profile)
+        status = statuses_by_level.get(level) or get_snapshot_status(symbol=symbol, level=level, compute_profile=compute_profile)
+        raw_statuses.append(status)
+        snapshot = status.get("snapshot") or {}
+        freshness = status.get("freshness") or {}
+        job = status.get("job")
+        level_status = status.get("status") or "unknown"
+        item = {
+            "level": level,
+            "status": level_status,
+            "data_as_of": snapshot.get("data_as_of") or "",
+            "kline_last_bar_at": freshness.get("last_bar_at") or "",
+            "kline_count": int(freshness.get("kline_count") or 0),
+            "stale_reason": freshness.get("stale_reason") or "",
+            "job": job,
+        }
+        items.append(item)
+        if level_status in {"stale", "pending", "failed"}:
+            stale_levels.append(level)
+        if not active_job and job and job.get("status") in JOB_ACTIVE_STATUSES:
+            active_job = job
+    return {
+        "levels": items,
+        "stale_levels": stale_levels,
+        "active_job": active_job,
+        "raw_statuses": raw_statuses,
+    }
+
+
+def _snapshot_gate_status(
+    *,
+    symbol: str,
+    levels: list[str],
+    compute_profile: str,
+    status_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    pending = None
+    statuses = status_items or [
+        get_snapshot_status(symbol=symbol, level=level, compute_profile=compute_profile)
+        for level in levels
+    ]
+    for status in statuses:
         if status.get("status") == "failed":
             job = status.get("job") or {}
             return {
@@ -572,6 +687,7 @@ def run_context_job_sync(job: dict[str, Any]) -> dict[str, Any]:
             prompt_version=job["prompt_version"],
         )
         saved = save_ai_structure_context(**context)
+        attach_reasoning_run_to_context(saved)
         branches = upsert_scenario_branches_for_context(saved)
         _complete_job(job_id, context_id=saved["context_id"])
         return {"status": "success", "context_id": saved["context_id"], "branch_count": len(branches)}
@@ -858,9 +974,9 @@ async def _generate_reasoning_payload_async(
             user_id=user_id,
             model_route=summary_route,
         )
-        from server.services.llm_service import _loads_lenient_json_object
+        from server.services.llm_service import loads_lenient_json_object
 
-        payload = _loads_lenient_json_object(summary_text)
+        payload = loads_lenient_json_object(summary_text)
         normalized = normalize_reasoning_payload(payload, symbol=symbol, reasoning_input=reasoning_input)
         if normalized.get("front_panel_text") and not normalized.get("coach_summary"):
             normalized["coach_summary"] = str(normalized.get("front_panel_text") or "")
@@ -1095,6 +1211,34 @@ def _latest_snapshot_set(*, symbol: str, levels: list[str], compute_profile: str
         "snapshot_ids": [item["snapshot_id"] for item in snapshots],
         "missing_levels": missing,
     }
+
+
+def _snapshot_set_from_statuses(*, levels: list[str], status_items: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    snapshots = []
+    missing = []
+    for level in levels:
+        snapshot = (status_items.get(level) or {}).get("snapshot")
+        if snapshot:
+            snapshots.append(snapshot)
+        else:
+            missing.append(level)
+    return {
+        "snapshots": snapshots,
+        "snapshot_ids": [item["snapshot_id"] for item in snapshots],
+        "missing_levels": missing,
+    }
+
+
+def _unique_symbols(symbols: list[str]) -> list[str]:
+    output = []
+    seen = set()
+    for raw_symbol in symbols:
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        output.append(symbol)
+    return output
 
 
 def _load_snapshots_by_ids(snapshot_ids: list[str]) -> list[dict[str, Any]]:

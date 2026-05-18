@@ -15,6 +15,7 @@ from server.engines.ai_native.scenario_branch_service import list_scenario_branc
 from server.engines.ai_native.scenario_outcome_service import list_symbol_outcome_reviews
 from server.engines.ai_native.structure_context_service import (
     get_ai_structure_context_status,
+    get_ai_structure_context_statuses,
     get_latest_ai_structure_context,
 )
 from server.engines.ai_native.structure_reminder_service import list_structure_reminders
@@ -57,6 +58,14 @@ async def bootstrap_ai_structure_workspace(
         universe=resolve_ai_native_universe(user_id, normalized_sources),
     )[:safe_limit]
     symbols = [item["symbol"] for item in universe]
+    context_statuses = {}
+    if "context_status" in sections and symbols:
+        context_statuses = get_ai_structure_context_statuses(
+            user_id=user_id,
+            symbols=symbols,
+            levels=normalized_levels,
+            compute_profile=compute_profile,
+        )
     ensure_result = None
     if ensure_pipeline and symbols:
         ensure_symbols = symbols[:MAX_INLINE_ENSURE_SYMBOLS]
@@ -91,6 +100,7 @@ async def bootstrap_ai_structure_workspace(
                 levels=normalized_levels,
                 compute_profile=compute_profile,
                 include_sections=sections,
+                context_status=context_statuses.get(item["symbol"]),
             )
             for item in universe
         ],
@@ -104,6 +114,7 @@ def _symbol_workspace_state(
     levels: list[str],
     compute_profile: str,
     include_sections: list[str],
+    context_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol = normalize_symbol(universe_item["symbol"])
     context = None
@@ -115,7 +126,7 @@ def _symbol_workspace_state(
         "has_position": bool(universe_item.get("has_position")),
     }
     if "context_status" in include_sections:
-        state["context_status"] = _status_summary(get_ai_structure_context_status(
+        state["context_status"] = _status_summary(context_status or get_ai_structure_context_status(
             user_id=user_id,
             symbol=symbol,
             levels=levels,
@@ -158,7 +169,8 @@ def _context_summary(context: dict[str, Any] | None) -> dict[str, Any] | None:
         "prompt_version": context.get("prompt_version") or reasoning.get("version") or "",
         "main_level": context.get("main_level") or reasoning.get("main_level") or boundary.get("primary_level") or background.get("primary_level") or "",
         "trigger_level": context.get("trigger_level") or reasoning.get("trigger_level") or "",
-        "coach_summary": context.get("coach_summary") or reasoning.get("coach_summary") or context.get("summary_text") or "",
+        "coach_summary": reasoning.get("front_panel_text") or context.get("coach_summary") or reasoning.get("coach_summary") or context.get("summary_text") or "",
+        "front_panel_text": reasoning.get("front_panel_text") or "",
         "trend_growth": reasoning.get("trend_growth") or {},
         "divergence_view": reasoning.get("divergence_view") or {},
         "resonance_view": reasoning.get("resonance_view") or {},
@@ -175,6 +187,8 @@ def _status_summary(status: dict[str, Any]) -> dict[str, Any]:
         "status": status.get("status") or "unknown",
         "stale_reason": status.get("stale_reason") or "",
         "missing_levels": status.get("missing_levels") or [],
+        "stale_levels": status.get("stale_levels") or [],
+        "level_freshness": status.get("level_freshness") or [],
         "job": _job_summary(status.get("job")),
     }
 

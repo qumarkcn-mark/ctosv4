@@ -108,6 +108,9 @@ async def get_daily_klines(
     # 1️⃣ 尝试从本地数据湖读取
     cached = query_klines(bs_symbol, "day", limit=count)
     has_enough_cache = len(cached) >= min(count, _MIN_CACHE_ROWS)
+    if cached and allow_short_fresh_cache:
+        logger.debug("本地数据湖短缓存命中: %s/day (%d 条)", bs_symbol, len(cached))
+        return cached
     if cached and not _is_data_stale(cached) and (has_enough_cache or allow_short_fresh_cache):
         logger.debug("本地数据湖命中: %s/day (%d 条)", bs_symbol, len(cached))
         return cached
@@ -168,6 +171,9 @@ async def get_weekly_klines(
     # 1️⃣ 尝试从本地数据湖读取
     cached = query_klines(bs_symbol, "week", limit=count)
     has_enough_cache = len(cached) >= min(count, 50)
+    if cached and allow_short_fresh_cache:
+        logger.debug("本地数据湖短缓存命中: %s/week (%d 条)", bs_symbol, len(cached))
+        return cached
     if cached and not _is_data_stale(cached, stale_days=10) and (has_enough_cache or allow_short_fresh_cache):
         logger.debug("本地数据湖命中: %s/week (%d 条)", bs_symbol, len(cached))
         return cached
@@ -235,6 +241,9 @@ async def get_minute_klines(
     # 1️⃣ 本地数据湖（含新鲜度检查）
     cached = query_klines(bs_symbol, bs_freq, limit=count)
     has_enough_cache = len(cached) >= min(count, _MIN_CACHE_ROWS)
+    if cached and allow_short_fresh_cache:
+        logger.debug("本地数据湖短缓存命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
+        return cached
     if cached and not _is_data_stale(cached) and (has_enough_cache or allow_short_fresh_cache):
         logger.debug("本地数据湖命中: %s/%s (%d 条)", bs_symbol, bs_freq, len(cached))
         return cached
@@ -347,6 +356,7 @@ def _parse_qt_response(symbol: str, raw: str) -> Optional[dict]:
         price = float(parts[3]) if parts[3] else 0
         prev_close = float(parts[4]) if parts[4] else 0
         open_price = float(parts[5]) if parts[5] else 0
+        quote_time = _format_qt_quote_time(parts[30] if len(parts) > 30 else "")
 
         return {
             "symbol": symbol,
@@ -359,7 +369,16 @@ def _parse_qt_response(symbol: str, raw: str) -> Optional[dict]:
             "low": float(parts[34]) if parts[34] else 0,
             "open": open_price,
             "prev_close": prev_close,
+            "quote_time": quote_time,
         }
     except (ValueError, IndexError) as e:
         logger.warning("解析行情数据失败 %s: %s", symbol, e)
         return None
+
+
+def _format_qt_quote_time(raw: str) -> str:
+    """腾讯行情时间戳格式为 YYYYMMDDHHMMSS，前端只展示盘中时分秒。"""
+    value = str(raw or "").strip()
+    if len(value) < 14 or not value[:14].isdigit():
+        return ""
+    return f"{value[8:10]}:{value[10:12]}:{value[12:14]}"
