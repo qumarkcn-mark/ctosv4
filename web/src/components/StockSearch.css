@@ -6,22 +6,41 @@
 .search-input-wrapper {
   display: flex;
   align-items: center;
-  background: var(--bg-base, #0a0a0f);
-  border: 1px solid var(--border-default, rgba(255,255,255,0.1));
-  border-radius: var(--radius-md, 6px);
-  padding: 4px 8px;
-  gap: 6px;
-  transition: border-color 0.15s;
+  height: 28px;
+  padding: 0 8px;
+  gap: var(--space-2, 4px);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-0, #08080a);
+  transition: border-color var(--duration-fast, 150ms) var(--ease-move, ease), background var(--duration-fast, 150ms) var(--ease-move, ease);
 }
 
 .search-input-wrapper:focus-within {
   border-color: var(--action-gold, #f0b90b);
-  box-shadow: 0 0 0 2px rgba(240,185,11,0.12);
+  background: var(--surface-2, #111115);
+  box-shadow: 0 0 0 2px var(--action-gold-muted, rgba(200,168,50,0.12));
 }
 
 .search-icon {
-  font-size: 12px;
-  opacity: 0.5;
+  position: relative;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--text-tertiary, rgba(255,255,255,0.32));
+  border-radius: var(--radius-full, 9999px);
+}
+
+.search-icon::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 6px;
+  height: 1.5px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--text-tertiary, rgba(255,255,255,0.32));
+  transform: rotate(45deg);
+  transform-origin: left center;
 }
 
 .search-input {
@@ -30,7 +49,7 @@
   border: none;
   outline: none;
   color: var(--text-primary, #e8e9ed);
-  font-size: 12px;
+  font-size: var(--text-sm, 12px);
   font-family: var(--font-body);
 }
 
@@ -56,7 +75,7 @@
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  background: var(--bg-elevated, #1a1b24);
+  background: var(--surface-2, #111115);
   border: 1px solid var(--border-default, rgba(255,255,255,0.1));
   border-radius: var(--radius-md, 6px);
   max-height: 280px;
@@ -68,10 +87,10 @@
 .search-result-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-4, 8px);
+  padding: 7px 10px;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--duration-micro, 100ms) var(--ease-move, ease);
 }
 
 .search-result-item:hover,

@@ -42,6 +42,19 @@ SYSTEM_PROMPT = """你是缠中说禅，用户的盯盘搭档。
 
 仅供参考，不构成投资建议。"""
 
+MONITOR_EXTRACT_PROMPT = """从以下推演全文中提取盯盘监控条件，返回 JSON：
+{
+  "triggers": [
+    {
+      "type": "price_below|price_above",
+      "level": 数字,
+      "message_on_trigger": "触发时显示的一句话（15字以内）",
+      "action_on_trigger": "关注|加仓|减仓|止损|观望"
+    }
+  ]
+}
+最多 4 个条件，只取推演中明确提到的关键价格。只返回 JSON。"""
+
 
 async def trigger_unified_reasoning(
     *,
@@ -78,12 +91,14 @@ async def trigger_unified_reasoning(
     full_text = str(full_text or "").strip()
     if not full_text:
         raise RuntimeError("Unified reasoning returned empty content")
+    monitor_conditions = await extract_monitor_conditions(full_text, user_id=user_id)
     return save_unified_reasoning_result(
         user_id=user_id,
         symbol=canonical,
         payload=payload,
         full_text=full_text,
         model_name=route.model_name,
+        monitor_conditions=monitor_conditions,
     )
 
 
@@ -143,20 +158,26 @@ def save_unified_reasoning_result(
     payload: dict[str, Any],
     full_text: str,
     model_name: str = "",
+    monitor_conditions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     source_snapshot_ids = payload.get("source_snapshot_ids") or []
     summary = summarize_unified_reasoning(full_text)
+    summary_payload = {
+        "coach_summary": summary,
+        "version": UNIFIED_REASONING_VERSION,
+        "monitor_conditions": normalize_monitor_conditions(monitor_conditions or {}),
+    }
     run = save_reasoning_run(
         user_id=user_id,
         symbol=canonical,
         source_snapshot_ids=source_snapshot_ids,
         prompt_version=UNIFIED_FULL_TEXT_VERSION,
         think_model=model_name,
-        summary_model="",
+        summary_model=getattr(config, "LLM_MODEL", ""),
         status="SUCCESS",
         full_reasoning_text=full_text,
-        summary={"coach_summary": summary, "version": UNIFIED_REASONING_VERSION},
+        summary=summary_payload,
         error_message="",
     )
     boundary = _boundary_payload(payload.get("snapshots") or [])
@@ -201,10 +222,10 @@ def save_unified_reasoning_result(
         source_snapshot_ids=source_snapshot_ids,
         prompt_version=UNIFIED_FULL_TEXT_VERSION,
         think_model=model_name,
-        summary_model="",
+        summary_model=getattr(config, "LLM_MODEL", ""),
         status="SUCCESS",
         full_reasoning_text=full_text,
-        summary={"coach_summary": summary, "version": UNIFIED_REASONING_VERSION},
+        summary=summary_payload,
         error_message="",
         context_id=context["context_id"],
     )
@@ -213,11 +234,92 @@ def save_unified_reasoning_result(
         "context_id": context["context_id"],
         "run_id": run["run_id"],
         "summary": summary,
+        "monitor_conditions": summary_payload["monitor_conditions"],
         "full_text": full_text,
         "source_snapshot_ids": source_snapshot_ids,
         "data_as_of": (payload.get("input") or {}).get("data_as_of") or "",
         "updated_at": context.get("updated_at") or now_text(),
     }
+
+
+async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) -> dict[str, Any]:
+    """Extract compact watchboard price triggers from the full reasoning text."""
+    text = str(full_reasoning_text or "").strip()
+    if not text:
+        return {"triggers": []}
+    service = LLMService()
+    route = AIModelRoute(
+        model_name=getattr(config, "LLM_MODEL", ""),
+        thinking_enabled=False,
+        reasoning_effort="",
+        timeout_seconds=45,
+        max_tokens=900,
+    )
+    try:
+        payload = await service.infer_ai_native_json(
+            MONITOR_EXTRACT_PROMPT,
+            text[:12000],
+            user_id=user_id,
+            model_route=route,
+        )
+    except Exception:
+        return {"triggers": []}
+    return normalize_monitor_conditions(payload)
+
+
+def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep monitor trigger JSON small, deterministic, and UI-safe."""
+    allowed_actions = {"关注", "加仓", "减仓", "止损", "观望", "持有"}
+    normalized: list[dict[str, Any]] = []
+    raw_triggers = (payload or {}).get("triggers") or []
+    if not isinstance(raw_triggers, list):
+        return {"triggers": []}
+    for raw in raw_triggers:
+        if not isinstance(raw, dict):
+            continue
+        trigger_type = str(raw.get("type") or "").strip()
+        if trigger_type not in {"price_below", "price_above"}:
+            continue
+        level = _num(raw.get("level"))
+        if level <= 0:
+            continue
+        action = str(raw.get("action_on_trigger") or "关注").strip()
+        if action not in allowed_actions:
+            action = "关注"
+        message = re.sub(r"\s+", "", str(raw.get("message_on_trigger") or "")).strip()
+        if not message:
+            message = "触发关键位"
+        if _is_semantically_invalid_monitor_trigger(trigger_type, action, message):
+            continue
+        normalized.append({
+            "id": f"t{len(normalized) + 1}",
+            "type": trigger_type,
+            "level": round(level, 4),
+            "message_on_trigger": message[:15],
+            "action_on_trigger": action,
+        })
+        if len(normalized) >= 4:
+            break
+    return {"triggers": normalized}
+
+
+def _is_semantically_invalid_monitor_trigger(trigger_type: str, action: str, message: str) -> bool:
+    """过滤把确认语义误提成单边价格触发的监控条件。"""
+    if trigger_type == "price_below":
+        if action == "加仓":
+            return True
+        if "突破失败" in message or "三买失败" in message:
+            return False
+        if any(marker in message for marker in ("不破", "三买确认", "确认三买", "站稳", "上破")):
+            return True
+        if "突破" in message and "跌破" not in message:
+            return True
+    if trigger_type == "price_above":
+        if action == "止损":
+            return True
+        if any(marker in message for marker in ("跌破", "失守", "破位", "转弱")):
+            return True
+    return False
 
 
 def get_latest_unified_reasoning(*, user_id: int, symbol: str) -> dict[str, Any] | None:
@@ -245,10 +347,22 @@ def get_latest_unified_reasoning(*, user_id: int, symbol: str) -> dict[str, Any]
 
 
 def summarize_unified_reasoning(text: str, *, max_length: int = 96) -> str:
-    for line in str(text or "").splitlines():
-        cleaned = re.sub(r"^[#>*\\-\\d\\.、\\s]+", "", line).strip()
-        if cleaned:
-            return cleaned[:max_length]
+    source = re.sub(r"[*_`]+", "", str(text or "")).strip()
+    bad_markers = ("收到数据", "看了数据", "开始", "请坐", "下面", "我的分析")
+    preferred_markers = ("当前", "核心", "结构", "走势", "中枢", "三买", "三卖", "回拉", "突破", "跌破", "观察")
+    parts = [
+        re.sub(r"^[#>*\\-\\d\\.、\\s]+", "", part).strip()
+        for part in re.split(r"[。！？\n]", source)
+        if part.strip()
+    ]
+    for part in parts:
+        if any(marker in part for marker in bad_markers):
+            continue
+        if any(marker in part for marker in preferred_markers):
+            return part[:max_length]
+    for part in parts:
+        if not any(marker in part for marker in bad_markers):
+            return part[:max_length]
     return ""
 
 

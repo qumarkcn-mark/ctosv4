@@ -124,7 +124,7 @@ export default function StockSearch({ onSelect }) {
   return (
     <div className="stock-search" ref={wrapperRef}>
       <div className="search-input-wrapper">
-        <span className="search-icon">🔍</span>
+        <span className="search-icon" aria-hidden="true" />
         <input
           type="text"
           className="search-input"

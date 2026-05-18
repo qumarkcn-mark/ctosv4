@@ -16,7 +16,10 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi.concurrency import run_in_threadpool
+from server import config
 from server.domain.symbols import normalize_symbol
+from server.engines.ai_native.unified_reasoning_service import trigger_unified_reasoning
+from server.engines.ai_native.universe_resolver import list_ai_native_user_ids, resolve_ai_native_universe
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +332,47 @@ def prewarm_ai_structure_universe_for_tracked_users(
     }
 
 
+async def refresh_unified_reasoning_for_tracked_users(
+    *,
+    max_users: int = MAX_UNIVERSE_USERS_PER_PASS,
+    max_symbols_per_user: int | None = None,
+    reason: str = "after_kline_sync",
+) -> dict:
+    """K线同步成功后，基于最新 snapshot/context 生成次日盯盘推演。"""
+    if not getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", True):
+        return {"generated": 0, "errors": [], "skipped": True, "reason": "DISABLED"}
+
+    symbol_limit = max_symbols_per_user
+    if symbol_limit is None:
+        symbol_limit = int(getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_SYMBOLS_PER_USER", 30))
+    symbol_limit = max(1, symbol_limit)
+
+    users = list_ai_native_user_ids(limit=max_users)
+    generated = 0
+    errors: list[dict[str, str | int]] = []
+    user_items: list[dict[str, Any]] = []
+    for user_id in users:
+        universe = resolve_ai_native_universe(user_id, ["positions", "watchlist"])
+        symbols = [item["symbol"] for item in universe[:symbol_limit]]
+        user_generated = 0
+        for symbol in symbols:
+            try:
+                await trigger_unified_reasoning(user_id=user_id, symbol=symbol)
+                generated += 1
+                user_generated += 1
+            except Exception as exc:
+                errors.append({"user_id": int(user_id), "symbol": symbol, "error": str(exc)[:160]})
+        user_items.append({"user_id": int(user_id), "symbols": len(symbols), "generated": user_generated})
+
+    return {
+        "generated": generated,
+        "errors": errors,
+        "users": user_items,
+        "skipped": False,
+        "reason": reason,
+    }
+
+
 def _structure_levels_from_changes(changes: list[dict]) -> dict[str, list[str]]:
     levels_by_symbol: dict[str, set[str]] = {}
     for item in changes:
@@ -478,6 +522,9 @@ class KlineSyncWorker:
                 priority=70,
                 reason="kline_sync_universe",
             )
+            unified_jobs = {"generated": 0, "errors": [], "skipped": True, "reason": "NO_KLINE_CHANGES"}
+            if result.get("total_written", 0) > 0:
+                unified_jobs = await refresh_unified_reasoning_for_tracked_users(reason="kline_sync")
 
             self._last_sync_time = datetime.now()
 
@@ -497,6 +544,13 @@ class KlineSyncWorker:
                     trigger,
                     universe_jobs["snapshot_jobs"],
                     universe_jobs["context_jobs"],
+                )
+            if unified_jobs.get("generated") or unified_jobs.get("errors"):
+                logger.info(
+                    "📊 [%s] 统一推演刷新: generated=%d errors=%d",
+                    trigger,
+                    unified_jobs.get("generated", 0),
+                    len(unified_jobs.get("errors") or []),
                 )
 
             # 同步完成后执行 WAL checkpoint，防止 WAL 文件无限积累
@@ -533,6 +587,7 @@ class KlineSyncWorker:
             priority=70,
             reason="force_sync_universe",
         )
+        result["unified_reasoning_jobs"] = await refresh_unified_reasoning_for_tracked_users(reason="force_sync")
         self._last_sync_time = datetime.now()
         return result
 

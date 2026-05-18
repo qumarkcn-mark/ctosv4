@@ -1,0 +1,179 @@
+.watch-card {
+  position: relative;
+  display: flex;
+  min-height: 150px;
+  flex-direction: column;
+  gap: var(--space-4, 8px);
+  padding: 12px 12px 10px 14px;
+  border: 0.5px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-left: 4px solid var(--border-strong, rgba(255, 255, 255, 0.18));
+  border-radius: 12px;
+  background: var(--surface-2, #111115);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.watch-card:hover {
+  background: var(--surface-3, #18181e);
+  transform: translateY(-1px);
+}
+
+.watch-card.state-alert {
+  border-left-color: var(--signal-amber, #f59e0b);
+}
+
+.watch-card.state-danger {
+  border-left-color: var(--warning-red, #dc2626);
+}
+
+.watch-card.state-confirm {
+  border-left-color: var(--bear-green, #10b981);
+}
+
+.watch-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.watch-card-top strong {
+  display: block;
+  overflow: hidden;
+  max-width: 116px;
+  font-family: var(--font-cn, sans-serif);
+  font-size: var(--text-md, 14px);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watch-card-top span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+}
+
+.watch-card-price {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.watch-card-price strong {
+  max-width: none;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-lg, 16px);
+  font-weight: 700;
+}
+
+.watch-card-price span {
+  font-size: var(--text-xs, 11px);
+}
+
+.watch-card-position {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-xs, 11px);
+}
+
+.watch-card-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: 36px;
+  max-height: 38px;
+  margin: 0;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-family: var(--font-cn, sans-serif);
+  font-size: var(--text-base, 13px);
+  font-weight: 600;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.4;
+  transition: color 160ms ease;
+}
+
+.state-alert .watch-card-summary {
+  color: var(--signal-amber, #f59e0b);
+}
+
+.state-danger .watch-card-summary {
+  color: var(--warning-red, #dc2626);
+}
+
+.state-confirm .watch-card-summary {
+  color: var(--bear-green, #10b981);
+}
+
+.watch-card-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.watch-card-levels {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 11px);
+}
+
+.watch-card-no-level {
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-size: var(--text-xs, 11px);
+}
+
+.watch-action-badge {
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm, 4px);
+  padding: 3px 7px;
+  font-size: var(--text-xs, 11px);
+  font-weight: 700;
+}
+
+.action-hold {
+  background: rgba(107, 114, 128, 0.18);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.action-add {
+  background: rgba(16, 185, 129, 0.18);
+  color: var(--bear-green, #10b981);
+}
+
+.action-reduce {
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--signal-amber, #f59e0b);
+}
+
+.action-stop {
+  background: rgba(220, 38, 38, 0.2);
+  color: var(--warning-red, #dc2626);
+}
+
+.action-wait {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+}
+
+.action-watch {
+  background: rgba(6, 182, 212, 0.16);
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.is-up {
+  color: var(--bull-red, #f43f5e) !important;
+}
+
+.is-down {
+  color: var(--bear-green, #10b981) !important;
+}

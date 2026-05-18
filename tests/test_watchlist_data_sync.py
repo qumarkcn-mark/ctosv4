@@ -1,5 +1,6 @@
 """Watchlist 数据闭环测试。"""
 
+import asyncio
 import os
 import sqlite3
 import sys
@@ -316,3 +317,40 @@ def test_prewarm_ai_structure_universe_groups_jobs_by_symbol_priority(monkeypatc
         {"priority": 80, "symbols": ["sz.000001"]},
         {"priority": 60, "symbols": ["sh.600000"]},
     ]
+
+
+def test_refresh_unified_reasoning_after_kline_sync_uses_positions_and_watchlist(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(kline_sync_worker.config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", True)
+    monkeypatch.setattr(kline_sync_worker, "list_ai_native_user_ids", lambda limit=None: [1])
+    monkeypatch.setattr(
+        kline_sync_worker,
+        "resolve_ai_native_universe",
+        lambda user_id, sources: [
+            {"symbol": "sh.600519", "priority": 100, "sources": ["positions"]},
+            {"symbol": "sz.000001", "priority": 60, "sources": ["watchlist"]},
+            {"symbol": "sh.600000", "priority": 60, "sources": ["watchlist"]},
+        ],
+    )
+
+    async def fake_trigger_unified_reasoning(**kwargs):
+        calls.append(kwargs)
+        return {"symbol": kwargs["symbol"]}
+
+    monkeypatch.setattr(kline_sync_worker, "trigger_unified_reasoning", fake_trigger_unified_reasoning)
+
+    result = asyncio.run(kline_sync_worker.refresh_unified_reasoning_for_tracked_users(max_symbols_per_user=2))
+
+    assert result["generated"] == 2
+    assert result["errors"] == []
+    assert [call["symbol"] for call in calls] == ["sh.600519", "sz.000001"]
+    assert all(call["user_id"] == 1 for call in calls)
+
+
+def test_refresh_unified_reasoning_after_kline_sync_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(kline_sync_worker.config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", False)
+
+    result = asyncio.run(kline_sync_worker.refresh_unified_reasoning_for_tracked_users())
+
+    assert result == {"generated": 0, "errors": [], "skipped": True, "reason": "DISABLED"}

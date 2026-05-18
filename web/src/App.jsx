@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
 import ReviewTrainingPage from './pages/ReviewTrainingPage.jsx'
 import AIStructureWorkspace from './pages/AIStructureWorkspace.jsx'
+import WatchBoard from './pages/WatchBoard.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import { normalizeSymbolInput, readLastViewedSymbol } from './utils/symbolStorage.js'
 import './App.css'
@@ -10,7 +11,22 @@ const PAGE_ALIASES = {
   analysis: 'review',
 }
 
-const VALID_PAGES = new Set(['dashboard', 'ai', 'review'])
+const VALID_PAGES = new Set(['dashboard', 'ai', 'watchboard', 'review'])
+const PAGE_PATHS = {
+  ai: '/ai',
+  dashboard: '/dashboard',
+  watchboard: '/watchboard',
+  review: '/review',
+}
+
+function pageFromPath(pathname) {
+  const clean = String(pathname || '').replace(/\/+$/, '') || '/'
+  if (clean === '/watchboard') return 'watchboard'
+  if (clean === '/dashboard') return 'dashboard'
+  if (clean === '/review') return 'review'
+  if (clean === '/ai') return 'ai'
+  return ''
+}
 
 function normalizePage(page) {
   const nextPage = PAGE_ALIASES[page] || page || 'ai'
@@ -19,7 +35,7 @@ function normalizePage(page) {
 
 function App() {
   const [page, setPage] = useState(
-    () => normalizePage(localStorage.getItem('ct_last_page')) || 'ai'
+    () => normalizePage(pageFromPath(window.location.pathname) || localStorage.getItem('ct_last_page')) || 'ai'
   )
   const [showSettings, setShowSettings] = useState(false)
 
@@ -49,7 +65,19 @@ function App() {
     const nextPage = normalizePage(p)
     setPage(nextPage)
     localStorage.setItem('ct_last_page', nextPage)
+    const nextPath = PAGE_PATHS[nextPage] || '/ai'
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({ page: nextPage }, '', nextPath)
+    }
   }
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setPage(normalizePage(pageFromPath(window.location.pathname) || localStorage.getItem('ct_last_page')))
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   return (
     <div className="app">
@@ -74,6 +102,12 @@ function App() {
             交易账本
           </button>
           <button
+            className={`nav-tab ${page === 'watchboard' ? 'active' : ''}`}
+            onClick={() => navigate('watchboard')}
+          >
+            盯盘
+          </button>
+          <button
             className={`nav-tab ${page === 'review' ? 'active' : ''}`}
             onClick={() => navigate('review')}
           >
@@ -92,6 +126,7 @@ function App() {
       {/* 主内容区 */}
       <main className="main-content">
         {page === 'dashboard' && <Dashboard onViewInAI={handleViewInAI} onOpenAI={() => navigate('ai')} />}
+        {page === 'watchboard' && <WatchBoard />}
         {page === 'ai' && (
           <AIStructureWorkspace
             activeSymbol={activeSymbol}
