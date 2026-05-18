@@ -18,7 +18,6 @@ from typing import Any, Optional
 from fastapi.concurrency import run_in_threadpool
 from server import config
 from server.domain.symbols import normalize_symbol
-from server.engines.ai_native.unified_reasoning_service import trigger_unified_reasoning
 from server.engines.ai_native.universe_resolver import list_ai_native_user_ids, resolve_ai_native_universe
 
 logger = logging.getLogger(__name__)
@@ -338,8 +337,15 @@ async def refresh_unified_reasoning_for_tracked_users(
     max_symbols_per_user: int | None = None,
     reason: str = "after_kline_sync",
 ) -> dict:
-    """K线同步成功后，基于最新 snapshot/context 生成次日盯盘推演。"""
-    if not getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", True):
+    """K线同步成功后，基于最新 snapshot/context 生成次日盯盘推演。
+
+    注意：此函数不再被 _do_sync / force_sync 自动调用。
+    K 线同步后改为走 V5 snapshot → context 管线（prewarm_ai_structure_universe_for_tracked_users）。
+    此函数保留供手动 API 调用。
+    """
+    from server.engines.ai_native.unified_reasoning_service import trigger_unified_reasoning
+
+    if not getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", False):
         return {"generated": 0, "errors": [], "skipped": True, "reason": "DISABLED"}
 
     symbol_limit = max_symbols_per_user
@@ -522,10 +528,6 @@ class KlineSyncWorker:
                 priority=70,
                 reason="kline_sync_universe",
             )
-            unified_jobs = {"generated": 0, "errors": [], "skipped": True, "reason": "NO_KLINE_CHANGES"}
-            if result.get("total_written", 0) > 0:
-                unified_jobs = await refresh_unified_reasoning_for_tracked_users(reason="kline_sync")
-
             self._last_sync_time = datetime.now()
 
             logger.info(
@@ -545,14 +547,6 @@ class KlineSyncWorker:
                     universe_jobs["snapshot_jobs"],
                     universe_jobs["context_jobs"],
                 )
-            if unified_jobs.get("generated") or unified_jobs.get("errors"):
-                logger.info(
-                    "📊 [%s] 统一推演刷新: generated=%d errors=%d",
-                    trigger,
-                    unified_jobs.get("generated", 0),
-                    len(unified_jobs.get("errors") or []),
-                )
-
             # 同步完成后执行 WAL checkpoint，防止 WAL 文件无限积累
             # 用 run_in_threadpool 包裹，避免同步 I/O 阻塞事件循环
             def _do_checkpoint():
@@ -587,7 +581,6 @@ class KlineSyncWorker:
             priority=70,
             reason="force_sync_universe",
         )
-        result["unified_reasoning_jobs"] = await refresh_unified_reasoning_for_tracked_users(reason="force_sync")
         self._last_sync_time = datetime.now()
         return result
 
