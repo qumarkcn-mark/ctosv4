@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from server.api.auth import get_current_user_id
-from server.domain.symbols import normalize_symbol
+from server.db.database import get_connection
+from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.structure_chat_service import (
     answer_structure_question,
     list_chat_messages,
@@ -43,12 +48,17 @@ from server.engines.ai_native.structure_reminder_service import (
     list_structure_reminders,
 )
 from server.engines.ai_native.unified_reasoning_service import (
+    UNIFIED_FULL_TEXT_VERSION,
+    UNIFIED_REASONING_VERSION,
     get_latest_unified_reasoning,
+    normalize_monitor_conditions,
     trigger_unified_reasoning,
 )
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
+from server.services.baostock_service import fetch_klines_sync
+from server.services.price_service import get_batch_prices
 
 
 router = APIRouter()
@@ -60,6 +70,7 @@ class SnapshotPrewarmRequest(BaseModel):
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     priority: int = Field(default=80, ge=1, le=100)
     reason: str = "manual_prewarm"
+    force_rebuild: bool = False
 
 
 class ContextPrewarmRequest(BaseModel):
@@ -137,6 +148,35 @@ def get_ai_native_universe(
     }
 
 
+@router.get("/watchboard")
+async def watchboard(current_user_id: int = Depends(get_current_user_id)):
+    """Return the V5 intraday watchboard data in one user-scoped payload."""
+    groups = _load_watchboard_groups(current_user_id)
+    symbols = _unique_symbols(item["symbol"] for group in groups for item in group["items"])
+    prices = await get_batch_prices(symbols)
+    for group in groups:
+        for item in group["items"]:
+            price = _price_for_symbol(prices, item["symbol"])
+            if price:
+                item["price"] = price.get("price") or item.get("price") or 0
+                item["change_pct"] = price.get("change_pct") or 0
+                item["price_data"] = price
+                if not item.get("name"):
+                    item["name"] = price.get("name") or item["symbol"]
+            if item.get("position") and item.get("price"):
+                cost = _num(item["position"].get("cost"))
+                if cost > 0:
+                    item["position"]["pnl_pct"] = round((_num(item["price"]) - cost) / cost * 100, 2)
+            _apply_nearest_watch_levels(item)
+    return {
+        "status": "success",
+        "data": {
+            "groups": groups,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
 @router.post("/workspace/bootstrap")
 async def workspace_bootstrap(
     request: WorkspaceBootstrapRequest,
@@ -178,6 +218,7 @@ def prewarm_snapshots(
             priority=request.priority,
             reason=request.reason,
             requested_by_user_id=current_user_id,
+            force_rebuild=request.force_rebuild,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -262,20 +303,20 @@ def prewarm_contexts(
 
 
 @router.post("/contexts/regenerate")
-def regenerate_contexts(
+async def regenerate_contexts(
     request: ContextPrewarmRequest,
     current_user_id: int = Depends(get_current_user_id),
 ):
     _validate_compute_profile(request.compute_profile)
     levels = [_validate_level(level) for level in request.levels]
-    result = prewarm_ai_structure_contexts(
+    result = await run_in_threadpool(
+        _regenerate_context_chain,
         user_id=current_user_id,
         symbols=request.symbols,
         levels=levels,
         compute_profile=request.compute_profile,
         priority=max(request.priority, 95),
         reason=request.reason or "manual_context_regenerate",
-        force_rebuild=True,
     )
     return {"status": "success", "data": result}
 
@@ -620,6 +661,445 @@ def _validate_symbol(symbol: str) -> str:
         return normalize_symbol(symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _load_watchboard_groups(user_id: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        _ensure_watchboard_groups(conn, user_id)
+        positions = _load_watchboard_positions(conn, user_id)
+        reasoning_by_symbol = {
+            item["symbol"]: _load_watchboard_reasoning(conn, user_id, item["symbol"])
+            for item in positions
+        }
+        watch_groups = []
+        for name, group_type in (("自选", "watchlist"), ("备选", "candidate")):
+            items = _load_watchlist_group_items(conn, user_id, name)
+            for item in items:
+                if item["symbol"] not in reasoning_by_symbol:
+                    reasoning_by_symbol[item["symbol"]] = _load_watchboard_reasoning(conn, user_id, item["symbol"])
+            watch_groups.append({
+                "name": name,
+                "type": group_type,
+                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"])) for item in items],
+            })
+        return [
+            {
+                "name": "持仓",
+                "type": "position",
+                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"])) for item in positions],
+            },
+            *watch_groups,
+        ]
+    finally:
+        conn.close()
+
+
+def _ensure_watchboard_groups(conn, user_id: int) -> None:
+    rows = conn.execute(
+        "SELECT name FROM watchlist_groups WHERE user_id = ?",
+        (int(user_id),),
+    ).fetchall()
+    names = {row["name"] for row in rows}
+    next_order = len(names)
+    changed = False
+    for name in ("自选", "备选"):
+        if name in names:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO watchlist_groups (user_id, name, sort_order) VALUES (?, ?, ?)",
+            (int(user_id), name, next_order),
+        )
+        next_order += 1
+        changed = True
+    if changed:
+        conn.commit()
+
+
+def _load_watchboard_positions(conn, user_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT symbol, name, quantity, avg_cost, current_price, updated_at
+          FROM positions
+         WHERE user_id = ? AND quantity > 0
+         ORDER BY updated_at DESC, id DESC
+        """,
+        (int(user_id),),
+    ).fetchall()
+    items = []
+    seen = set()
+    for row in rows:
+        try:
+            symbol = normalize_symbol(row["symbol"])
+        except ValueError:
+            continue
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        current_price = _num(row["current_price"])
+        cost = _num(row["avg_cost"])
+        position = {
+            "shares": int(_num(row["quantity"])),
+            "cost": cost,
+            "pnl_pct": round((current_price - cost) / cost * 100, 2) if current_price > 0 and cost > 0 else None,
+        }
+        items.append({
+            "symbol": symbol,
+            "name": row["name"] or "",
+            "price": current_price,
+            "change_pct": 0,
+            "position": position,
+        })
+    return items
+
+
+def _load_watchlist_group_items(conn, user_id: int, group_name: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT wi.symbol, wi.name, wi.sort_order
+          FROM watchlist_items wi
+          JOIN watchlist_groups wg ON wg.id = wi.group_id
+         WHERE wg.user_id = ? AND wg.name = ?
+         ORDER BY wi.sort_order, wi.id
+        """,
+        (int(user_id), group_name),
+    ).fetchall()
+    items = []
+    seen = set()
+    for row in rows:
+        try:
+            symbol = normalize_symbol(row["symbol"])
+        except ValueError:
+            continue
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        items.append({
+            "symbol": symbol,
+            "name": row["name"] or "",
+            "price": 0,
+            "change_pct": 0,
+            "position": None,
+        })
+    return items
+
+
+def _load_watchboard_reasoning(conn, user_id: int, symbol: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT run_id, context_id, prompt_version, full_reasoning_text, summary_json, updated_at
+          FROM ai_structure_reasoning_runs
+         WHERE user_id = ?
+           AND symbol = ?
+           AND status = 'SUCCESS'
+           AND prompt_version IN (?, ?, ?)
+         ORDER BY
+           CASE
+             WHEN prompt_version = ? THEN 0
+             WHEN prompt_version = ? THEN 1
+             ELSE 2
+           END,
+           updated_at DESC,
+           id DESC
+         LIMIT 1
+        """,
+        (
+            int(user_id),
+            normalize_symbol(symbol),
+            UNIFIED_FULL_TEXT_VERSION,
+            UNIFIED_REASONING_VERSION,
+            "ai_structure_reasoning.e1_dynamic_growth.full_text",
+            UNIFIED_FULL_TEXT_VERSION,
+            UNIFIED_REASONING_VERSION,
+        ),
+    ).fetchone()
+    if not row:
+        return {}
+    summary = _loads_json(row["summary_json"])
+    return {
+        "run_id": row["run_id"],
+        "context_id": row["context_id"] or "",
+        "prompt_version": row["prompt_version"] or "",
+        "full_reasoning_text": row["full_reasoning_text"] or "",
+        "summary": summary,
+        "updated_at": row["updated_at"] or "",
+    }
+
+
+def _attach_watchboard_reasoning(item: dict, reasoning: dict | None) -> dict:
+    enriched = dict(item)
+    summary = (reasoning or {}).get("summary") or {}
+    safe_summary = dict(summary)
+    safe_summary["monitor_conditions"] = normalize_monitor_conditions(summary.get("monitor_conditions") or {})
+    if not safe_summary["monitor_conditions"]["triggers"]:
+        safe_summary["monitor_conditions"] = _fallback_monitor_conditions_from_key_boundaries(summary)
+    enriched["reasoning_summary"] = _watchboard_summary(safe_summary, reasoning or {})
+    enriched["monitor_conditions"] = safe_summary["monitor_conditions"]
+    prompt_version = (reasoning or {}).get("prompt_version") or ""
+    enriched["reasoning_source"] = "unified" if prompt_version in {UNIFIED_FULL_TEXT_VERSION, UNIFIED_REASONING_VERSION} else "legacy"
+    enriched["full_reasoning_available"] = bool((reasoning or {}).get("full_reasoning_text"))
+    enriched["unified_reasoning_available"] = enriched["reasoning_source"] == "unified" and enriched["full_reasoning_available"]
+    enriched["reasoning_run_id"] = (reasoning or {}).get("run_id") or ""
+    enriched["context_id"] = (reasoning or {}).get("context_id") or ""
+    return enriched
+
+
+def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
+    coach_summary = str(summary.get("front_panel_text") or summary.get("coach_summary") or summary.get("one_liner") or "").strip()
+    triggers = (summary.get("monitor_conditions") or {}).get("triggers") or []
+    down_levels = [item for item in triggers if item.get("type") == "price_below"]
+    up_levels = [item for item in triggers if item.get("type") == "price_above"]
+    key_down = min((_num(item.get("level")) for item in down_levels if _num(item.get("level")) > 0), default=None)
+    key_up = max((_num(item.get("level")) for item in up_levels if _num(item.get("level")) > 0), default=None)
+    return {
+        "one_liner": _compact_watchboard_line(summary.get("one_liner") or coach_summary, (reasoning or {}).get("full_reasoning_text") or ""),
+        "action": summary.get("action") or "观望",
+        "action_detail": summary.get("action_detail") or "",
+        "key_level_down": key_down,
+        "key_level_down_meaning": summary.get("key_level_down_meaning") or "下方关键位",
+        "key_level_up": key_up,
+        "key_level_up_meaning": summary.get("key_level_up_meaning") or "上方关键位",
+        "stop_loss": summary.get("stop_loss"),
+        "scenarios": summary.get("scenarios") or [],
+        "generated_at": summary.get("generated_at") or reasoning.get("updated_at") or "",
+    }
+
+
+def _fallback_monitor_conditions_from_key_boundaries(summary: dict) -> dict:
+    """旧推演没有 monitor_conditions 时，从结构化关键边界生成临时盯盘位。"""
+    triggers: list[dict] = []
+    seen_levels: set[float] = set()
+    for boundary in summary.get("key_boundaries") or []:
+        if not isinstance(boundary, dict):
+            continue
+        price = _num(boundary.get("price"))
+        if price <= 0:
+            continue
+        rounded_price = round(price, 4)
+        if rounded_price in seen_levels:
+            continue
+        seen_levels.add(rounded_price)
+        description = str(boundary.get("description") or "").strip()
+        boundary_type = str(boundary.get("type") or "").strip()
+        action = "观望"
+        if boundary_type == "invalidation" or any(word in description for word in ("失效", "防守", "跌破", "下沿")):
+            message = f"跌破{_format_level(price)}，结构转弱"
+            if any(word in description for word in ("止损", "失效", "下沿")):
+                action = "减仓"
+        else:
+            message = f"跌破{_format_level(price)}，回中枢观察"
+        triggers.append({
+            "type": "price_below",
+            "level": rounded_price,
+            "message_on_trigger": message,
+            "action_on_trigger": action,
+        })
+        if len(triggers) >= 4:
+            break
+    return normalize_monitor_conditions({"triggers": triggers})
+
+
+def _format_level(value: float) -> str:
+    if value >= 100:
+        return f"{value:.2f}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _apply_nearest_watch_levels(item: dict) -> None:
+    """按当前价返回最近的上下关键位，避免卡片显示最远支撑/压力。"""
+    price = _num(item.get("price"))
+    if price <= 0:
+        return
+    summary = item.get("reasoning_summary") or {}
+    triggers = (item.get("monitor_conditions") or {}).get("triggers") or []
+    below_levels = [
+        _num(trigger.get("level"))
+        for trigger in triggers
+        if trigger.get("type") == "price_below" and 0 < _num(trigger.get("level")) < price
+    ]
+    above_levels = [
+        _num(trigger.get("level"))
+        for trigger in triggers
+        if trigger.get("type") == "price_above" and _num(trigger.get("level")) > price
+    ]
+    summary["key_level_down"] = max(below_levels, default=None)
+    summary["key_level_up"] = min(above_levels, default=None)
+    item["reasoning_summary"] = summary
+
+
+def _compact_watchboard_line(summary_text: str, full_text: str = "") -> str:
+    """Turn long reasoning prose into one scan-friendly watchboard task line."""
+    bad_markers = (
+        "好的",
+        "请坐",
+        "收到数据",
+        "数据已齐",
+        "我们开始",
+        "我的分析如下",
+        "下面我",
+        "开始这场",
+        "记住",
+        "不构成",
+        "投资建议",
+        "自行决定",
+    )
+    source = "\n".join([str(summary_text or ""), str(full_text or "")]).strip()
+    if not source:
+        return "待生成路径"
+    parts = [part.strip(" \t\r\n#*-0123456789.、：:") for part in re.split(r"[。！？\n]", source) if part.strip()]
+    preferred_markers = ("当前", "核心", "观察", "重点", "处于", "主线", "关键", "跌破", "守住", "回到", "中枢", "三买", "三卖")
+    for part in parts:
+        part = re.sub(r"[*_`]+", "", part).strip()
+        if any(marker in part for marker in bad_markers):
+            continue
+        if any(marker in part for marker in preferred_markers):
+            return part[:42]
+    for part in parts:
+        part = re.sub(r"[*_`]+", "", part).strip()
+        if not any(marker in part for marker in bad_markers):
+            return part[:42]
+    return "待生成路径"
+
+
+def _regenerate_context_chain(
+    *,
+    user_id: int,
+    symbols: list[str],
+    levels: list[str],
+    compute_profile: str,
+    priority: int,
+    reason: str,
+) -> dict:
+    """重新生成的真实链路：K线刷新 -> snapshot 刷新 -> context 重跑。"""
+    items = []
+    for raw_symbol in symbols:
+        symbol = normalize_symbol(raw_symbol)
+        sync_result = _sync_regenerate_klines(symbol, levels)
+        snapshot_result = prewarm_structure_snapshots(
+            symbols=[symbol],
+            levels=levels,
+            compute_profile=compute_profile,
+            priority=priority,
+            reason=f"{reason}:snapshot_refresh",
+            requested_by_user_id=user_id,
+            force_rebuild=False,
+        )
+        level_statuses = _snapshot_level_statuses(
+            symbol=symbol,
+            levels=levels,
+            compute_profile=compute_profile,
+        )
+        blocking_levels = [
+            item["level"]
+            for item in level_statuses
+            if item["status"] in {"pending", "stale", "failed"}
+        ]
+
+        context_result = None
+        if not blocking_levels:
+            context_result = prewarm_ai_structure_contexts(
+                user_id=user_id,
+                symbols=[symbol],
+                levels=levels,
+                compute_profile=compute_profile,
+                priority=priority,
+                reason=reason,
+                force_rebuild=True,
+            )
+
+        items.append({
+            "symbol": symbol,
+            "status": "snapshot_pending" if blocking_levels else "context_enqueued",
+            "sync": sync_result,
+            "snapshot_jobs": snapshot_result,
+            "context_jobs": context_result,
+            "stale_levels": blocking_levels,
+            "level_freshness": level_statuses,
+        })
+
+    return {
+        "count": len(items),
+        "items": items,
+        "refresh_chain": "kline_to_snapshot_to_context",
+    }
+
+
+def _sync_regenerate_klines(symbol: str, levels: list[str]) -> dict:
+    results = []
+    total_written = 0
+    error_count = 0
+    for level in levels:
+        try:
+            written = fetch_klines_sync(symbol, level)
+            total_written += int(written or 0)
+            results.append({"level": level, "written": int(written or 0), "status": "ok"})
+        except Exception as exc:
+            error_count += 1
+            results.append({
+                "level": level,
+                "written": 0,
+                "status": "error",
+                "error": str(exc)[:200],
+            })
+    return {
+        "status": "success" if error_count == 0 else "partial",
+        "total_written": total_written,
+        "errors": error_count,
+        "levels": results,
+    }
+
+
+def _snapshot_level_statuses(*, symbol: str, levels: list[str], compute_profile: str) -> list[dict]:
+    items = []
+    for level in levels:
+        status = get_snapshot_status(symbol=symbol, level=level, compute_profile=compute_profile)
+        snapshot = status.get("snapshot") or {}
+        freshness = status.get("freshness") or {}
+        items.append({
+            "level": level,
+            "status": status.get("status") or "unknown",
+            "data_as_of": snapshot.get("data_as_of") or "",
+            "kline_last_bar_at": freshness.get("last_bar_at") or "",
+            "kline_count": freshness.get("kline_count") or 0,
+            "stale_reason": freshness.get("stale_reason") or "",
+            "job": status.get("job"),
+        })
+    return items
+
+
+def _unique_symbols(symbols) -> list[str]:
+    result = []
+    seen = set()
+    for raw in symbols:
+        try:
+            symbol = normalize_symbol(raw)
+        except ValueError:
+            continue
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        result.append(symbol)
+    return result
+
+
+def _price_for_symbol(prices: dict, symbol: str) -> dict:
+    tencent = to_tencent_symbol(symbol)
+    return prices.get(tencent) or prices.get(symbol) or {}
+
+
+def _loads_json(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _num(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _validate_workspace_include(section: str) -> str:

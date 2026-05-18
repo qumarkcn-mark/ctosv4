@@ -569,87 +569,93 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
           {watchlistMessage && <small>{watchlistMessage}</small>}
         </div>
 
-        <div className="base-kline__periods" role="tablist" aria-label="K 线周期">
-          {KLINE_PERIODS.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              className={period === item.value ? 'is-active' : ''}
-              onClick={() => handlePeriodChange(item.value)}
-              role="tab"
-              aria-selected={period === item.value}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="base-kline__indicators" aria-label="K 线指标">
-          <div>
-            <span>主图</span>
-            {MAIN_INDICATORS.map((item) => (
+        <div className="base-kline__control-strip">
+          <div className="base-kline__periods" role="tablist" aria-label="K 线周期">
+            {KLINE_PERIODS.map((item) => (
               <button
                 key={item.value}
                 type="button"
-                className={mainIndicator === item.value ? 'is-active' : ''}
-                onClick={() => handleMainIndicatorChange(item.value)}
+                className={period === item.value ? 'is-active' : ''}
+                onClick={() => handlePeriodChange(item.value)}
+                role="tab"
+                aria-selected={period === item.value}
               >
                 {item.label}
               </button>
             ))}
           </div>
-          <div>
-            <span>副图</span>
-            {SUB_INDICATORS.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                className={subIndicator === item.value ? 'is-active' : ''}
-                onClick={() => handleSubIndicatorChange(item.value)}
-              >
-                {item.label}
-              </button>
-            ))}
+
+          <div className="base-kline__indicators" aria-label="K 线指标">
+            <div>
+              <span>主图</span>
+              {MAIN_INDICATORS.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={mainIndicator === item.value ? 'is-active' : ''}
+                  onClick={() => handleMainIndicatorChange(item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div>
+              <span>副图</span>
+              {SUB_INDICATORS.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={subIndicator === item.value ? 'is-active' : ''}
+                  onClick={() => handleSubIndicatorChange(item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         <div className="base-kline__status">
-          <div className="base-kline__layer-controls" aria-label="K线图层">
-            <button
-              type="button"
-              className={structureLayer ? 'is-layer-active' : ''}
-              onClick={handleStructureLayerToggle}
-              title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
-            >
-              结构
-            </button>
-            <button
-              type="button"
-              className={momentumLayer ? 'is-layer-active' : ''}
-              onClick={handleMomentumLayerToggle}
-              title="显示/隐藏当前段与上一同向段力量对比"
-            >
-              力量
+          <div className="base-kline__structure-meta">
+            <div className="base-kline__layer-controls" aria-label="K线图层">
+              <button
+                type="button"
+                className={structureLayer ? 'is-layer-active' : ''}
+                onClick={handleStructureLayerToggle}
+                title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
+              >
+                结构
+              </button>
+              <button
+                type="button"
+                className={momentumLayer ? 'is-layer-active' : ''}
+                onClick={handleMomentumLayerToggle}
+                title="显示/隐藏当前段与上一同向段力量对比"
+              >
+                力量
+              </button>
+            </div>
+            {structureLayer && (
+              <div className="base-kline__legend" aria-label="结构图例">
+                <span><i className="is-bi" />笔</span>
+                <span><i className="is-center" />中枢</span>
+                {(structureView?.segments?.length || 0) > 0 && <span><i className="is-segment" />线段</span>}
+              </div>
+            )}
+            <span>{loading ? '加载中' : `${barCount} 根`}</span>
+            {structureLayer && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
+            {momentumLayer && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
+          </div>
+          <div className="base-kline__quote-actions">
+            {quote?.price && (
+              <strong className={Number(quote.change_pct) >= 0 ? 'is-up' : 'is-down'}>
+                {formatPrice(quote.price)}
+              </strong>
+            )}
+            <button type="button" onClick={handleRefresh} disabled={syncing || loading}>
+              {syncing ? '同步中' : '刷新'}
             </button>
           </div>
-          {structureLayer && (
-            <div className="base-kline__legend" aria-label="结构图例">
-              <span><i className="is-bi" />笔</span>
-              {(structureView?.segments?.length || 0) > 0 && <span><i className="is-segment" />线段</span>}
-              <span><i className="is-center" />中枢</span>
-            </div>
-          )}
-          <span>{loading ? '加载中' : `${barCount} 根`}</span>
-          {structureLayer && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
-          {momentumLayer && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
-          {quote?.price && (
-            <strong className={Number(quote.change_pct) >= 0 ? 'is-up' : 'is-down'}>
-              {formatPrice(quote.price)}
-            </strong>
-          )}
-          <button type="button" onClick={handleRefresh} disabled={syncing || loading}>
-            {syncing ? '同步中' : '刷新'}
-          </button>
         </div>
       </header>
 

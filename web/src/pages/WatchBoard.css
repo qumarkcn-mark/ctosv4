@@ -1,0 +1,361 @@
+.watchboard-page {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(100vh - 48px);
+  background: var(--surface-0, #08080a);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  transition: grid-template-columns 180ms ease;
+}
+
+.watchboard-page.has-detail {
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 520px);
+}
+
+.watchboard-main {
+  min-width: 0;
+  padding: 16px;
+}
+
+.watchboard-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.watchboard-toolbar h1 {
+  margin: 0;
+  font-family: var(--font-display, sans-serif);
+  font-size: var(--text-xl, 20px);
+  font-weight: 800;
+}
+
+.watchboard-toolbar p {
+  margin: 4px 0 0;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-sm, 12px);
+}
+
+.watchboard-add {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 76px 70px;
+  align-items: center;
+  gap: var(--space-2, 4px);
+  padding: 2px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface-1, #0d0d0f);
+}
+
+.watchboard-add select,
+.watchboard-chat-input input {
+  height: 28px;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-2, #111115);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-family: var(--font-body, sans-serif);
+  font-size: var(--text-sm, 12px);
+}
+
+.watchboard-add select {
+  padding: 0 8px;
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+}
+
+.watchboard-live {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2, 4px);
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-body, sans-serif);
+  font-size: var(--text-xs, 11px);
+  font-weight: 600;
+}
+
+.watchboard-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--agent-idle, rgba(255, 255, 255, 0.12));
+}
+
+.watchboard-live.is-open {
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.watchboard-live.is-open i {
+  background: var(--accent-cyan, #06b6d4);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.45);
+}
+
+.watchboard-section {
+  margin-bottom: 18px;
+}
+
+.watchboard-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.watchboard-section-title h2 {
+  margin: 0;
+  font-size: var(--text-md, 14px);
+  font-weight: 700;
+}
+
+.watchboard-section-title span {
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 11px);
+}
+
+.watchboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.watchboard-empty,
+.watchboard-error,
+.watchboard-info {
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 6px);
+  padding: 14px;
+  background: var(--surface-1, #0d0d0f);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-base, 13px);
+}
+
+.watchboard-error {
+  margin-bottom: 12px;
+  border-color: rgba(220, 38, 38, 0.32);
+  color: var(--warning-red, #dc2626);
+}
+
+.watchboard-info {
+  margin-bottom: 12px;
+  border-color: rgba(6, 182, 212, 0.26);
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.watchboard-drawer {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  height: calc(100vh - 48px);
+  flex-direction: column;
+  border-left: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  background: var(--surface-1, #0d0d0f);
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.24);
+}
+
+.watchboard-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  padding: 14px;
+}
+
+.watchboard-drawer-header strong,
+.watchboard-drawer-header span {
+  display: block;
+}
+
+.watchboard-drawer-header strong {
+  font-size: var(--text-lg, 16px);
+}
+
+.watchboard-drawer-header span {
+  margin-top: 3px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 11px);
+}
+
+.watchboard-drawer-header button,
+.watchboard-quick button,
+.watchboard-chat-input button {
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-2, #111115);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  cursor: pointer;
+  font-size: var(--text-sm, 12px);
+}
+
+.watchboard-drawer-header button {
+  height: 30px;
+  padding: 0 10px;
+}
+
+.watchboard-scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  padding: 10px 14px;
+}
+
+.watchboard-scenarios span {
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px 7px;
+  background: rgba(200, 168, 50, 0.12);
+  color: var(--action-gold, #c8a832);
+  font-size: var(--text-xs, 11px);
+}
+
+.watchboard-drawer-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-base, 13px);
+  line-height: 1.65;
+}
+
+.watchboard-drawer-body h1,
+.watchboard-drawer-body h2,
+.watchboard-drawer-body h3 {
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-size: var(--text-md, 14px);
+}
+
+.watchboard-missing-reasoning {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 6px);
+  padding: 18px;
+  background: var(--surface-2, #111115);
+}
+
+.watchboard-missing-reasoning strong {
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-size: var(--text-lg, 16px);
+}
+
+.watchboard-missing-reasoning p {
+  max-width: 360px;
+  margin: 0;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-base, 13px);
+  line-height: 1.6;
+}
+
+.watchboard-missing-reasoning button {
+  height: 32px;
+  border: 1px solid rgba(200, 168, 50, 0.36);
+  border-radius: var(--radius-sm, 4px);
+  padding: 0 12px;
+  background: rgba(200, 168, 50, 0.12);
+  color: var(--action-gold, #c8a832);
+  cursor: pointer;
+  font-size: var(--text-sm, 12px);
+  font-weight: 700;
+}
+
+.watchboard-missing-reasoning button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.watchboard-chat {
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  padding: 12px 14px 14px;
+}
+
+.watchboard-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.watchboard-quick button {
+  min-height: 28px;
+  padding: 0 8px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+}
+
+.watchboard-chat-log {
+  max-height: 120px;
+  overflow: auto;
+}
+
+.watchboard-chat-log p {
+  margin: 0 0 6px;
+  border-radius: var(--radius-sm, 4px);
+  padding: 7px 8px;
+  font-size: var(--text-sm, 12px);
+  line-height: 1.45;
+}
+
+.chat-user {
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.chat-assistant {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+}
+
+.watchboard-chat-input {
+  display: grid;
+  grid-template-columns: 1fr 58px;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.watchboard-chat-input input {
+  width: 100%;
+  padding: 0 10px;
+}
+
+.watchboard-chat-input button {
+  height: 34px;
+}
+
+@media (max-width: 900px) {
+  .watchboard-page,
+  .watchboard-page.has-detail {
+    display: block;
+  }
+
+  .watchboard-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .watchboard-add {
+    grid-template-columns: 1fr 86px 72px;
+  }
+
+  .watchboard-drawer {
+    position: fixed;
+    top: 48px;
+    right: 0;
+    width: min(520px, 94vw);
+    height: calc(100vh - 48px);
+  }
+}
