@@ -58,6 +58,7 @@ def prewarm_structure_snapshots(
     priority: int = 80,
     reason: str = "manual_prewarm",
     requested_by_user_id: int | None = None,
+    force_rebuild: bool = False,
 ) -> dict[str, Any]:
     if compute_profile not in COMPUTE_PROFILES:
         raise ValueError(f"unsupported compute profile: {compute_profile}")
@@ -84,6 +85,7 @@ def prewarm_structure_snapshots(
                 priority=priority,
                 reason=reason,
                 requested_by_user_id=requested_by_user_id,
+                force_rebuild=force_rebuild,
             )
             job["freshness"] = _freshness_from_signature(signature)
             items.append(job)
@@ -100,6 +102,7 @@ def enqueue_snapshot_job(
     reason: str = "",
     requested_by_user_id: int | None = None,
     retry_terminal: bool = True,
+    force_rebuild: bool = False,
 ) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     normalized_level = normalize_freq(level)
@@ -160,6 +163,34 @@ def enqueue_snapshot_job(
                 conn.commit()
                 retried = conn.execute("SELECT * FROM structure_snapshot_jobs WHERE id = ?", (row["id"],)).fetchone()
                 return _job_row(retried, enqueued=True, bumped=False, retried=True)
+            # force_rebuild: 把已成功的 job 重置为 PENDING，强制重跑 serializer
+            if force_rebuild and row["status"] == "SUCCESS":
+                new_job_id = _new_id("v5snapjob")
+                conn.execute(
+                    """
+                    UPDATE structure_snapshot_jobs
+                       SET job_id = ?,
+                           priority = ?,
+                           status = 'PENDING',
+                           reason = ?,
+                           requested_by_user_id = COALESCE(?, requested_by_user_id),
+                           retry_count = 0,
+                           next_run_at = ?,
+                           locked_by = '',
+                           locked_at = NULL,
+                           started_at = NULL,
+                           finished_at = NULL,
+                           result_snapshot_id = '',
+                           error_code = '',
+                           error_message = '',
+                           updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (new_job_id, int(priority), reason or "force_rebuild", requested_by_user_id, now, now, row["id"]),
+                )
+                conn.commit()
+                rebuilt = conn.execute("SELECT * FROM structure_snapshot_jobs WHERE id = ?", (row["id"],)).fetchone()
+                return _job_row(rebuilt, enqueued=True, bumped=False, retried=False)
             return _job_row(existing, enqueued=False, bumped=False)
 
         job_id = _new_id("v5snapjob")
@@ -261,6 +292,94 @@ def get_snapshot_status(
         return _status_payload("pending", canonical, normalized_level, compute_profile, freshness, snapshot=None, job=job)
     finally:
         conn.close()
+
+
+def get_snapshot_status_batch(
+    *,
+    symbols: list[str],
+    levels: list[str],
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return snapshot status for many symbol/level pairs with shared DB reads."""
+    canonical_symbols = _unique_normalized_symbols(symbols)
+    normalized_levels = _unique_normalized_levels(levels)
+    if not canonical_symbols or not normalized_levels:
+        return {}
+
+    signatures: dict[tuple[str, str], dict[str, Any]] = {}
+    signed_pairs: list[tuple[str, str]] = []
+    for symbol in canonical_symbols:
+        for level in normalized_levels:
+            signature = _signature_for_level(symbol=symbol, level=level, compute_profile=compute_profile)
+            signatures[(symbol, level)] = signature
+            if signature.get("signature"):
+                signed_pairs.append((symbol, level))
+
+    latest_snapshots: dict[tuple[str, str], Any] = {}
+    fresh_snapshots: dict[tuple[str, str], Any] = {}
+    jobs_by_key: dict[str, Any] = {}
+    conn = get_connection()
+    try:
+        if signed_pairs:
+            symbol_placeholders = ",".join("?" for _ in canonical_symbols)
+            level_placeholders = ",".join("?" for _ in normalized_levels)
+            snapshot_rows = conn.execute(
+                f"""
+                SELECT *
+                  FROM structure_snapshots
+                 WHERE symbol IN ({symbol_placeholders})
+                   AND level IN ({level_placeholders})
+                   AND engine = 'czsc'
+                   AND compute_profile = ?
+                 ORDER BY updated_at DESC, id DESC
+                """,
+                (*canonical_symbols, *normalized_levels, compute_profile),
+            ).fetchall()
+            for row in snapshot_rows:
+                key = (row["symbol"], row["level"])
+                latest_snapshots.setdefault(key, row)
+                signature = signatures.get(key) or {}
+                if row["data_signature"] == signature.get("signature"):
+                    fresh_snapshots.setdefault(key, row)
+
+            job_keys = [
+                snapshot_job_key(
+                    symbol=symbol,
+                    level=level,
+                    data_signature=signatures[(symbol, level)]["signature"],
+                    compute_profile=compute_profile,
+                )
+                for symbol, level in signed_pairs
+            ]
+            if job_keys:
+                key_placeholders = ",".join("?" for _ in job_keys)
+                job_rows = conn.execute(
+                    f"SELECT * FROM structure_snapshot_jobs WHERE idempotency_key IN ({key_placeholders})",
+                    job_keys,
+                ).fetchall()
+                jobs_by_key = {row["idempotency_key"]: row for row in job_rows}
+    finally:
+        conn.close()
+
+    result: dict[str, dict[str, dict[str, Any]]] = {}
+    for symbol in canonical_symbols:
+        result[symbol] = {}
+        for level in normalized_levels:
+            result[symbol][level] = _snapshot_status_from_preloaded(
+                symbol=symbol,
+                level=level,
+                compute_profile=compute_profile,
+                signature=signatures[(symbol, level)],
+                fresh=fresh_snapshots.get((symbol, level)),
+                latest=latest_snapshots.get((symbol, level)),
+                job=jobs_by_key.get(snapshot_job_key(
+                    symbol=symbol,
+                    level=level,
+                    data_signature=signatures[(symbol, level)].get("signature") or "",
+                    compute_profile=compute_profile,
+                )) if signatures[(symbol, level)].get("signature") else None,
+            )
+    return result
 
 
 def get_latest_snapshot(
@@ -487,6 +606,7 @@ def run_snapshot_job_sync(job: dict[str, Any]) -> dict[str, Any]:
             levels=[job["level"]],
             count=resolve_compute_bars(job["compute_profile"], job["level"]),
             compute_profile=job["compute_profile"],
+            precomputed_result=result,
         )
         snapshot = save_snapshot(
             symbol=job["symbol"],
@@ -638,6 +758,40 @@ def _status_payload(
     }
 
 
+def _snapshot_status_from_preloaded(
+    *,
+    symbol: str,
+    level: str,
+    compute_profile: str,
+    signature: dict[str, Any],
+    fresh=None,
+    latest=None,
+    job=None,
+) -> dict[str, Any]:
+    freshness = _freshness_from_signature(signature)
+    if not signature.get("signature"):
+        return {
+            "symbol": symbol,
+            "level": level,
+            "engine": ENGINE,
+            "compute_profile": compute_profile,
+            "status": "no_data",
+            "freshness": _freshness_from_signature(signature, stale_reason="NO_DATA"),
+            "snapshot": None,
+            "job": None,
+        }
+    if fresh:
+        return _status_payload("fresh", symbol, level, compute_profile, freshness, snapshot=fresh)
+    if job and job["status"] in JOB_ACTIVE_STATUSES:
+        status = "stale" if latest else "pending"
+        return _status_payload(status, symbol, level, compute_profile, freshness, snapshot=latest, job=job)
+    if job and job["status"] == "FAILED_FINAL":
+        return _status_payload("failed", symbol, level, compute_profile, freshness, snapshot=latest, job=job)
+    if latest:
+        return _status_payload("stale", symbol, level, compute_profile, freshness, snapshot=latest, job=job)
+    return _status_payload("pending", symbol, level, compute_profile, freshness, snapshot=None, job=job)
+
+
 def _job_row(row, **extra) -> dict[str, Any]:
     if row is None:
         return {}
@@ -652,6 +806,30 @@ def _snapshot_row(row) -> dict[str, Any]:
     data["snapshot"] = json.loads(data.pop("snapshot_json") or "{}")
     data["raw_bi_context"] = json.loads(data.pop("raw_bi_context_json") or "{}")
     return data
+
+
+def _unique_normalized_symbols(symbols: list[str]) -> list[str]:
+    output = []
+    seen = set()
+    for raw_symbol in symbols:
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        output.append(symbol)
+    return output
+
+
+def _unique_normalized_levels(levels: list[str]) -> list[str]:
+    output = []
+    seen = set()
+    for raw_level in levels:
+        level = normalize_freq(raw_level)
+        if level in seen:
+            continue
+        seen.add(level)
+        output.append(level)
+    return output
 
 
 def _complete_job(job_id: str, *, snapshot_id: str) -> None:

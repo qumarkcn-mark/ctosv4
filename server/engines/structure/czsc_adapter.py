@@ -126,6 +126,7 @@ def export_czsc_raw_bi_context_sync(
     *,
     recent_bi_count: int = 20,
     compute_profile: str = "tactical_v1",
+    precomputed_result: Optional[dict] = None,
 ) -> dict:
     """Export CZSC BI geometry for AI Structure Context.
 
@@ -134,7 +135,7 @@ def export_czsc_raw_bi_context_sync(
     """
     canonical_symbol = normalize_symbol(symbol)
     requested_levels = [normalize_freq(level) for level in (levels or ["day", "30", "5"])]
-    structure = analyze_czsc_structure_sync(
+    structure = precomputed_result or analyze_czsc_structure_sync(
         canonical_symbol,
         levels=requested_levels,
         count=count,
@@ -199,6 +200,7 @@ async def export_czsc_raw_bi_context(
     *,
     recent_bi_count: int = 20,
     compute_profile: str = "tactical_v1",
+    precomputed_result: Optional[dict] = None,
 ) -> dict:
     return await run_in_threadpool(
         export_czsc_raw_bi_context_sync,
@@ -207,6 +209,7 @@ async def export_czsc_raw_bi_context(
         count,
         recent_bi_count=recent_bi_count,
         compute_profile=compute_profile,
+        precomputed_result=precomputed_result,
     )
 
 

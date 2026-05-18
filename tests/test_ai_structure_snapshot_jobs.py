@@ -65,7 +65,8 @@ def test_snapshot_worker_creates_czsc_snapshot(monkeypatch, tmp_path):
             },
         }
 
-    def fake_raw(symbol, levels, count, compute_profile):
+    def fake_raw(symbol, levels, count, compute_profile, precomputed_result=None):
+        assert precomputed_result is not None
         return {"symbol": "sh.600519", "version": "czsc_raw_bi_context.v1", "levels": {"day": {"last_close": 10.5}}}
 
     monkeypatch.setattr(service.czsc_adapter, "analyze_czsc_structure_sync", fake_analyze)
@@ -117,7 +118,8 @@ def test_snapshot_followup_context_uses_latest_snapshot_set(monkeypatch, tmp_pat
             },
         }
 
-    def fake_raw(symbol, levels, count, compute_profile):
+    def fake_raw(symbol, levels, count, compute_profile, precomputed_result=None):
+        assert precomputed_result is not None
         level = levels[0]
         return {"symbol": "sh.600519", "version": "czsc_raw_bi_context.v1", "levels": {level: {"last_close": 10.5}}}
 
@@ -176,7 +178,8 @@ def test_snapshot_followup_context_enqueues_all_interested_users(monkeypatch, tm
             },
         }
 
-    def fake_raw(symbol, levels, count, compute_profile):
+    def fake_raw(symbol, levels, count, compute_profile, precomputed_result=None):
+        assert precomputed_result is not None
         return {"symbol": "sh.600519", "version": "czsc_raw_bi_context.v1", "levels": {"day": {"last_close": 10.5}}}
 
     monkeypatch.setattr(service.czsc_adapter, "analyze_czsc_structure_sync", fake_analyze)

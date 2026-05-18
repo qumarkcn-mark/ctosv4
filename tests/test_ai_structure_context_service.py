@@ -240,6 +240,13 @@ def test_context_background_contract_keeps_fundamental_context_only(monkeypatch,
 def test_context_status_turns_stale_when_new_snapshot_exists(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     ensure_user()
+    monkeypatch.setattr(snapshot_service, "get_kline_window_signature", lambda *args, **kwargs: {
+        "source": "baostock",
+        "row_count": 120,
+        "first_date": "2026-01-01",
+        "last_date": "2026-05-12",
+        "signature": "sig-old",
+    })
     save_snapshot(signature="sig-old", price=10.5)
     context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
     job = context_service.claim_next_context_job(worker_id="ctx-worker")
@@ -248,6 +255,13 @@ def test_context_status_turns_stale_when_new_snapshot_exists(monkeypatch, tmp_pa
     status = context_service.get_ai_structure_context_status(user_id=1, symbol="sh600519", levels=["5"])
     assert status["status"] == "fresh"
 
+    monkeypatch.setattr(snapshot_service, "get_kline_window_signature", lambda *args, **kwargs: {
+        "source": "baostock",
+        "row_count": 120,
+        "first_date": "2026-01-01",
+        "last_date": "2026-05-12",
+        "signature": "sig-new",
+    })
     save_snapshot(signature="sig-new", price=11.2, zg=11.5, zd=10.8)
     stale = context_service.get_ai_structure_context_status(user_id=1, symbol="sh600519", levels=["5"])
 

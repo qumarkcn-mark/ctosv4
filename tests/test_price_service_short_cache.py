@@ -16,6 +16,18 @@ def _fresh_row() -> dict:
     }
 
 
+def _stale_row() -> dict:
+    return {
+        "date": "2000-01-01",
+        "open": 10.0,
+        "high": 10.2,
+        "low": 9.8,
+        "close": 10.1,
+        "volume": 1000,
+        "amount": 10000,
+    }
+
+
 def test_daily_klines_return_fresh_short_cache_without_baostock(monkeypatch):
     monkeypatch.setattr(price_service, "query_klines", lambda *args, **kwargs: [_fresh_row()])
     monkeypatch.setattr(
@@ -35,6 +47,25 @@ def test_daily_klines_return_fresh_short_cache_without_baostock(monkeypatch):
     assert len(rows) == 1
 
 
+def test_daily_klines_return_stale_short_cache_without_blocking_baostock(monkeypatch):
+    monkeypatch.setattr(price_service, "query_klines", lambda *args, **kwargs: [_stale_row()])
+    monkeypatch.setattr(
+        price_service,
+        "fetch_klines_quick",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("BaoStock should not block chart display")),
+    )
+
+    rows = asyncio.run(
+        price_service.get_daily_klines(
+            "sz.301590",
+            count=2000,
+            allow_short_fresh_cache=True,
+        )
+    )
+
+    assert rows == [_stale_row()]
+
+
 def test_daily_klines_default_keeps_backfill_for_shared_callers(monkeypatch):
     calls = []
     monkeypatch.setattr(price_service, "query_klines", lambda *args, **kwargs: [_fresh_row()])
@@ -44,6 +75,27 @@ def test_daily_klines_default_keeps_backfill_for_shared_callers(monkeypatch):
 
     assert len(rows) == 1
     assert calls == [("sz.301590", "day")]
+
+
+def test_minute_klines_return_stale_short_cache_without_blocking_baostock(monkeypatch):
+    row = {**_stale_row(), "date": "2000-01-01 15:00:00"}
+    monkeypatch.setattr(price_service, "query_klines", lambda *args, **kwargs: [row])
+    monkeypatch.setattr(
+        price_service,
+        "fetch_klines_quick",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("BaoStock should not block chart display")),
+    )
+
+    rows = asyncio.run(
+        price_service.get_minute_klines(
+            "sz.301590",
+            interval="m30",
+            count=2000,
+            allow_short_fresh_cache=True,
+        )
+    )
+
+    assert rows == [row]
 
 
 def test_minute_klines_return_fresh_short_cache_without_baostock(monkeypatch):

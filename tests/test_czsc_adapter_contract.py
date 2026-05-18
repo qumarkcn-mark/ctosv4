@@ -112,3 +112,33 @@ def test_czsc_raw_bi_context_exports_e1_shape(monkeypatch):
     assert level["bi_sequence"][1]["direction"] == "DOWN"
     assert level["algorithm_zhongshus"][0]["zg"] == 243.49
     assert level["algorithm_zhongshus"][0]["source"] == "czsc_algorithm_suggestion"
+
+
+def test_czsc_raw_bi_context_reuses_precomputed_structure(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("precomputed_result should avoid a second CZSC analyze pass")
+
+    monkeypatch.setattr(czsc_adapter, "analyze_czsc_structure_sync", forbidden)
+
+    context = czsc_adapter.export_czsc_raw_bi_context_sync(
+        "sh688008",
+        levels=["5"],
+        count=1000,
+        precomputed_result={
+            "symbol": "sh.688008",
+            "engine": "czsc",
+            "error": "",
+            "levels": {
+                "5": {
+                    "level": "5",
+                    "price": 240.7,
+                    "klines": [{"time": "2026-05-12 15:00:00", "close": 240.7}],
+                    "bis": [],
+                    "bi_zhongshus": [],
+                }
+            },
+        },
+    )
+
+    assert context["symbol"] == "sh.688008"
+    assert context["levels"]["5"]["last_close"] == 240.7

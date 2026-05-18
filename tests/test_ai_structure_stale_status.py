@@ -52,6 +52,76 @@ def test_status_reports_pending_for_current_job_without_snapshot(monkeypatch, tm
     assert status["job"]["status"] == "PENDING"
 
 
+def test_snapshot_status_batch_matches_single_status(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: signature("sig-batch"))
+    service.save_snapshot(
+        symbol="sh600519",
+        level="5",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-batch",
+        data_as_of="2026-05-12",
+        snapshot_payload={"level": "5", "price": 10.0},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+
+    single = service.get_snapshot_status(symbol="sh600519", level="5")
+    batch = service.get_snapshot_status_batch(symbols=["sh600519"], levels=["5"])["sh.600519"]["5"]
+
+    assert batch["status"] == single["status"] == "fresh"
+    assert batch["snapshot"]["snapshot_id"] == single["snapshot"]["snapshot_id"]
+    assert batch["freshness"]["data_signature"] == single["freshness"]["data_signature"]
+
+
+def test_snapshot_status_batch_handles_mixed_symbols_and_missing_levels(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+
+    def fake_signature(symbol, freq, *args, **kwargs):
+        if symbol == "sh.600519" and freq == "5":
+            return signature("sig-600519-5")
+        if symbol == "sz.000988" and freq == "5":
+            return signature("sig-000988-5-new")
+        return {"source": "baostock", "row_count": 0, "first_date": "", "last_date": "", "signature": ""}
+
+    monkeypatch.setattr(service, "get_kline_window_signature", fake_signature)
+    service.save_snapshot(
+        symbol="sh600519",
+        level="5",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-600519-5",
+        data_as_of="2026-05-12",
+        snapshot_payload={"level": "5", "price": 10.0},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    service.save_snapshot(
+        symbol="sz000988",
+        level="5",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-000988-5-old",
+        data_as_of="2026-05-10",
+        snapshot_payload={"level": "5", "price": 8.8},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+
+    batch = service.get_snapshot_status_batch(
+        symbols=["sh600519", "sz000988", "sh600000"],
+        levels=["5", "30"],
+    )
+
+    assert batch["sh.600519"]["5"]["status"] == "fresh"
+    assert batch["sh.600519"]["30"]["status"] == "no_data"
+    assert batch["sz.000988"]["5"]["status"] == "stale"
+    assert batch["sz.000988"]["5"]["snapshot"]["data_signature"] == "sig-000988-5-old"
+    assert batch["sh.600000"]["5"]["status"] == "no_data"
+    assert batch["sh.600000"]["30"]["status"] == "no_data"
+
+
 def test_context_status_reports_snapshot_job_failure(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     conn = database.get_connection()
@@ -71,6 +141,45 @@ def test_context_status_reports_snapshot_job_failure(monkeypatch, tmp_path):
     assert status["status"] == "failed"
     assert status["stale_reason"] == "CZSC_UNAVAILABLE"
     assert status["job"]["status"] == "FAILED_FINAL"
+
+
+def test_context_status_reports_stale_when_kline_ahead_of_snapshot(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    conn = database.get_connection()
+    try:
+        conn.execute("INSERT INTO users (id, openid, nickname) VALUES (1, 'u1', 'U1')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: signature("sig-old"))
+    snap = service.save_snapshot(
+        symbol="sh600519",
+        level="5",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-old",
+        data_as_of="2026-05-15 15:00:00",
+        snapshot_payload={"level": "5", "price": 10.0},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    context_service.prewarm_ai_structure_contexts(user_id=1, symbols=["sh600519"], levels=["5"])
+    job = context_service.claim_next_context_job(worker_id="ctx-worker")
+    context_service.run_context_job_sync(job)
+
+    monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: {
+        **signature("sig-new"),
+        "last_date": "2026-05-18 15:00:00",
+    })
+    status = context_service.get_ai_structure_context_status(user_id=1, symbol="sh600519", levels=["5"])
+
+    assert status["context"]["source_snapshot_ids"] == [snap["snapshot_id"]]
+    assert status["status"] == "stale"
+    assert status["stale_reason"] == "KLINE_AHEAD_OF_SNAPSHOT"
+    assert status["stale_levels"] == ["5"]
+    assert status["level_freshness"][0]["data_as_of"] == "2026-05-15 15:00:00"
+    assert status["level_freshness"][0]["kline_last_bar_at"] == "2026-05-18 15:00:00"
 
 
 def test_recover_failed_snapshot_jobs_requeues_infra_failures(monkeypatch, tmp_path):
