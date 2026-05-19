@@ -310,8 +310,11 @@ def test_prewarm_ai_structure_universe_groups_jobs_by_symbol_priority(monkeypatc
 
     assert [call["priority"] for call in snapshot_calls] == [100, 80, 60]
     assert [call["symbols"] for call in snapshot_calls] == [["sh.600519"], ["sz.000001"], ["sh.600000"]]
-    assert [call["priority"] for call in context_calls] == [90, 70, 50]
-    assert result["count"] == 6
+    assert [call["priority"] for call in context_calls] == [90, 70]
+    assert [call["symbols"] for call in context_calls] == [["sh.600519"], ["sz.000001"]]
+    assert result["count"] == 5
+    assert result["users"][0]["snapshot_symbols"] == 3
+    assert result["users"][0]["context_symbols"] == 2
     assert result["users"][0]["priority_buckets"] == [
         {"priority": 100, "symbols": ["sh.600519"]},
         {"priority": 80, "symbols": ["sz.000001"]},
@@ -338,7 +341,10 @@ def test_refresh_unified_reasoning_after_kline_sync_uses_positions_and_watchlist
         calls.append(kwargs)
         return {"symbol": kwargs["symbol"]}
 
-    monkeypatch.setattr(kline_sync_worker, "trigger_unified_reasoning", fake_trigger_unified_reasoning)
+    monkeypatch.setattr(
+        "server.engines.ai_native.unified_reasoning_service.trigger_unified_reasoning",
+        fake_trigger_unified_reasoning,
+    )
 
     result = asyncio.run(kline_sync_worker.refresh_unified_reasoning_for_tracked_users(max_symbols_per_user=2))
 

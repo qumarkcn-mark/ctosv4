@@ -43,6 +43,15 @@ FREQ_TO_STRUCTURE_LEVEL = {
 MAX_UNIVERSE_USERS_PER_PASS = 50
 MAX_UNIVERSE_SYMBOLS_PER_USER = 80
 
+# LLM context 自动生成上限：只覆盖持仓 + 最近问过的票，纯自选不自动跑 LLM。
+# CZSC snapshot 不消耗 token，保持全量覆盖。
+MAX_AUTO_CONTEXT_SYMBOLS_PER_USER = 15
+
+# 来源优先级阈值：priority >= 此值的票才自动生成 LLM context。
+# positions=100, position_watchlist=110, recent_chat=80, watchlist=60
+# 设为 80 则覆盖持仓和最近问过，排除纯自选。
+AUTO_CONTEXT_PRIORITY_THRESHOLD = 80
+
 
 def _get_all_tracked_symbols() -> list[str]:
     """收集所有需要同步的股票代码（去重）
@@ -151,12 +160,24 @@ def sync_new_watchlist_symbol(symbol: str) -> dict:
         reason="watchlist_backfill",
     )
 
+    # CZSC 是纯本地计算，不消耗 token。无论 K 线是否有新写入，
+    # 都无条件触发 snapshot prewarm，确保新自选股立即有结构快照。
+    from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, prewarm_structure_snapshots
+
+    result["snapshot_prewarm"] = prewarm_structure_snapshots(
+        symbols=[canonical_symbol],
+        levels=list(DEFAULT_LEVELS),
+        priority=85,
+        reason="watchlist_new_symbol",
+    )
+
     logger.info(
-        "自选数据闭环完成 %s: quick=%d full=%d errors=%d",
+        "自选数据闭环完成 %s: quick=%d full=%d errors=%d snapshot_jobs=%d",
         canonical_symbol,
         sum(item["written"] for item in result["quick"]),
         sum(item["written"] for item in result["full"]),
         len(result["errors"]),
+        len(result["snapshot_prewarm"].get("items", [])),
     )
     return result
 
@@ -265,11 +286,14 @@ def prewarm_ai_structure_universe_for_tracked_users(
     reason: str = "kline_sync_universe",
     max_users: int = MAX_UNIVERSE_USERS_PER_PASS,
     max_symbols_per_user: int = MAX_UNIVERSE_SYMBOLS_PER_USER,
+    max_context_symbols_per_user: int = MAX_AUTO_CONTEXT_SYMBOLS_PER_USER,
+    context_priority_threshold: int = AUTO_CONTEXT_PRIORITY_THRESHOLD,
 ) -> dict:
     """Keep user-scoped AI Native V5 universes warm after K-line sync passes.
 
-    Snapshot jobs are idempotent by data signature. Context jobs are user-scoped
-    and are only enqueued when at least one snapshot already exists.
+    CZSC snapshot（本地计算，不消耗 token）覆盖全量 universe。
+    LLM context（消耗 token）只覆盖高价值票：持仓 + 最近问过的票，
+    纯自选股不自动跑 LLM，用户打开时手动触发即可。
     """
     from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, prewarm_structure_snapshots
     from server.engines.ai_native.structure_context_service import prewarm_ai_structure_contexts
@@ -282,14 +306,23 @@ def prewarm_ai_structure_universe_for_tracked_users(
 
     for user_id in user_ids:
         universe = resolve_ai_native_universe(user_id, ["positions", "recent_chat", "watchlist"])
-        selected_items = universe[:max_symbols_per_user]
-        symbols = [item["symbol"] for item in selected_items]
-        if not symbols:
+        # snapshot 全量覆盖（本地计算，零 token 成本）
+        snapshot_items = universe[:max_symbols_per_user]
+        # context 只覆盖高价值票（持仓/近期问过），纯自选不自动跑 LLM
+        context_items = [
+            item for item in snapshot_items
+            if int(item.get("priority") or 0) >= context_priority_threshold
+        ][:max_context_symbols_per_user]
+
+        snapshot_symbols = [item["symbol"] for item in snapshot_items]
+        context_symbols = [item["symbol"] for item in context_items]
+        context_symbol_set = set(context_symbols)
+        if not snapshot_symbols:
             continue
 
         snapshot_result = {"items": []}
         context_result = {"items": []}
-        for item_priority, priority_items in _group_universe_by_priority(selected_items, default_priority=priority):
+        for item_priority, priority_items in _group_universe_by_priority(snapshot_items, default_priority=priority):
             priority_symbols = [item["symbol"] for item in priority_items]
             batch_snapshot = prewarm_structure_snapshots(
                 symbols=priority_symbols,
@@ -298,23 +331,27 @@ def prewarm_ai_structure_universe_for_tracked_users(
                 reason=reason,
                 requested_by_user_id=user_id,
             )
-            batch_context = prewarm_ai_structure_contexts(
-                user_id=user_id,
-                symbols=priority_symbols,
-                levels=list(DEFAULT_LEVELS),
-                priority=max(1, item_priority - 10),
-                reason=reason,
-            )
             snapshot_result["items"].extend(batch_snapshot.get("items", []))
-            context_result["items"].extend(batch_context.get("items", []))
+            # 只对 context_symbols 中的票入队 LLM context
+            context_priority_symbols = [s for s in priority_symbols if s in context_symbol_set]
+            if context_priority_symbols:
+                batch_context = prewarm_ai_structure_contexts(
+                    user_id=user_id,
+                    symbols=context_priority_symbols,
+                    levels=list(DEFAULT_LEVELS),
+                    priority=max(1, item_priority - 10),
+                    reason=reason,
+                )
+                context_result["items"].extend(batch_context.get("items", []))
         total_snapshot_items += _active_item_count(snapshot_result.get("items", []))
         total_context_items += _active_item_count(context_result.get("items", []))
         users.append({
             "user_id": user_id,
-            "symbols": len(symbols),
+            "snapshot_symbols": len(snapshot_symbols),
+            "context_symbols": len(context_symbols),
             "priority_buckets": [
                 {"priority": bucket_priority, "symbols": [item["symbol"] for item in bucket_items]}
-                for bucket_priority, bucket_items in _group_universe_by_priority(selected_items, default_priority=priority)
+                for bucket_priority, bucket_items in _group_universe_by_priority(snapshot_items, default_priority=priority)
             ],
             "snapshot_jobs": _active_item_count(snapshot_result.get("items", [])),
             "context_jobs": _active_item_count(context_result.get("items", [])),
