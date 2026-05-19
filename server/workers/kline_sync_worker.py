@@ -12,7 +12,7 @@ BaoStock 更新时间表：
 import asyncio
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -51,6 +51,9 @@ MAX_AUTO_CONTEXT_SYMBOLS_PER_USER = 15
 # positions=100, position_watchlist=110, recent_chat=80, watchlist=60
 # 设为 80 则覆盖持仓和最近问过，排除纯自选。
 AUTO_CONTEXT_PRIORITY_THRESHOLD = 80
+
+SYNC_SCOPE_DAILY = "daily"
+SYNC_SCOPE_FULL = "full"
 
 
 def _get_all_tracked_symbols() -> list[str]:
@@ -185,6 +188,26 @@ def sync_new_watchlist_symbol(symbol: str) -> dict:
 def _is_trading_day(dt: datetime) -> bool:
     """简单判断是否为交易日（排除周末，不处理节假日）"""
     return dt.weekday() < 5  # 0=周一 ~ 4=周五
+
+
+def _scheduled_sync_scope(now: datetime) -> Optional[str]:
+    """返回当前时间应该执行的自动同步窗口。
+
+    BaoStock 日线和分钟线入库时间不同，必须分成两个独立窗口：
+    - 17:30 后补日线
+    - 20:30 后补全级别（含分钟线）
+    """
+    if not _is_trading_day(now):
+        return None
+    if now.hour > 20 or (now.hour == 20 and now.minute >= 30):
+        return SYNC_SCOPE_FULL
+    if now.hour > 17 or (now.hour == 17 and now.minute >= 30):
+        return SYNC_SCOPE_DAILY
+    return None
+
+
+def _freqs_for_sync_scope(scope: str) -> list[str]:
+    return ALL_FREQS if scope == SYNC_SCOPE_FULL else ["day"]
 
 
 def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
@@ -474,6 +497,8 @@ class KlineSyncWorker:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._last_sync_time: Optional[datetime] = None
+        self._last_daily_sync_date: Optional[date] = None
+        self._last_full_sync_date: Optional[date] = None
 
     def start(self):
         """启动后台同步任务"""
@@ -494,8 +519,14 @@ class KlineSyncWorker:
         # 启动延迟，等待其他服务就绪
         await asyncio.sleep(STARTUP_DELAY)
 
-        # 启动时立即执行一次同步
-        await self._do_sync("启动同步")
+        # 启动时先补一次缓存；若还没到 BaoStock 收盘入库窗口，不标记当天正式同步完成。
+        startup_now = datetime.now()
+        startup_scope = _scheduled_sync_scope(startup_now) or SYNC_SCOPE_DAILY
+        await self._do_sync(
+            "启动同步",
+            scope=startup_scope,
+            mark_schedule=bool(_scheduled_sync_scope(startup_now)),
+        )
 
         while self._running:
             try:
@@ -507,20 +538,14 @@ class KlineSyncWorker:
                 # 判断是否需要同步
                 now = datetime.now()
 
-                # 非交易日不同步
-                if not _is_trading_day(now):
+                scope = _scheduled_sync_scope(now)
+                if not scope:
                     continue
 
-                # 只在 17:30 之后同步（BaoStock 日线入库时间）
-                if now.hour < 17 or (now.hour == 17 and now.minute < 30):
+                if self._has_synced_scope_today(scope, now.date()):
                     continue
 
-                # 今天已经同步过就跳过
-                if (self._last_sync_time
-                        and self._last_sync_time.date() == now.date()):
-                    continue
-
-                await self._do_sync("定时同步")
+                await self._do_sync("定时同步", scope=scope, mark_schedule=True)
 
             except asyncio.CancelledError:
                 break
@@ -528,7 +553,7 @@ class KlineSyncWorker:
                 logger.error("K线同步循环异常: %s", e)
                 await asyncio.sleep(60)  # 异常后等 1 分钟再重试
 
-    async def _do_sync(self, trigger: str):
+    async def _do_sync(self, trigger: str, *, scope: Optional[str] = None, mark_schedule: bool = True):
         """执行一次完整同步"""
         try:
             symbols = await run_in_threadpool(_get_all_tracked_symbols)
@@ -536,16 +561,9 @@ class KlineSyncWorker:
                 logger.info("📊 [%s] 无需同步：没有跟踪的股票", trigger)
                 return
 
-            now = datetime.now()
-
-            # 决定同步哪些频率
-            # 20:30 之后同步全部（含分钟线），之前只同步日线
-            if now.hour >= 21 or (now.hour == 20 and now.minute >= 30):
-                freqs = ALL_FREQS
-                freq_desc = "全部级别"
-            else:
-                freqs = ["day"]
-                freq_desc = "仅日线"
+            scope = scope or _scheduled_sync_scope(datetime.now()) or SYNC_SCOPE_DAILY
+            freqs = _freqs_for_sync_scope(scope)
+            freq_desc = "全部级别" if scope == SYNC_SCOPE_FULL else "仅日线"
 
             logger.info(
                 "📊 [%s] 开始同步 %d 只股票 (%s): %s",
@@ -566,6 +584,8 @@ class KlineSyncWorker:
                 reason="kline_sync_universe",
             )
             self._last_sync_time = datetime.now()
+            if mark_schedule:
+                self._mark_scope_synced(scope, self._last_sync_time.date())
 
             logger.info(
                 "📊 [%s] 同步完成: %d/%d 只股票已更新, 写入 %d 条, 错误 %d",
@@ -600,6 +620,22 @@ class KlineSyncWorker:
         except Exception as e:
             logger.error("📊 [%s] 同步失败: %s", trigger, e)
 
+    def _has_synced_scope_today(self, scope: str, today: date) -> bool:
+        if scope == SYNC_SCOPE_FULL:
+            return self._last_full_sync_date == today
+        if scope == SYNC_SCOPE_DAILY:
+            # 全级别同步包含 day，20:30 后跑过 full 就不需要再补 daily。
+            return self._last_daily_sync_date == today or self._last_full_sync_date == today
+        return False
+
+    def _mark_scope_synced(self, scope: str, sync_date: date) -> None:
+        if scope == SYNC_SCOPE_FULL:
+            self._last_full_sync_date = sync_date
+            self._last_daily_sync_date = sync_date
+            return
+        if scope == SYNC_SCOPE_DAILY:
+            self._last_daily_sync_date = sync_date
+
     async def force_sync(self) -> dict:
         """手动触发一次立即同步（供 API 调用）"""
         symbols = await run_in_threadpool(_get_all_tracked_symbols)
@@ -627,6 +663,8 @@ class KlineSyncWorker:
         return {
             "running": self._running,
             "last_sync_time": self._last_sync_time.isoformat() if self._last_sync_time else None,
+            "last_daily_sync_date": self._last_daily_sync_date.isoformat() if self._last_daily_sync_date else None,
+            "last_full_sync_date": self._last_full_sync_date.isoformat() if self._last_full_sync_date else None,
         }
 
 
