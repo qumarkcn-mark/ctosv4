@@ -4,6 +4,7 @@ import asyncio
 import os
 import sqlite3
 import sys
+from datetime import date, datetime
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -125,6 +126,29 @@ def test_get_all_tracked_symbols_includes_watchlist(monkeypatch):
     symbols = kline_sync_worker._get_all_tracked_symbols()
 
     assert symbols == ["sh.600118", "sh.600519", "sz.300866"]
+
+
+def test_scheduled_sync_scope_splits_daily_and_full_windows():
+    assert kline_sync_worker._scheduled_sync_scope(datetime(2026, 5, 19, 16, 0)) is None
+    assert kline_sync_worker._scheduled_sync_scope(datetime(2026, 5, 19, 17, 30)) == "daily"
+    assert kline_sync_worker._scheduled_sync_scope(datetime(2026, 5, 19, 20, 30)) == "full"
+    assert kline_sync_worker._freqs_for_sync_scope("daily") == ["day"]
+    assert kline_sync_worker._freqs_for_sync_scope("full") == ["week", "day", "60", "30", "15", "5"]
+
+
+def test_daily_sync_does_not_block_later_minute_sync():
+    worker = kline_sync_worker.KlineSyncWorker()
+    today = date(2026, 5, 19)
+
+    worker._mark_scope_synced("daily", today)
+
+    assert worker._has_synced_scope_today("daily", today) is True
+    assert worker._has_synced_scope_today("full", today) is False
+
+    worker._mark_scope_synced("full", today)
+
+    assert worker._has_synced_scope_today("daily", today) is True
+    assert worker._has_synced_scope_today("full", today) is True
 
 
 def test_sync_new_watchlist_symbol_runs_quick_then_full(monkeypatch):
