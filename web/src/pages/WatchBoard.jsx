@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
@@ -58,6 +58,8 @@ export default function WatchBoard() {
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState([])
   const [chatLoading, setChatLoading] = useState(false)
+  const [activeDetailTab, setActiveDetailTab] = useState('reasoning')
+  const chatLogRef = useRef(null)
 
   const allItems = useMemo(() => flattenGroups(groups), [groups])
   const displayGroups = useMemo(() => (
@@ -104,12 +106,21 @@ export default function WatchBoard() {
     return () => clearInterval(timer)
   }, [allItems, pollPrices])
 
+  useEffect(() => {
+    if (activeDetailTab !== 'chat') return
+    window.requestAnimationFrame(() => {
+      const node = chatLogRef.current?.lastElementChild
+      node?.scrollIntoView({ block: 'end' })
+    })
+  }, [activeDetailTab, chatMessages, chatLoading])
+
   const openDetail = async (item) => {
     const current = mergePrice(item, prices)
     setSelected(current)
     setFullText('')
     setDetailStatus('loading')
     setChatMessages([])
+    setActiveDetailTab('reasoning')
     setDrawerLoading(true)
     try {
       const json = await apiJson(`/api/ai-structure/unified-reasoning/full/${encodeURIComponent(current.symbol)}`)
@@ -177,6 +188,7 @@ export default function WatchBoard() {
     const text = String(question || '').trim()
     if (!text || !selected) return
     setChatLoading(true)
+    setActiveDetailTab('chat')
     setChatInput('')
     setChatMessages((prev) => [...prev, { role: 'user', content: text }])
     try {
@@ -195,6 +207,14 @@ export default function WatchBoard() {
       setChatLoading(false)
     }
   }
+
+  const chatStatus = chatLoading
+    ? { tone: 'active', label: '推演中', detail: '正在结合完整推演与当前价格' }
+    : drawerLoading
+      ? { tone: 'active', label: '读取中', detail: '正在读取完整推演上下文' }
+      : detailStatus === 'ready'
+        ? { tone: 'ready', label: '上下文就绪', detail: '基于完整推演回答' }
+        : { tone: 'idle', label: '待生成', detail: '可先生成统一推演后再追问' }
 
   return (
     <div className={`watchboard-page ${selected ? 'has-detail' : ''}`}>
@@ -262,19 +282,69 @@ export default function WatchBoard() {
             ))}
           </div>
 
+          <div className="watchboard-detail-tabs" role="tablist" aria-label="盯盘详情内容">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeDetailTab === 'reasoning'}
+              className={activeDetailTab === 'reasoning' ? 'is-active' : ''}
+              onClick={() => setActiveDetailTab('reasoning')}
+            >
+              完整推演
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeDetailTab === 'chat'}
+              className={activeDetailTab === 'chat' ? 'is-active' : ''}
+              onClick={() => setActiveDetailTab('chat')}
+            >
+              问答追踪
+              {chatMessages.length ? <span>{chatMessages.length}</span> : null}
+            </button>
+          </div>
+
           <div className="watchboard-drawer-body">
-            {drawerLoading ? (
-              <div className="watchboard-empty">正在读取完整推演...</div>
-            ) : detailStatus === 'missing' ? (
-              <div className="watchboard-missing-reasoning">
-                <strong>暂无完整推演</strong>
-                <p>这只票还没有生成 V5 统一推演。卡片可显示实时价格和持仓，但路径主线需要先生成推演。</p>
-                <button type="button" onClick={runReasoningForSelected} disabled={reasoningRunning}>
-                  {reasoningRunning ? '生成中...' : '生成统一推演'}
-                </button>
-              </div>
+            {activeDetailTab === 'reasoning' ? (
+              drawerLoading ? (
+                <div className="watchboard-empty">正在读取完整推演...</div>
+              ) : detailStatus === 'missing' ? (
+                <div className="watchboard-missing-reasoning">
+                  <strong>暂无完整推演</strong>
+                  <p>这只票还没有生成 V5 统一推演。卡片可显示实时价格和持仓，但路径主线需要先生成推演。</p>
+                  <button type="button" onClick={runReasoningForSelected} disabled={reasoningRunning}>
+                    {reasoningRunning ? '生成中...' : '生成统一推演'}
+                  </button>
+                </div>
+              ) : (
+                <div className="watchboard-reasoning-content">
+                  <ReactMarkdown>{fullText || '暂无完整推演。'}</ReactMarkdown>
+                </div>
+              )
             ) : (
-              <ReactMarkdown>{fullText || '暂无完整推演。'}</ReactMarkdown>
+              <div className="watchboard-chat-panel">
+                {chatMessages.length ? (
+                  <div className="watchboard-chat-log" aria-live="polite" ref={chatLogRef}>
+                    {chatMessages.map((message, index) => (
+                      <article key={`${message.role}-${index}`} className={`watchboard-chat-message chat-${message.role}`}>
+                        <span>{message.role === 'user' ? '你问' : '教练'}</span>
+                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      </article>
+                    ))}
+                    {chatLoading && (
+                      <article className="watchboard-chat-message chat-assistant is-loading">
+                        <span>教练</span>
+                        <p>正在结合完整推演和当前价格...</p>
+                      </article>
+                    )}
+                  </div>
+                ) : (
+                  <div className="watchboard-chat-empty">
+                    <strong>问一句路径问题</strong>
+                    <p>适合问“跌破哪里失效”“企稳看哪里”“现在是机会还是风险”。回答会在这里完整展开。</p>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -286,12 +356,10 @@ export default function WatchBoard() {
                 </button>
               ))}
             </div>
-            <div className="watchboard-chat-log">
-              {chatMessages.map((message, index) => (
-                <p key={`${message.role}-${index}`} className={`chat-${message.role}`}>
-                  {message.content}
-                </p>
-              ))}
+            <div className={`watchboard-chat-status is-${chatStatus.tone}`} aria-live="polite">
+              <span aria-hidden="true" />
+              <strong>{chatStatus.label}</strong>
+              <em>{chatStatus.detail}</em>
             </div>
             <form
               className="watchboard-chat-input"
@@ -303,10 +371,11 @@ export default function WatchBoard() {
               <input
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                placeholder="问这只票接下来怎么看"
+                placeholder={chatLoading ? '推演中，请稍等...' : '问这只票接下来怎么看'}
+                disabled={chatLoading}
               />
               <button type="submit" disabled={chatLoading || !chatInput.trim()}>
-                发送
+                {chatLoading ? '...' : '发送'}
               </button>
             </form>
           </div>
