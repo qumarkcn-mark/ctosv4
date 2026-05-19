@@ -1071,7 +1071,7 @@ function buildChartStyles() {
       priceMark: {
         show: true,
         last: {
-          show: true,
+          show: false,
           upColor: '#f43f5e',
           downColor: '#10b981',
           noChangeColor: '#76808f',
