@@ -402,6 +402,12 @@ export default function AIStructureCoachPanel({
 
       <PipelineStatus items={pipelineItems} />
 
+      <AutoActivationStrip
+        workspaceSymbolState={workspaceSymbolState}
+        status={status}
+        context={reasoningContext}
+      />
+
       <StatusNotice
         status={status}
         pollingActive={pollingActive}
@@ -552,6 +558,35 @@ function buildFreshnessRows(status, context) {
     })
 }
 
+function activationMeta(state) {
+  const sources = new Set((state?.sources || []).map((item) => String(item || '').toLowerCase()))
+  if (state?.has_position || sources.has('positions')) {
+    return { label: '持仓', tone: 'auto' }
+  }
+  if (sources.has('recent_chat')) {
+    return { label: '最近问过', tone: 'auto' }
+  }
+  if (sources.has('watchlist')) {
+    return { label: '手动生成', tone: 'manual' }
+  }
+  return { label: '手动生成', tone: 'manual' }
+}
+
+function primaryFreshness(status, context) {
+  const rows = buildFreshnessRows(status, context)
+  if (!rows.length) return { label: '待生成', stale: false }
+  const reasoning = context?.reasoning || context || {}
+  const preferredLevel = reasoning.main_level || context?.main_level || '30'
+  const preferred = rows.find((item) => String(item.level) === String(preferredLevel))
+    || rows.find((item) => String(item.level) === '30')
+    || rows.find((item) => String(item.level) === 'day')
+    || rows[0]
+  return {
+    label: `${formatLevel(preferred.level)} ${formatAsOf(preferred.data_as_of)}`,
+    stale: Boolean(preferred.stale),
+  }
+}
+
 function panelSummary(reasoning = {}, context = {}) {
   const raw = String(
     reasoning.front_panel_text ||
@@ -596,6 +631,23 @@ function PipelineStatus({ items }) {
           <em>{item.detail}</em>
         </div>
       ))}
+    </div>
+  )
+}
+
+function AutoActivationStrip({ workspaceSymbolState, status, context }) {
+  const activation = activationMeta(workspaceSymbolState)
+  const freshness = primaryFreshness(status, context)
+  return (
+    <div className="ai-auto-activation" aria-label="AI 自动推演范围与数据截止">
+      <div className={`ai-auto-activation-badge ai-auto-activation-badge--${activation.tone}`}>
+        <span>自动推演</span>
+        <strong>{activation.label}</strong>
+      </div>
+      <div className={`ai-auto-activation-cutoff ${freshness.stale ? 'is-stale' : ''}`}>
+        <span>数据截止</span>
+        <strong>{freshness.label}</strong>
+      </div>
     </div>
   )
 }
