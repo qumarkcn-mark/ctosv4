@@ -345,6 +345,7 @@ def _parse_dataframe(df: pd.DataFrame, freq: str) -> list[dict]:
             "close":  float(row["close"]),
             "volume": float(row.get("volume", 0)),
             "amount": float(row.get("amount", 0)),
+            "pctChg": row.get("pctChg", ""),
         })
 
     return result
@@ -372,6 +373,25 @@ def fetch_klines_sync(
     bs_freq = FREQ_MAP.get(freq)
     if not bs_freq:
         raise ValueError(f"不支持的频率: {freq}，可用: {list(FREQ_MAP.keys())}")
+
+    if adjustflag == "2":
+        # 前复权 K 线必须经过本地标准化层，不能直接写 BaoStock 原始 qfq。
+        # 否则除权当天可能出现历史价未重算、当日价已除权的混合序列。
+        from server.services.qfq_normalizer import rebuild_symbol_qfq
+
+        effective_start = start_date or (DEFAULT_DAY_START if freq in ("day", "week") else MIN_MINUTE_DATE)
+        result = rebuild_symbol_qfq(
+            symbol,
+            start_date=effective_start,
+            end_date=end_date,
+            include_minutes=freq not in ("day", "week"),
+            target_freqs=[freq],
+        )
+        if freq == "day":
+            return result.day_rows
+        if freq == "week":
+            return result.week_rows
+        return result.minute_rows.get(freq, 0)
 
     # 确定拉取起点（增量）
     last_date = get_last_sync_date(symbol, freq)
@@ -439,6 +459,25 @@ def fetch_klines_quick(
     bs_freq = FREQ_MAP.get(freq)
     if not bs_freq:
         raise ValueError(f"不支持的频率: {freq}，可用: {list(FREQ_MAP.keys())}")
+
+    if adjustflag == "2":
+        from server.services.qfq_normalizer import rebuild_symbol_qfq
+
+        quick_days = QUICK_FETCH_DAYS.get(freq, 365)
+        start_date = (datetime.today() - timedelta(days=quick_days)).strftime("%Y-%m-%d")
+        if freq != "day" and start_date < MIN_MINUTE_DATE:
+            start_date = MIN_MINUTE_DATE
+        result = rebuild_symbol_qfq(
+            symbol,
+            start_date=start_date,
+            include_minutes=freq not in ("day", "week"),
+            target_freqs=[freq],
+        )
+        if freq == "day":
+            return result.day_rows
+        if freq == "week":
+            return result.week_rows
+        return result.minute_rows.get(freq, 0)
 
     # 如果已有增量同步记录，直接走增量
     last_date = get_last_sync_date(symbol, freq)

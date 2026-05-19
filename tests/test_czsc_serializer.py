@@ -132,3 +132,36 @@ def test_serialize_czsc_level_does_not_derive_segments_from_bis_when_native_miss
     assert result["stats"]["seg_count"] == 0
     assert result["segs"] == []
     assert "segs" in result["metadata"]["unsupported_fields"]
+
+
+def test_serialize_czsc_level_appends_unfinished_bi():
+    fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
+    raw_bars = [
+        Obj(dt="2026-01-02"),
+        Obj(dt="2026-01-03"),
+    ]
+    czsc_obj = Obj(
+        fx_list=[fx_a],
+        bi_list=[],
+        zs_list=[],
+        ubi={
+            "direction": "Up",
+            "fx_a": fx_a,
+            "raw_bars": raw_bars,
+            "high": 12.8,
+            "low": 10.2,
+        },
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-03", "open": 10, "high": 12.8, "low": 10, "close": 12.5, "volume": 100}],
+        level="day",
+    )
+
+    assert result["stats"]["bi_count"] == 1
+    assert result["bis"][0]["is_sure"] is False
+    assert result["bis"][0]["source"] == "czsc_ubi"
+    assert result["bis"][0]["status"] == "ongoing"
+    assert result["bis"][0]["x1"] == "2026-01-03"
+    assert result["bis"][0]["end_price"] == 12.8

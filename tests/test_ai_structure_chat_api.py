@@ -61,6 +61,23 @@ def save_snapshot(signature="sig-chat", price=10.5, zg=11.0, zd=10.0):
     )
 
 
+def fresh_signature(signature="sig-chat"):
+    return {
+        "source": "baostock",
+        "row_count": 120,
+        "first_date": "2026-01-01",
+        "last_date": "2026-05-12",
+        "signature": signature,
+    }
+
+
+def fresh_signature_for_5_only(*args, **kwargs):
+    freq = args[1] if len(args) > 1 else kwargs.get("freq")
+    if freq != "5":
+        return {"source": "baostock", "row_count": 0, "first_date": "", "last_date": "", "signature": ""}
+    return fresh_signature()
+
+
 def build_context(user_id=1):
     ensure_user(user_id)
     save_snapshot()
@@ -121,6 +138,7 @@ def seed_fundamental_background():
 
 def test_chat_answers_buy_window_with_evidence_and_disclaimer(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(snapshot_service, "get_kline_window_signature", fresh_signature_for_5_only)
     context = build_context()
     called = {"snapshot": 0}
 

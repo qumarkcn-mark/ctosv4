@@ -8,6 +8,10 @@ from typing import Any
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
+    # 追加未完成笔（ubi）：bi_list 只含已确认笔，正在生长的笔在 czsc_obj.ubi 中
+    ubi_bi = _serialize_ubi(czsc_obj)
+    if ubi_bi:
+        bis.append(ubi_bi)
     segs, segment_source = _serialize_segments(czsc_obj, bis)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
@@ -96,6 +100,67 @@ def _serialize_bi(bi: Any) -> dict[str, Any]:
         "is_up": bool(is_up),
         "direction": "up" if is_up else "down",
         "is_sure": True,
+    }
+
+
+def _serialize_ubi(czsc_obj: Any) -> dict[str, Any] | None:
+    """从 czsc_obj.ubi 提取未完成笔（Unfinished BI）。
+
+    czsc 0.10.12 中 bi_list 只含已确认笔，当前正在生长的反向笔
+    存放在 czsc_obj.ubi（dict），包含 direction, fx_a, raw_bars 等。
+    """
+    ubi = getattr(czsc_obj, "ubi", None)
+    if not ubi or not isinstance(ubi, dict):
+        return None
+
+    # ubi 结构: {"direction": ..., "fx_a": FX对象, "raw_bars": [...], "high": float, "low": float}
+    direction_raw = ubi.get("direction")
+    direction_str = _enum_value(direction_raw) if direction_raw else ""
+    is_up = direction_str.lower().endswith("up") or direction_str in {"向上", "Up"}
+
+    fx_a = ubi.get("fx_a")
+    if not fx_a:
+        return None
+
+    # 起点：fx_a 的分型价格
+    start_price = _num(getattr(fx_a, "fx", 0))
+    start_dt = _dt(getattr(fx_a, "dt", ""))
+    if not start_price or not start_dt:
+        return None
+
+    # 终点：未完成，取当前极值
+    high = _num(ubi.get("high", 0))
+    low = _num(ubi.get("low", 0))
+    end_price = high if is_up else low
+
+    # raw_bars 数量作为 bar_count
+    raw_bars = ubi.get("raw_bars") or []
+    bar_count = len(raw_bars) if isinstance(raw_bars, list) else 0
+
+    # 终点时间：取最后一根 bar 的时间
+    end_dt = ""
+    if raw_bars and isinstance(raw_bars, list):
+        last_bar = raw_bars[-1]
+        end_dt = _dt(getattr(last_bar, "dt", "")) if hasattr(last_bar, "dt") else ""
+
+    if end_price <= 0:
+        return None
+
+    return {
+        "x0": start_dt,
+        "x1": end_dt,
+        "y0": start_price,
+        "y1": end_price,
+        "start_price": start_price,
+        "end_price": end_price,
+        "high": high,
+        "low": low,
+        "bar_count": bar_count,
+        "is_up": bool(is_up),
+        "direction": "up" if is_up else "down",
+        "is_sure": False,
+        "source": "czsc_ubi",
+        "status": "ongoing",
     }
 
 
