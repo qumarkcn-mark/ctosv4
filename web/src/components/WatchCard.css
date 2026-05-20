@@ -139,14 +139,6 @@
   transition: color 160ms ease;
 }
 
-.state-alert .watch-card-summary {
-  color: var(--signal-amber, #f59e0b);
-}
-
-.state-near .watch-card-summary {
-  color: var(--signal-amber, #f59e0b);
-}
-
 .state-danger .watch-card-summary {
   color: var(--warning-red, #dc2626);
 }

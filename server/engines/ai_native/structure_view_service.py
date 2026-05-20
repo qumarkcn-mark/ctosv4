@@ -290,7 +290,7 @@ def _mark_active_center(centers: list[dict[str, Any] | None], active_center: dic
             and abs(_num(item.get("zd")) - _num(active_center.get("zd"))) < 1e-8
             and abs(_num(item.get("zg")) - _num(active_center.get("zg"))) < 1e-8
         )
-        marked.append({**item, "active": same_range})
+        marked.append(active_center if same_range else {**item, "active": False})
     return marked
 
 

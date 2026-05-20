@@ -34,8 +34,8 @@ export default function WatchCard({ item, currentPrice, onClick }) {
   const tactical = computeTacticalState(item, price)
   const state = tactical.state
   const summary = item.reasoning_summary || {}
-  const message = tactical.displayLine || summary.one_liner || '暂无统一推演'
-  const action = tactical.actionLabel || summary.action || '观望'
+  const message = summary.one_liner || tactical.displayLine || '暂无统一推演'
+  const action = summary.action || tactical.actionLabel || '观望'
   const position = item.position
   const hasRangeLevels = Boolean(Number(summary.key_level_down || 0) && Number(summary.key_level_up || 0))
   const hasAnyKeyLevel = Boolean(Number(summary.key_level_down || 0) || Number(summary.key_level_up || 0))
