@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
-    # 追加未完成笔（ubi）：bi_list 只含已确认笔，正在生长的笔在 czsc_obj.ubi 中
-    ubi_bi = _serialize_ubi(czsc_obj)
-    if ubi_bi:
-        bis.append(ubi_bi)
+    # CZSC 原生把未完成笔放在 ubi 中，不并入 bi_list；这里保持同样的契约，避免污染中枢计算与正式笔序列。
+    unfinished_bi = _serialize_ubi(czsc_obj)
     segs, segment_source = _serialize_segments(czsc_obj, bis)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
+    signals = _serialize_chan_signals(czsc_obj)
     latest_zs = serialized_zss[-1] if serialized_zss else {}
     price = _last_price(rows, bis)
     unsupported_fields = ["seg_zhongshus", "bsps"]
@@ -26,12 +29,15 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
         "klines": [_serialize_row(row) for row in rows],
         "fxs": fxs,
         "bis": bis,
+        "unfinished_bi": unfinished_bi,
         "segs": segs,
         "segments": segs,
         "bi_zhongshus": serialized_zss,
         "seg_zhongshus": [],
         "zhongshus": serialized_zss,
         "bsps": [],
+        "signals": signals,
+        "chan_signals": signals,
         "price": price,
         "last_bi_dir": _last_bi_dir(bis),
         "active_zhongshu": latest_zs,
@@ -47,10 +53,12 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
             "seg_count": len(segs),
             "seg_zs_count": 0,
             "bsp_count": 0,
+            "signal_count": len(signals),
         },
         "metadata": {
             "unsupported_fields": unsupported_fields,
             "segment_source": segment_source,
+            "has_unfinished_bi": bool(unfinished_bi),
         },
     }
 
@@ -181,6 +189,56 @@ def _serialize_segments(czsc_obj: Any, bis: list[dict[str, Any]]) -> tuple[list[
             return segments, "czsc_object"
 
     return [], "unavailable_in_czsc_object"
+
+
+def _serialize_chan_signals(czsc_obj: Any) -> dict[str, str]:
+    """Extract selected native czsc.signals labels from a CZSC object."""
+    signals: dict[str, str] = {}
+    raw = getattr(czsc_obj, "signals", None)
+    if isinstance(raw, dict):
+        signals.update(_normalize_signals(raw))
+
+    try:
+        from czsc.signals import cxt
+    except Exception:
+        return signals
+
+    signal_calls = [
+        ("cxt_bi_base_V230228", {}),
+        ("cxt_fx_power_V221107", {"di": 1}),
+        ("cxt_first_buy_V221126", {"di": 1}),
+        ("cxt_first_sell_V221126", {"di": 1}),
+        ("cxt_third_buy_V230228", {"di": 1}),
+        ("cxt_second_bs_V240524", {"di": 1}),
+        ("cxt_third_bs_V230319", {"di": 1}),
+        ("cxt_three_bi_V230618", {"di": 1}),
+        ("cxt_five_bi_V230619", {"di": 1}),
+        ("cxt_seven_bi_V230620", {"di": 1}),
+        ("cxt_nine_bi_V230621", {"di": 1}),
+        ("cxt_eleven_bi_V230622", {"di": 1}),
+        ("cxt_ubi_end_V230816", {}),
+    ]
+    for name, kwargs in signal_calls:
+        func = getattr(cxt, name, None)
+        if not callable(func):
+            continue
+        try:
+            signals.update(_normalize_signals(func(czsc_obj, **kwargs)))
+        except Exception:
+            logger.debug("CZSC signal %s unavailable for current object", name, exc_info=True)
+            continue
+    return dict(list(signals.items())[:40])
+
+
+def _normalize_signals(raw: dict[Any, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        key_text = str(key or "").strip()
+        value_text = str(value or "").strip()
+        if not key_text or not value_text:
+            continue
+        result[key_text[:120]] = value_text[:120]
+    return result
 
 
 def _serialize_zs(zs: Any) -> dict[str, Any]:

@@ -216,7 +216,7 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
     Returns:
         {"total_symbols": int, "updated_symbols": int, "total_written": int, "errors": int}
     """
-    from server.services.baostock_service import fetch_klines_sync
+    from server.services.baostock_service import refresh_symbol_qfq
     from server.db.kline_lake import get_last_sync_date
 
     today = datetime.today().strftime("%Y-%m-%d")
@@ -234,7 +234,7 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
                 if last_date and last_date[:10] >= today:
                     continue  # 已经是最新，跳过
 
-                written = fetch_klines_sync(symbol, freq)
+                written = refresh_symbol_qfq(symbol, freq)
                 total_written += written
                 if written > 0:
                     symbol_updated = True

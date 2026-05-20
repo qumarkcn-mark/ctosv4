@@ -195,6 +195,61 @@ def test_structure_view_center_uses_entry_and_exit_bar_boundaries(monkeypatch, t
     assert center["exit_status"] == "closed"
 
 
+def test_structure_view_splits_legacy_unfinished_bi_from_confirmed_sequence(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-unfinished-bi",
+        data_as_of="2026-05-16",
+        snapshot_payload={
+            "level": "day",
+            "price": 10.6,
+            "klines": [
+                {"time": "2026-05-10", "open": 10, "high": 11, "low": 9, "close": 10.5},
+                {"time": "2026-05-11", "open": 10.5, "high": 12, "low": 10, "close": 11.5},
+                {"time": "2026-05-12", "open": 11.5, "high": 12, "low": 10.6, "close": 10.8},
+                {"time": "2026-05-13", "open": 10.8, "high": 11, "low": 10.3, "close": 10.6},
+            ],
+            "bis": [
+                {
+                    "direction": "up",
+                    "is_up": True,
+                    "is_sure": True,
+                    "x0": "2026-05-10",
+                    "x1": "2026-05-11",
+                    "y0": 10.0,
+                    "y1": 11.5,
+                },
+                {
+                    "direction": "down",
+                    "is_up": False,
+                    "is_sure": False,
+                    "x0": "2026-05-11",
+                    "x1": "2026-05-13",
+                    "y0": 11.5,
+                    "y1": 10.3,
+                    "source": "czsc_ubi",
+                    "status": "ongoing",
+                },
+            ],
+            "bi_zhongshus": [],
+            "active_zhongshu": {},
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    assert len(view["bis"]) == 1
+    assert view["bis"][0]["is_sure"] is True
+    assert view["unfinished_bi"]["is_sure"] is False
+    assert view["unfinished_bi"]["source"] == "czsc_ubi"
+
+
 def test_structure_view_active_center_extends_to_latest_bar_when_not_fully_left(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     snapshot_service.save_snapshot(

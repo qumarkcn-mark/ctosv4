@@ -112,6 +112,26 @@ def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path)
     }
 
 
+def test_structure_context_position_accepts_compact_symbol(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO positions (user_id, symbol, name, quantity, avg_cost, current_price) VALUES (?, ?, ?, ?, ?, ?)",
+            (1, "sz002138", "顺络电子", 8000, 35.46, 39.88),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    position = context_service._position_context(user_id=1, symbol="sz.002138")
+
+    assert position["has_position"] is True
+    assert position["quantity"] == 8000
+    assert position["avg_cost"] == 35.46
+
+
 def test_async_context_worker_uses_llm_reasoning_when_key_configured(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     save_snapshot()

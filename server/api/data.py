@@ -36,6 +36,30 @@ from server.services.tdx_daily_sync_service import (
 router = APIRouter()
 
 
+def _normalize_kline_sync_interval(interval: Optional[str]) -> Optional[str]:
+    """把前端周期参数归一成 BaoStock 级别；不传则保持兼容，刷新全级别。"""
+    if interval is None:
+        return None
+    value = interval.strip().lower()
+    aliases = {
+        "week": "week",
+        "w": "week",
+        "day": "day",
+        "d": "day",
+        "m60": "60",
+        "60": "60",
+        "m30": "30",
+        "30": "30",
+        "m15": "15",
+        "15": "15",
+        "m5": "5",
+        "5": "5",
+    }
+    if value not in aliases:
+        raise ValueError("interval 只支持 week/day/m60/m30/m15/m5")
+    return aliases[value]
+
+
 # ── CSV 导入 ──
 
 @router.post("/import/csv")
@@ -117,26 +141,31 @@ async def sync_klines():
 
 
 @router.post("/sync-klines/{symbol}")
-async def sync_symbol_klines(symbol: str):
-    """只同步当前股票的正式结构 K 线数据，供看盘页手动刷新使用。"""
-    from server.services.baostock_service import fetch_klines_sync
+async def sync_symbol_klines(
+    symbol: str,
+    interval: Optional[str] = Query(None, description="week / day / m60 / m30 / m15 / m5；不传则刷新全级别"),
+):
+    """轻量刷新当前股票 K 线数据，供看盘页手动刷新使用。"""
+    from server.services.baostock_service import refresh_symbol_qfq
     from server.workers.kline_sync_worker import ALL_FREQS, enqueue_structure_jobs_for_changes
 
     try:
         canonical_symbol = normalize_symbol(symbol)
+        requested_freq = _normalize_kline_sync_interval(interval)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
     def _sync_one_symbol():
         started_at = datetime.now().isoformat(timespec="seconds")
+        freqs = [requested_freq] if requested_freq else list(ALL_FREQS)
         results = []
         total_written = 0
         error_count = 0
         changed = []
 
-        for freq in ALL_FREQS:
+        for freq in freqs:
             try:
-                written = fetch_klines_sync(canonical_symbol, freq)
+                written = refresh_symbol_qfq(canonical_symbol, freq)
                 total_written += written
                 results.append({"freq": freq, "written": written, "status": "ok"})
                 if written > 0:
@@ -158,7 +187,7 @@ async def sync_symbol_klines(symbol: str):
         return {
             "status": "success" if error_count == 0 else "partial",
             "symbol": canonical_symbol,
-            "freqs": ALL_FREQS,
+            "freqs": freqs,
             "total_written": total_written,
             "errors": error_count,
             "results": results,

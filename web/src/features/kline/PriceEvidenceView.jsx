@@ -165,6 +165,28 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
         return { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
       })
       .filter(Boolean)
+    let unfinishedBi = null
+    if (view.unfinished_bi) {
+      const item = view.unfinished_bi
+      const startIndex = resolveOverlayIndex(timeIndex, item.start_timestamp, item.start_time, item.start_index)
+      const endIndex = resolveOverlayIndex(timeIndex, item.end_timestamp, item.end_time, item.end_index)
+      if (isStructureItemVisible(startIndex, endIndex, viewport.range, 2)) {
+        const start = chart.convertToPixel(
+          { dataIndex: startIndex, value: item.start_price },
+          { paneId: CANDLE_PANE_ID, absolute: false }
+        )
+        const end = chart.convertToPixel(
+          { dataIndex: endIndex, value: item.end_price },
+          { paneId: CANDLE_PANE_ID, absolute: false }
+        )
+        if (validPoint(start) && validPoint(end)) {
+          const clipped = clipLineToViewport(start, end, viewport)
+          if (clipped) {
+            unfinishedBi = { ...item, start_index: startIndex, end_index: endIndex, start: clipped.start, end: clipped.end }
+          }
+        }
+      }
+    }
     const centers = (view.centers || [])
       .map((item) => {
       const beginIndex = resolveOverlayIndex(
@@ -204,7 +226,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
       }
     }).map((item) => clipRectToViewport(item, viewport))
       .filter((item) => item && item.width > 2 && item.height > 2)
-    setStructureOverlay({ bis, segments, centers })
+    setStructureOverlay({ bis, unfinishedBi, segments, centers })
   }, [])
 
   const updateMomentumOverlay = useCallback(() => {
@@ -526,7 +548,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     setSyncing(true)
     setError('')
     try {
-      await syncKlines(symbol)
+      await syncKlines(symbol, period)
       chartRef.current?.resetData()
       await loadQuote()
     } catch (err) {
@@ -687,6 +709,16 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
                 y2={item.end.y}
               />
             ))}
+            {structureOverlay.unfinishedBi && (
+              <line
+                key={structureOverlay.unfinishedBi.id}
+                className={`base-kline__bi ${structureOverlay.unfinishedBi.is_up ? 'is-up' : 'is-down'} is-unsure`}
+                x1={structureOverlay.unfinishedBi.start.x}
+                y1={structureOverlay.unfinishedBi.start.y}
+                x2={structureOverlay.unfinishedBi.end.x}
+                y2={structureOverlay.unfinishedBi.end.y}
+              />
+            )}
             {structureOverlay.segments?.map((item) => (
               <line
                 key={item.id}

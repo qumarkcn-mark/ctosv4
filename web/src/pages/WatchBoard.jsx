@@ -44,6 +44,46 @@ function formatPrice(value) {
   return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0$/, '')
 }
 
+function formatChatTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(5, 16)
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  const hour = `${date.getHours()}`.padStart(2, '0')
+  const minute = `${date.getMinutes()}`.padStart(2, '0')
+  return `${month}-${day} ${hour}:${minute}`
+}
+
+function restoreWatchboardChatMessages(rows, currentContextId = '') {
+  return (rows || []).flatMap((row) => {
+    const contextId = row.context_id || ''
+    const isHistorical = Boolean(currentContextId && contextId && contextId !== currentContextId)
+    const answer = row.answer || {}
+    const answerText = answer.coach_answer || answer.answer || ''
+    const items = []
+    if (row.question_text) {
+      items.push({
+        role: 'user',
+        content: row.question_text,
+        contextId,
+        isHistorical,
+        createdAt: row.created_at || '',
+      })
+    }
+    if (answerText) {
+      items.push({
+        role: 'assistant',
+        content: answerText,
+        contextId,
+        isHistorical,
+        createdAt: row.created_at || '',
+      })
+    }
+    return items
+  })
+}
+
 export default function WatchBoard() {
   const [groups, setGroups] = useState([])
   const [prices, setPrices] = useState({})
@@ -59,6 +99,7 @@ export default function WatchBoard() {
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState([])
   const [chatLoading, setChatLoading] = useState(false)
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const [activeDetailTab, setActiveDetailTab] = useState('reasoning')
   const chatLogRef = useRef(null)
 
@@ -131,14 +172,40 @@ export default function WatchBoard() {
     })
   }, [activeDetailTab, chatMessages, chatLoading])
 
+  const restoreChatHistory = useCallback(async (item) => {
+    if (!item?.symbol) return
+    const currentContextId = item.context_id || ''
+    setChatHistoryLoading(true)
+    try {
+      const sessionsJson = await apiJson(`/api/ai-structure/chat/sessions/${encodeURIComponent(item.symbol)}`)
+      const latestSession = sessionsJson.data?.sessions?.[0]
+      if (!latestSession?.session_id) {
+        setChatMessages([])
+        return
+      }
+      const messagesJson = await apiJson(
+        `/api/ai-structure/chat/messages?session_id=${encodeURIComponent(latestSession.session_id)}`,
+      )
+      const restored = restoreWatchboardChatMessages(messagesJson.data?.messages || [], currentContextId)
+      setChatMessages(restored)
+    } catch (err) {
+      console.warn('问答追踪历史加载失败:', err)
+      setChatMessages([])
+    } finally {
+      setChatHistoryLoading(false)
+    }
+  }, [])
+
   const openDetail = async (item) => {
     const current = mergePrice(item, prices)
     setSelected(current)
     setFullText('')
     setDetailStatus('loading')
     setChatMessages([])
+    setChatHistoryLoading(false)
     setActiveDetailTab('reasoning')
     setDrawerLoading(true)
+    restoreChatHistory(current)
     try {
       const json = await apiJson(`/api/ai-structure/unified-reasoning/full/${encodeURIComponent(current.symbol)}`)
       setFullText(json.data?.full_text || '')
@@ -207,7 +274,8 @@ export default function WatchBoard() {
     setChatLoading(true)
     setActiveDetailTab('chat')
     setChatInput('')
-    setChatMessages((prev) => [...prev, { role: 'user', content: text }])
+    const sentAt = new Date().toISOString()
+    setChatMessages((prev) => [...prev, { role: 'user', content: text, contextId: selected.context_id || '', createdAt: sentAt }])
     try {
       const json = await apiJson('/api/ai-structure/chat', {
         method: 'POST',
@@ -216,7 +284,12 @@ export default function WatchBoard() {
       })
       setChatMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: json.data?.coach_answer || '暂无回答' },
+        {
+          role: 'assistant',
+          content: json.data?.coach_answer || '暂无回答',
+          contextId: json.data?.context_id || selected.context_id || '',
+          createdAt: json.data?.created_at || new Date().toISOString(),
+        },
       ])
     } catch (err) {
       setChatMessages((prev) => [...prev, { role: 'assistant', content: err.message || '问答失败' }])
@@ -227,6 +300,8 @@ export default function WatchBoard() {
 
   const chatStatus = chatLoading
     ? { tone: 'active', label: '推演中', detail: '正在结合完整推演与当前价格' }
+    : chatHistoryLoading
+      ? { tone: 'active', label: '读取中', detail: '正在恢复历史问答' }
     : drawerLoading
       ? { tone: 'active', label: '读取中', detail: '正在读取完整推演上下文' }
       : detailStatus === 'ready'
@@ -343,8 +418,15 @@ export default function WatchBoard() {
                 {chatMessages.length ? (
                   <div className="watchboard-chat-log" aria-live="polite" ref={chatLogRef}>
                     {chatMessages.map((message, index) => (
-                      <article key={`${message.role}-${index}`} className={`watchboard-chat-message chat-${message.role}`}>
-                        <span>{message.role === 'user' ? '你问' : '教练'}</span>
+                      <article
+                        key={`${message.role}-${index}`}
+                        className={`watchboard-chat-message chat-${message.role} ${message.isHistorical ? 'is-historical' : ''}`}
+                      >
+                        <span>
+                          {message.role === 'user' ? '你问' : '教练'}
+                          {message.createdAt ? <time>{formatChatTime(message.createdAt)}</time> : null}
+                          {message.isHistorical ? <em>历史推演</em> : null}
+                        </span>
                         <ReactMarkdown>{message.content}</ReactMarkdown>
                       </article>
                     ))}
@@ -354,6 +436,11 @@ export default function WatchBoard() {
                         <p>正在结合完整推演和当前价格...</p>
                       </article>
                     )}
+                  </div>
+                ) : chatHistoryLoading ? (
+                  <div className="watchboard-chat-empty">
+                    <strong>正在恢复问答追踪</strong>
+                    <p>会同时保留旧推演下的问题，并标注为历史推演。</p>
                   </div>
                 ) : (
                   <div className="watchboard-chat-empty">

@@ -48,6 +48,8 @@ from server.engines.ai_native.structure_reminder_service import (
     list_structure_reminders,
 )
 from server.engines.ai_native.unified_reasoning_service import (
+    ALL_UNIFIED_FULL_TEXT_VERSIONS,
+    ALL_UNIFIED_REASONING_VERSIONS,
     UNIFIED_FULL_TEXT_VERSION,
     UNIFIED_REASONING_VERSION,
     get_latest_unified_reasoning,
@@ -785,19 +787,25 @@ def _load_watchlist_group_items(conn, user_id: int, group_name: str) -> list[dic
 
 
 def _load_watchboard_reasoning(conn, user_id: int, symbol: str) -> dict:
+    full_text_versions = [UNIFIED_FULL_TEXT_VERSION, *sorted(ALL_UNIFIED_FULL_TEXT_VERSIONS - {UNIFIED_FULL_TEXT_VERSION})]
+    context_versions = [UNIFIED_REASONING_VERSION, *sorted(ALL_UNIFIED_REASONING_VERSIONS - {UNIFIED_REASONING_VERSION})]
+    accepted_versions = [*full_text_versions, *context_versions, "ai_structure_reasoning.e1_dynamic_growth.full_text"]
+    placeholders = ",".join("?" for _ in accepted_versions)
     row = conn.execute(
-        """
+        f"""
         SELECT run_id, context_id, prompt_version, full_reasoning_text, summary_json, updated_at
           FROM ai_structure_reasoning_runs
          WHERE user_id = ?
            AND symbol = ?
            AND status = 'SUCCESS'
-           AND prompt_version IN (?, ?, ?)
+           AND prompt_version IN ({placeholders})
          ORDER BY
            CASE
              WHEN prompt_version = ? THEN 0
-             WHEN prompt_version = ? THEN 1
-             ELSE 2
+             WHEN prompt_version IN ({",".join("?" for _ in full_text_versions[1:])}) THEN 1
+             WHEN prompt_version = ? THEN 2
+             WHEN prompt_version IN ({",".join("?" for _ in context_versions[1:])}) THEN 3
+             ELSE 4
            END,
            updated_at DESC,
            id DESC
@@ -806,11 +814,11 @@ def _load_watchboard_reasoning(conn, user_id: int, symbol: str) -> dict:
         (
             int(user_id),
             normalize_symbol(symbol),
+            *accepted_versions,
             UNIFIED_FULL_TEXT_VERSION,
+            *full_text_versions[1:],
             UNIFIED_REASONING_VERSION,
-            "ai_structure_reasoning.e1_dynamic_growth.full_text",
-            UNIFIED_FULL_TEXT_VERSION,
-            UNIFIED_REASONING_VERSION,
+            *context_versions[1:],
         ),
     ).fetchone()
     if not row:
@@ -836,7 +844,7 @@ def _attach_watchboard_reasoning(item: dict, reasoning: dict | None) -> dict:
     enriched["reasoning_summary"] = _watchboard_summary(safe_summary, reasoning or {})
     enriched["monitor_conditions"] = safe_summary["monitor_conditions"]
     prompt_version = (reasoning or {}).get("prompt_version") or ""
-    enriched["reasoning_source"] = "unified" if prompt_version in {UNIFIED_FULL_TEXT_VERSION, UNIFIED_REASONING_VERSION} else "legacy"
+    enriched["reasoning_source"] = "unified" if prompt_version in (ALL_UNIFIED_FULL_TEXT_VERSIONS | ALL_UNIFIED_REASONING_VERSIONS) else "legacy"
     enriched["full_reasoning_available"] = bool((reasoning or {}).get("full_reasoning_text"))
     enriched["unified_reasoning_available"] = enriched["reasoning_source"] == "unified" and enriched["full_reasoning_available"]
     enriched["reasoning_run_id"] = (reasoning or {}).get("run_id") or ""
@@ -851,9 +859,11 @@ def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
     up_levels = [item for item in triggers if item.get("type") == "price_above"]
     key_down = min((_num(item.get("level")) for item in down_levels if _num(item.get("level")) > 0), default=None)
     key_up = max((_num(item.get("level")) for item in up_levels if _num(item.get("level")) > 0), default=None)
+    card_summary = str(summary.get("card_summary") or "").strip()
+    one_liner = card_summary or summary.get("one_liner") or coach_summary
     return {
-        "one_liner": _compact_watchboard_line(summary.get("one_liner") or coach_summary, (reasoning or {}).get("full_reasoning_text") or ""),
-        "action": summary.get("action") or "观望",
+        "one_liner": card_summary[:42] if card_summary else _compact_watchboard_line(one_liner, (reasoning or {}).get("full_reasoning_text") or ""),
+        "action": summary.get("card_action") or summary.get("action") or "",
         "action_detail": summary.get("action_detail") or "",
         "key_level_down": key_down,
         "key_level_down_meaning": summary.get("key_level_down_meaning") or "下方关键位",

@@ -1,4 +1,8 @@
-from server.engines.ai_native.unified_reasoning_service import normalize_monitor_conditions, summarize_unified_reasoning
+from server.engines.ai_native.unified_reasoning_service import (
+    normalize_monitor_conditions,
+    normalize_watchboard_payload,
+    summarize_unified_reasoning,
+)
 
 
 def test_normalize_monitor_conditions_keeps_four_price_triggers():
@@ -22,7 +26,9 @@ def test_normalize_monitor_conditions_keeps_four_price_triggers():
         "message_on_trigger": "到承接位了，观察5分钟"[:15],
         "action_on_trigger": "关注",
     }
-    assert result["triggers"][1]["action_on_trigger"] == "止损"
+    assert result["triggers"][1]["action_on_trigger"] == "考虑止损"
+    assert result["triggers"][2]["action_on_trigger"] == "考虑加仓"
+    assert result["triggers"][3]["action_on_trigger"] == "考虑减仓"
 
 
 def test_normalize_monitor_conditions_drops_invalid_levels_and_actions():
@@ -77,3 +83,43 @@ def test_summarize_unified_reasoning_skips_opening_chatter():
     """
 
     assert summarize_unified_reasoning(text) == "当前走势处于日线回拉，正在考验中枢上沿"
+
+
+def test_summarize_unified_reasoning_skips_section_headings():
+    text = """
+    好的，我们现在切换到搭档模式。
+    ### **📈 当前走势在做什么？**
+    当前走势的核心是：在大级别中枢震荡格局内，小级别发起向上的冲击波。
+    """
+
+    assert summarize_unified_reasoning(text) == "当前走势的核心是：在大级别中枢震荡格局内，小级别发起向上的冲击波"
+
+
+def test_normalize_watchboard_payload_keeps_ai_card_fields():
+    payload = {
+        "card_summary": "小级别向上离开，冲击日线中枢上沿",
+        "card_action": "继续持有",
+        "triggers": [
+            {"type": "price_above", "level": 40.77, "message_on_trigger": "突破日线中枢上沿", "action_on_trigger": "关注"},
+            {"type": "price_below", "level": 38.12, "message_on_trigger": "跌破强弱线", "action_on_trigger": "卖出"},
+        ],
+    }
+
+    result = normalize_watchboard_payload(payload, fallback_summary="fallback")
+
+    assert result["card_summary"] == "小级别向上离开，冲击日线中枢上沿"
+    assert result["card_action"] == "继续持有"
+    assert result["monitor_conditions"]["triggers"][1]["action_on_trigger"] == "考虑减仓"
+
+
+def test_normalize_watchboard_payload_compacts_card_action():
+    result = normalize_watchboard_payload(
+        {
+            "card_summary": "冲击日线中枢上沿40.77，短线动能减弱",
+            "card_action": "持仓观望，关注40.77",
+            "triggers": [],
+        },
+        fallback_summary="fallback",
+    )
+
+    assert result["card_action"] == "持仓观望"

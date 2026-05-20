@@ -23,7 +23,7 @@ def test_sync_symbol_klines_only_syncs_requested_symbol(monkeypatch):
     async def inline_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    def fake_fetch(symbol, freq):
+    def fake_refresh(symbol, freq):
         calls.append((symbol, freq))
         return 3
 
@@ -35,7 +35,7 @@ def test_sync_symbol_klines_only_syncs_requested_symbol(monkeypatch):
 
     monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
     monkeypatch.setattr(kline_sync_worker, "ALL_FREQS", ["day", "30", "5"])
-    monkeypatch.setattr(baostock_service, "fetch_klines_sync", fake_fetch)
+    monkeypatch.setattr(baostock_service, "refresh_symbol_qfq", fake_refresh)
     monkeypatch.setattr(kline_sync_worker, "enqueue_structure_jobs_for_changes", fake_enqueue_structure_jobs)
 
     app = FastAPI()
@@ -61,6 +61,37 @@ def test_sync_symbol_klines_only_syncs_requested_symbol(monkeypatch):
         {"symbol": "sh.600549", "freq": "30", "written": 3},
         {"symbol": "sh.600549", "freq": "5", "written": 3},
     ]
+
+
+def test_sync_symbol_klines_can_refresh_only_requested_interval(monkeypatch):
+    calls = []
+
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def fake_refresh(symbol, freq):
+        calls.append((symbol, freq))
+        return 2
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(baostock_service, "refresh_symbol_qfq", fake_refresh)
+    monkeypatch.setattr(
+        kline_sync_worker,
+        "enqueue_structure_jobs_for_changes",
+        lambda changes, **_kwargs: {"count": len(changes), "items": []},
+    )
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.post("/sync-klines/sh600549?interval=m30")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["freqs"] == ["30"]
+    assert payload["total_written"] == 2
+    assert calls == [("sh.600549", "30")]
 
 
 def test_lake_status_api_is_readonly_contract(monkeypatch):

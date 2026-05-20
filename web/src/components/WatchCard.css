@@ -93,20 +93,34 @@
 }
 
 .watch-card-position {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
   color: var(--text-secondary, rgba(255, 255, 255, 0.55));
   font-family: var(--font-mono, monospace);
-  font-size: var(--text-xs, 11px);
+  font-size: var(--text-2xs, 10px);
   background: var(--surface-1, #0d0d0f);
   padding: 4px 8px;
   border-radius: var(--radius-xs, 2px);
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  white-space: nowrap;
+}
+
+.watch-card-position span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.watch-card-position span.position-main {
+  justify-self: start;
 }
 
 .watch-card-position span.position-pnl {
-  margin-left: auto;
+  justify-self: end;
+  text-align: right;
+  max-width: 96px;
 }
 
 .watch-card-summary {

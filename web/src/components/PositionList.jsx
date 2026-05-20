@@ -1,5 +1,32 @@
 import './PositionList.css'
 
+function formatMoney(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  return `¥${num.toFixed(2)}`
+}
+
+function formatQuantity(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  return `${num.toLocaleString()} 股`
+}
+
+function formatPercent(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`
+}
+
+function normalizeWeight(value) {
+  if (value === null || value === undefined || value === '') return 0
+  const num = Number(value)
+  if (!Number.isFinite(num)) return 0
+  return num <= 1 ? num * 100 : num
+}
+
 export default function PositionList({ positions, onViewInAI }) {
   if (!positions || positions.length === 0) {
     return (
@@ -12,11 +39,11 @@ export default function PositionList({ positions, onViewInAI }) {
   return (
     <div className="position-grid">
       {positions.map((p) => {
-        const pnl = p.current_price
+        const pnl = p.current_price && p.avg_cost
           ? ((p.current_price - p.avg_cost) / p.avg_cost * 100)
           : null
-          
-        const weightPercent = p.weight !== undefined ? (p.weight * 100).toFixed(1) : 0
+
+        const weightPercent = normalizeWeight(p.weight)
         const hasStopLoss = p.stop_loss_price != null && p.stop_loss_price > 0
         const distanceToStop = hasStopLoss && p.current_price 
           ? ((p.current_price - p.stop_loss_price) / p.stop_loss_price * 100)
@@ -24,42 +51,41 @@ export default function PositionList({ positions, onViewInAI }) {
           
         const isBroken = distanceToStop !== null && distanceToStop <= 0
         const isNear = distanceToStop !== null && distanceToStop > 0 && distanceToStop <= 3
-
         return (
-          <div key={p.symbol} className="position-card card">
+          <article key={p.symbol} className="position-card card">
             <div className="position-header">
-              <span className="position-name">{p.name || p.symbol}</span>
+              <div className="position-title-group">
+                <span className="position-name">{p.name || p.symbol}</span>
+                {onViewInAI && (
+                  <button
+                    className="pos-view-btn"
+                    title="AI 结构问答"
+                    onClick={() => onViewInAI(p.symbol, p.name)}
+                  >
+                    看盘
+                  </button>
+                )}
+              </div>
               <span className="position-code mono text-secondary">{p.symbol}</span>
-              {onViewInAI && (
-                <button
-                  className="pos-view-btn"
-                  title="AI 结构问答"
-                  onClick={() => onViewInAI(p.symbol, p.name)}
-                >
-                  看盘
-                </button>
-              )}
             </div>
 
-            <div className="position-stats">
+            <div className="position-stats" aria-label={`${p.name || p.symbol} 持仓数据`}>
               <div className="position-stat">
                 <span className="stat-label">持仓</span>
-                <span className="stat-value mono">{p.quantity} 股</span>
+                <span className="stat-value mono">{formatQuantity(p.quantity)}</span>
               </div>
               <div className="position-stat">
                 <span className="stat-label">成本</span>
-                <span className="stat-value mono">¥{p.avg_cost?.toFixed(2)}</span>
+                <span className="stat-value mono">{formatMoney(p.avg_cost)}</span>
               </div>
               <div className="position-stat">
                 <span className="stat-label">现价</span>
-                <span className="stat-value mono">
-                  {p.current_price ? `¥${p.current_price.toFixed(2)}` : '—'}
-                </span>
+                <span className="stat-value mono">{formatMoney(p.current_price)}</span>
               </div>
               <div className="position-stat">
                 <span className="stat-label">盈亏</span>
                 <span className={`stat-value mono ${pnl > 0 ? 'text-up' : pnl < 0 ? 'text-down' : ''}`}>
-                  {pnl !== null ? `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}%` : '—'}
+                  {pnl !== null ? formatPercent(pnl) : '—'}
                 </span>
               </div>
             </div>
@@ -79,15 +105,8 @@ export default function PositionList({ positions, onViewInAI }) {
               </div>
             )}
 
-            {p.ai_reasoning_summary && (
-              <div className="position-ai-summary">
-                <span>AI</span>
-                <p>{p.ai_reasoning_summary}</p>
-              </div>
-            )}
-
             {/* 仓位占比条 */}
-            {p.weight !== undefined && (
+            {p.weight !== null && p.weight !== undefined && (
               <div className="position-weight">
                 <div className="weight-bar">
                   <div
@@ -95,10 +114,10 @@ export default function PositionList({ positions, onViewInAI }) {
                     style={{ width: `${Math.min(weightPercent, 100)}%` }}
                   />
                 </div>
-                <span className="weight-label mono">{weightPercent}%</span>
+                <span className="weight-label mono">{weightPercent.toFixed(1)}%</span>
               </div>
             )}
-          </div>
+          </article>
         )
       })}
     </div>
