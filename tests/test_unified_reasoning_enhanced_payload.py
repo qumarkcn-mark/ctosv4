@@ -2,7 +2,7 @@ from server.db import database
 from server.engines.ai_native import unified_reasoning_service as service
 
 
-def make_snapshot(level: str, *, price: float, zg: float, zd: float, bi_count: int) -> dict:
+def make_snapshot(level: str, *, price: float, zg: float, zd: float, bi_count: int, signals: dict | None = None) -> dict:
     klines = []
     current = price * 0.8
     for index in range(80):
@@ -70,6 +70,7 @@ def make_snapshot(level: str, *, price: float, zg: float, zd: float, bi_count: i
                 },
             ],
             "bi_zhongshus": [],
+            "signals": signals or {},
         },
     }
 
@@ -100,7 +101,14 @@ def test_unified_position_context_accepts_compact_symbol(monkeypatch, tmp_path):
 
 def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
     snapshots = {
-        "day": make_snapshot("day", price=10.2, zg=10.0, zd=9.2, bi_count=9),
+        "day": make_snapshot(
+            "day",
+            price=10.2,
+            zg=10.0,
+            zd=9.2,
+            bi_count=9,
+            signals={"日线_五笔形态": "向上突破", "日线_其他": "无"},
+        ),
         "5": make_snapshot("5", price=10.2, zg=10.1, zd=9.8, bi_count=3),
         "week": make_snapshot("week", price=10.2, zg=4.0, zd=3.5, bi_count=7),
     }
@@ -124,6 +132,11 @@ def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
     assert data["structure"]["日线"]["total_bi_count"] == 2
     assert data["structure"]["日线"]["current_unfinished_bi"]["is_sure"] is False
     assert "macd_state" in data["momentum_dynamics"]["日线"]
+    assert data["resonance_evidence"]["grade"] in {"LOW", "MEDIUM", "HIGH"}
+    assert "space_ratio" in data["resonance_evidence"]
+    assert data["chan_signals"]["日线"] == [
+        {"key": "日线_五笔形态", "value": "向上突破", "source": "czsc.signals"}
+    ]
 
 
 def test_pressure_support_semantics_ignore_distant_centers():
@@ -140,3 +153,26 @@ def test_pressure_support_semantics_ignore_distant_centers():
 
     assert "semantic" not in result[0]
     assert result[1]["semantic"] == "日线:接近中枢上沿ZG，属于离开后回拉观察边界"
+
+
+def test_resonance_evidence_marks_boundary_cluster_overlap():
+    geometry = {
+        "日线": {"center": {"zg": 10.0, "zd": 9.2, "relevance": "active_boundary"}},
+        "周线": {"center": {"zg": 4.0, "zd": 3.5, "relevance": "distant_context"}},
+    }
+    clusters = [
+        {"zone": [9.95, 10.02], "type": "pressure", "source_levels": ["day", "5"]},
+        {"zone": [9.0, 9.1], "type": "support", "source_levels": ["5"]},
+    ]
+
+    result = service._compute_resonance_evidence(
+        current_price=9.8,
+        structure_geometry=geometry,
+        pressure_support=clusters,
+    )
+
+    assert result["score"] >= 50
+    assert result["space_ratio"]["nearest_pressure"] == 9.985
+    assert result["space_ratio"]["nearest_support"] == 9.05
+    assert result["overlap_keys"][0]["level"] == "日线"
+    assert "日线中枢上沿ZG" in result["reasons"][0]

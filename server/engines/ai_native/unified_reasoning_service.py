@@ -38,6 +38,23 @@ LEGACY_UNIFIED_REASONING_VERSIONS = {"unified_reasoning.v1"}
 LEGACY_UNIFIED_FULL_TEXT_VERSIONS = {f"{version}.full_text" for version in LEGACY_UNIFIED_REASONING_VERSIONS}
 ALL_UNIFIED_REASONING_VERSIONS = {UNIFIED_REASONING_VERSION, *LEGACY_UNIFIED_REASONING_VERSIONS}
 ALL_UNIFIED_FULL_TEXT_VERSIONS = {UNIFIED_FULL_TEXT_VERSION, *LEGACY_UNIFIED_FULL_TEXT_VERSIONS}
+RESONANCE_OVERLAP_THRESHOLD = 0.015
+CHAN_SIGNAL_MARKERS = (
+    "五笔",
+    "三笔",
+    "七笔",
+    "九笔",
+    "十一笔",
+    "背驰",
+    "分型",
+    "三买",
+    "三卖",
+    "第二买卖点",
+    "BS3",
+    "BUY",
+    "SELL",
+    "BE辅助",
+)
 
 SYSTEM_PROMPT = """你是用户的缠论盯盘搭档。
 
@@ -164,6 +181,12 @@ def build_unified_reasoning_input(
     source_snapshot_ids = [item["snapshot_id"] for item in rows]
     pressure_support = _compute_pressure_support(snapshots)
     nearby_pressure_support = _add_pressure_support_semantics(pressure_support, structure_geometry)
+    resonance_evidence = _compute_resonance_evidence(
+        current_price=current_price,
+        structure_geometry=structure_geometry,
+        pressure_support=nearby_pressure_support,
+    )
+    chan_signals = _collect_chan_signals(snapshots, level_names)
     position_context = _position_context(user_id=user_id, symbol=canonical, current_price=current_price)
     full_input = {
         "symbol": canonical,
@@ -173,6 +196,8 @@ def build_unified_reasoning_input(
         "structure_geometry": structure_geometry,
         "momentum_dynamics": momentum_dynamics,
         "nearby_pressure_support": nearby_pressure_support,
+        "resonance_evidence": resonance_evidence,
+        "chan_signals": chan_signals,
         "position_context": position_context,
         # 旧字段保留给前端、测试脚本和历史消费方，语义等同第一阶段结构参考。
         "structure": structure,
@@ -667,6 +692,126 @@ def _add_pressure_support_semantics(
             enriched["semantic"] = "；".join(semantics[:2])
         result.append(enriched)
     return result
+
+
+def _compute_resonance_evidence(
+    *,
+    current_price: float,
+    structure_geometry: dict[str, Any],
+    pressure_support: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """把结构边界与最近压力支撑的重叠翻译成低熵证据。"""
+    if current_price <= 0:
+        return {"score": 0, "grade": "LOW", "space_ratio": {}, "overlap_keys": [], "reasons": []}
+
+    nearest_pressure = None
+    nearest_support = None
+    for cluster in pressure_support:
+        center = _cluster_center(cluster)
+        if center <= 0:
+            continue
+        if center > current_price and (nearest_pressure is None or center < nearest_pressure):
+            nearest_pressure = center
+        if center < current_price and (nearest_support is None or center > nearest_support):
+            nearest_support = center
+
+    upside_pct = round((nearest_pressure - current_price) / current_price * 100, 2) if nearest_pressure else None
+    downside_pct = round((current_price - nearest_support) / current_price * 100, 2) if nearest_support else None
+    risk_reward_ratio = (
+        round(upside_pct / downside_pct, 2)
+        if upside_pct is not None and downside_pct is not None and downside_pct > 0
+        else None
+    )
+
+    score = 30
+    overlap_keys: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for level_name, geometry in structure_geometry.items():
+        center = geometry.get("center") or {}
+        if center.get("relevance") == "distant_context":
+            continue
+        for boundary, boundary_label in (("zg", "中枢上沿ZG"), ("zd", "中枢下沿ZD")):
+            boundary_price = _num(center.get(boundary))
+            if boundary_price <= 0:
+                continue
+            for cluster in pressure_support:
+                cluster_center = _cluster_center(cluster)
+                if cluster_center <= 0:
+                    continue
+                distance_pct = abs(cluster_center - boundary_price) / boundary_price
+                if distance_pct <= RESONANCE_OVERLAP_THRESHOLD:
+                    overlap_keys.append({
+                        "level": level_name,
+                        "boundary": boundary,
+                        "boundary_price": round(boundary_price, 4),
+                        "cluster_center": round(cluster_center, 4),
+                        "cluster_type": cluster.get("type"),
+                        "distance_pct": round(distance_pct * 100, 2),
+                        "source_levels": cluster.get("source_levels") or [],
+                    })
+                    reasons.append(f"{level_name}{boundary_label}接近历史{cluster.get('type') or 'cluster'}簇")
+                    score += 12
+                    break
+
+    if risk_reward_ratio is not None:
+        score += 8
+        if risk_reward_ratio >= 1.5:
+            score += 8
+            reasons.append(f"上方空间/下方回撤约 {risk_reward_ratio}:1")
+        elif risk_reward_ratio < 0.8:
+            reasons.append(f"上方空间/下方回撤约 {risk_reward_ratio}:1，空间并不占优")
+
+    score = min(score, 95)
+    grade = "HIGH" if score >= 75 else "MEDIUM" if score >= 55 else "LOW"
+    return {
+        "score": score,
+        "grade": grade,
+        "space_ratio": {
+            "nearest_pressure": round(nearest_pressure, 4) if nearest_pressure else None,
+            "nearest_support": round(nearest_support, 4) if nearest_support else None,
+            "upside_pct": upside_pct,
+            "downside_pct": downside_pct,
+            "risk_reward_ratio": risk_reward_ratio,
+        },
+        "overlap_keys": overlap_keys[:8],
+        "reasons": reasons[:8],
+    }
+
+
+def _collect_chan_signals(
+    snapshots: dict[str, dict[str, Any]],
+    level_names: dict[str, str],
+) -> dict[str, list[dict[str, str]]]:
+    """收集 czsc 快照里已有的标准形态标签；没有就保持为空。"""
+    result: dict[str, list[dict[str, str]]] = {}
+    for level, row in snapshots.items():
+        snap = row.get("snapshot") or {}
+        raw = snap.get("chan_signals") or snap.get("signals") or {}
+        if not isinstance(raw, dict):
+            continue
+        items: list[dict[str, str]] = []
+        for key, value in raw.items():
+            key_text = str(key or "")
+            value_text = str(value or "")
+            if not key_text or not value_text:
+                continue
+            if value_text in {"任意", "无", "None", "nan"} or value_text.startswith("其他"):
+                continue
+            if not any(marker in key_text for marker in CHAN_SIGNAL_MARKERS):
+                continue
+            items.append({"key": key_text[:80], "value": value_text[:80], "source": "czsc.signals"})
+            if len(items) >= 8:
+                break
+        if items:
+            result[level_names.get(level, level)] = items
+    return result
+
+
+def _cluster_center(cluster: dict[str, Any]) -> float:
+    zone = cluster.get("zone") or []
+    if len(zone) != 2:
+        return 0.0
+    return (_num(zone[0]) + _num(zone[1])) / 2
 
 
 def _split_confirmed_and_unfinished_bis(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:

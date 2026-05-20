@@ -62,6 +62,7 @@ def test_serialize_czsc_level_exposes_stable_contract():
         "seg_count": 0,
         "seg_zs_count": 0,
         "bsp_count": 0,
+        "signal_count": 0,
     }
     assert result["active_zhongshu"]["zg"] == 11.5
     assert result["state_hint"] == "above_zg"
@@ -167,3 +168,24 @@ def test_serialize_czsc_level_exposes_unfinished_bi_separately():
     assert result["unfinished_bi"]["x1"] == "2026-01-03"
     assert result["unfinished_bi"]["end_price"] == 12.8
     assert result["metadata"]["has_unfinished_bi"] is True
+
+
+def test_serialize_czsc_level_exposes_existing_native_signals():
+    fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
+    fx_b = Obj(dt="2026-01-02", mark="G", high=12, low=11, fx=12)
+    czsc_obj = Obj(
+        fx_list=[fx_a, fx_b],
+        bi_list=[FakeBI(fx_a, fx_b)],
+        zs_list=[],
+        signals={"日线_D1五笔_形态V230619": "类三买_强_任意_0"},
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-06", "open": 11, "high": 12, "low": 10, "close": 11.8, "volume": 100}],
+        level="day",
+    )
+
+    assert result["signals"]["日线_D1五笔_形态V230619"] == "类三买_强_任意_0"
+    assert result["chan_signals"] == result["signals"]
+    assert result["stats"]["signal_count"] >= 1
