@@ -12,6 +12,12 @@ function formatPct(value) {
 
 function actionClass(action) {
   const normalized = String(action || '').replace(/^考虑/, '')
+  if (normalized.includes('止损')) return 'stop'
+  if (normalized.includes('减仓') || normalized.includes('锁利')) return 'reduce'
+  if (normalized.includes('加仓') || normalized.includes('建仓')) return 'add'
+  if (normalized.includes('持有')) return 'hold'
+  if (normalized.includes('关注')) return 'watch'
+  if (normalized.includes('观望')) return 'wait'
   const map = {
     持有: 'hold',
     加仓: 'add',
