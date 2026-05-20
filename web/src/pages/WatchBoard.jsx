@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchCard from '../components/WatchCard.jsx'
+import { computeTacticalState } from '../utils/watchboardState.js'
 import './WatchBoard.css'
 
 const GROUPS = ['自选', '备选']
@@ -65,7 +66,23 @@ export default function WatchBoard() {
   const displayGroups = useMemo(() => (
     groups.map((group) => ({
       ...group,
-      items: (group.items || []).map((item) => mergePrice(item, prices)),
+      items: (group.items || [])
+        .map((item, index) => {
+          const merged = mergePrice(item, prices)
+          const tactical = computeTacticalState(merged, merged.price)
+          return { ...merged, _watchboardIndex: index, _tacticalState: tactical }
+        })
+        .sort((a, b) => {
+          const priorityDiff = (b._tacticalState?.priority || 0) - (a._tacticalState?.priority || 0)
+          if (priorityDiff) return priorityDiff
+          const aDistance = a._tacticalState?.distancePct
+          const bDistance = b._tacticalState?.distancePct
+          if (aDistance !== null && aDistance !== undefined && bDistance !== null && bDistance !== undefined) {
+            const distanceDiff = aDistance - bDistance
+            if (distanceDiff) return distanceDiff
+          }
+          return a._watchboardIndex - b._watchboardIndex
+        }),
     }))
   ), [groups, prices])
 
@@ -361,6 +378,7 @@ export default function WatchBoard() {
               <strong>{chatStatus.label}</strong>
               <em>{chatStatus.detail}</em>
             </div>
+
             <form
               className="watchboard-chat-input"
               onSubmit={(event) => {
