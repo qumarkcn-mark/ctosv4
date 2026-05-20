@@ -219,7 +219,13 @@ export default function Dashboard({ onViewInAI, onOpenAI }) {
 
       {/* 持仓列表 */}
       <section className="positions-section animate-fade-in" style={{ animationDelay: '0.1s' }}>
-        <h2 className="section-title">当前持仓</h2>
+        <div className="positions-section-header">
+          <div>
+            <h2 className="section-title">交易面板</h2>
+            <p>持仓、成本、现价、AI 结构摘要与仓位占比统一展示。AI 内容仅供参考，不构成投资建议。</p>
+          </div>
+          <span className="positions-count mono">{positions.length} POS</span>
+        </div>
         <PositionList positions={positions} onViewInAI={onViewInAI} />
       </section>
 

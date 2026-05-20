@@ -32,7 +32,7 @@ import baostock.common.contants as bs_cons
 import baostock.util.socketutil as bs_socket_util
 import pandas as pd
 
-from server.db.kline_lake import upsert_klines, get_last_sync_date, count_klines
+from server.db.kline_lake import upsert_klines, get_last_sync_date, count_klines, query_klines
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,16 @@ CHUNK_DAYS = {
     "15":  120,   # 15m 4 个月 ≈ 1280 行
     "5":   60,    # 5m 2 个月  ≈ 1920 行
 }
+
+REFRESH_OVERLAP_DAYS = {
+    "week": 180,
+    "day": 30,
+    "60": 10,
+    "30": 10,
+    "15": 7,
+    "5": 5,
+}
+QFQ_REFRESH_DRIFT_THRESHOLD_PCT = 0.5
 
 # 线程池扩容至 4 workers（支持 Matrix 页面 5 级别并发）
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="baostock")
@@ -441,6 +451,95 @@ def fetch_klines_sync(
         logger.warning("BaoStock 返回空数据 %s/%s [%s ~ %s]", symbol, freq, effective_start, effective_end)
 
     return total_written
+
+
+def refresh_symbol_qfq(
+    symbol: str,
+    freq: str = "day",
+    *,
+    overlap_days: Optional[int] = None,
+    end_date: Optional[str] = None,
+) -> int:
+    """
+    轻量刷新标准前复权 K 线。
+
+    日常自动同步和看盘页刷新只需要补最近窗口，不应该每天重建全历史。
+    若本地没有该级别缓存，则自动退回 fetch_klines_sync 做首次完整补齐。
+    返回值表示该级别同步截止时间是否前进；未前进时返回 0，避免无谓触发结构重算。
+    """
+    bs_freq = FREQ_MAP.get(freq)
+    if not bs_freq:
+        raise ValueError(f"不支持的频率: {freq}，可用: {list(FREQ_MAP.keys())}")
+
+    before_last = get_last_sync_date(symbol, freq)
+    if not before_last:
+        logger.info("首次刷新 %s/%s，无本地同步标记，转为完整补齐", symbol, freq)
+        return fetch_klines_sync(symbol, freq, end_date=end_date, adjustflag="2")
+
+    overlap = overlap_days if overlap_days is not None else REFRESH_OVERLAP_DAYS.get(freq, 10)
+    floor_date = DEFAULT_DAY_START if freq in ("day", "week") else MIN_MINUTE_DATE
+    start_date = (
+        datetime.strptime(before_last[:10], "%Y-%m-%d") - timedelta(days=overlap)
+    ).strftime("%Y-%m-%d")
+    if start_date < floor_date:
+        start_date = floor_date
+
+    before_overlap = query_klines(symbol, freq, start_date=start_date, limit=1, adjustflag="2")
+    before_anchor = before_overlap[0] if before_overlap else None
+
+    from server.services.qfq_normalizer import rebuild_symbol_qfq
+
+    result = rebuild_symbol_qfq(
+        symbol,
+        start_date=start_date,
+        end_date=end_date,
+        include_minutes=freq not in ("day", "week"),
+        target_freqs=[freq],
+    )
+    if freq == "day":
+        written = result.day_rows
+    elif freq == "week":
+        written = result.week_rows
+    else:
+        written = result.minute_rows.get(freq, 0)
+
+    if before_anchor:
+        after_overlap = query_klines(
+            symbol,
+            freq,
+            start_date=str(before_anchor["date"]),
+            end_date=str(before_anchor["date"]),
+            limit=1,
+            adjustflag="2",
+        )
+        after_anchor = after_overlap[0] if after_overlap else None
+        before_close = float(before_anchor.get("close") or 0)
+        after_close = float(after_anchor.get("close") or 0) if after_anchor else 0.0
+        if before_close > 0 and after_close > 0:
+            drift_pct = abs(after_close / before_close - 1) * 100
+            if drift_pct > QFQ_REFRESH_DRIFT_THRESHOLD_PCT:
+                logger.warning(
+                    "轻量刷新检测到前复权尺度漂移 %.2f%%，升级全量重建: %s/%s anchor=%s",
+                    drift_pct,
+                    symbol,
+                    freq,
+                    before_anchor["date"],
+                )
+                return fetch_klines_sync(symbol, freq, end_date=end_date, adjustflag="2")
+
+    after_last = get_last_sync_date(symbol, freq)
+    if after_last and after_last > before_last:
+        logger.info(
+            "轻量刷新 %s/%s: %s -> %s, rows=%d",
+            symbol,
+            freq,
+            before_last,
+            after_last,
+            written,
+        )
+        return written
+    logger.info("轻量刷新 %s/%s 未发现新截止时间: last=%s", symbol, freq, before_last)
+    return 0
 
 
 def fetch_klines_quick(

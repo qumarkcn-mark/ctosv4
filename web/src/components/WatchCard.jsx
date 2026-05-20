@@ -11,6 +11,7 @@ function formatPct(value) {
 }
 
 function actionClass(action) {
+  const normalized = String(action || '').replace(/^考虑/, '')
   const map = {
     持有: 'hold',
     加仓: 'add',
@@ -19,7 +20,7 @@ function actionClass(action) {
     观望: 'wait',
     关注: 'watch',
   }
-  return map[action] || 'wait'
+  return map[normalized] || 'wait'
 }
 
 export default function WatchCard({ item, currentPrice, onClick }) {
@@ -33,6 +34,8 @@ export default function WatchCard({ item, currentPrice, onClick }) {
   const hasRangeLevels = Boolean(Number(summary.key_level_down || 0) && Number(summary.key_level_up || 0))
   const hasAnyKeyLevel = Boolean(Number(summary.key_level_down || 0) || Number(summary.key_level_up || 0))
   const quoteTime = item.price_data?.quote_time || ''
+  const pnlPct = Number(position?.pnl_pct ?? 0)
+  const pnlLabel = pnlPct >= 0 ? '盈' : '亏'
 
   const minL = Number(summary.key_level_down || 0)
   const maxL = Number(summary.key_level_up || 0)
@@ -58,11 +61,10 @@ export default function WatchCard({ item, currentPrice, onClick }) {
 
       {position && (
         <div className="watch-card-position">
-          <span>{position.shares} 股</span>
-          <span>成本 {formatPrice(position.cost)}</span>
+          <span className="position-main">{position.shares}股 @{formatPrice(position.cost)}</span>
           {position.pnl_pct !== null && position.pnl_pct !== undefined && (
             <span className={`position-pnl ${Number(position.pnl_pct) >= 0 ? 'is-up' : 'is-down'}`}>
-              浮盈 {formatPct(position.pnl_pct)}
+              {pnlLabel} {formatPct(position.pnl_pct)}
             </span>
           )}
         </div>

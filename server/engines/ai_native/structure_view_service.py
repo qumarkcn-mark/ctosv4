@@ -41,11 +41,20 @@ def get_structure_view(
         klines = klines[-count:]
     time_axis = _build_time_axis(klines)
 
+    raw_bis, raw_unfinished_bi = _split_confirmed_and_unfinished_bis(snapshot)
     bis = [
         _normalize_bi(item, index=index, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
-        for index, item in enumerate(snapshot.get("bis") or [])
+        for index, item in enumerate(raw_bis)
         if isinstance(item, dict)
     ]
+    unfinished_bi = None
+    if isinstance(raw_unfinished_bi, dict):
+        unfinished_bi = _normalize_bi(
+            raw_unfinished_bi,
+            index=len(raw_bis),
+            time_axis=time_axis,
+            snapshot_id=snapshot_row["snapshot_id"],
+        )
     centers = [
         _normalize_center(
             item,
@@ -103,10 +112,25 @@ def get_structure_view(
             "last_time": _bar_time(klines[-1]) if klines else "",
         },
         "bis": [item for item in bis if item],
+        "unfinished_bi": unfinished_bi,
         "segments": segments,
         "centers": [item for item in centers if item],
         "active_center": active_center,
     }
+
+
+def _split_confirmed_and_unfinished_bis(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    raw_bis = [item for item in (snapshot.get("bis") or []) if isinstance(item, dict)]
+    raw_unfinished = snapshot.get("unfinished_bi") if isinstance(snapshot.get("unfinished_bi"), dict) else None
+    if raw_unfinished:
+        return raw_bis, raw_unfinished
+    if raw_bis and _is_unfinished_bi(raw_bis[-1]):
+        return raw_bis[:-1], raw_bis[-1]
+    return raw_bis, None
+
+
+def _is_unfinished_bi(item: dict[str, Any]) -> bool:
+    return bool(item.get("is_sure") is False or item.get("source") == "czsc_ubi" or item.get("status") == "ongoing")
 
 
 def _normalize_bi(item: dict[str, Any], *, index: int, time_axis: dict[int, int], snapshot_id: str) -> dict[str, Any] | None:

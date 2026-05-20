@@ -22,7 +22,7 @@ from server.engines.ai_native.structure_context_service import (
     get_reasoning_run_for_context,
     reasoning_availability,
 )
-from server.engines.ai_native.unified_reasoning_service import UNIFIED_FULL_TEXT_VERSION
+from server.engines.ai_native.unified_reasoning_service import ALL_UNIFIED_FULL_TEXT_VERSIONS
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
@@ -491,7 +491,7 @@ def _build_ai_answer_from_full_reasoning(
     full_text = str((run or {}).get("full_reasoning_text") or "").strip()
     if not full_text:
         return None
-    is_unified = str((run or {}).get("prompt_version") or "") == UNIFIED_FULL_TEXT_VERSION
+    is_unified = str((run or {}).get("prompt_version") or "") in ALL_UNIFIED_FULL_TEXT_VERSIONS
     if is_unified:
         prompt = {
             "version": "unified_reasoning_chat.v1",

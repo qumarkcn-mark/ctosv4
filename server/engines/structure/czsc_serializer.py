@@ -8,10 +8,8 @@ from typing import Any
 def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus: list[Any] | None = None) -> dict[str, Any]:
     fxs = [_serialize_fx(item) for item in list(getattr(czsc_obj, "fx_list", []) or [])]
     bis = [_serialize_bi(item) for item in list(getattr(czsc_obj, "bi_list", []) or [])]
-    # 追加未完成笔（ubi）：bi_list 只含已确认笔，正在生长的笔在 czsc_obj.ubi 中
-    ubi_bi = _serialize_ubi(czsc_obj)
-    if ubi_bi:
-        bis.append(ubi_bi)
+    # CZSC 原生把未完成笔放在 ubi 中，不并入 bi_list；这里保持同样的契约，避免污染中枢计算与正式笔序列。
+    unfinished_bi = _serialize_ubi(czsc_obj)
     segs, segment_source = _serialize_segments(czsc_obj, bis)
     zs_objects = list(zhongshus if zhongshus is not None else (getattr(czsc_obj, "zs_list", []) or []))
     serialized_zss = [_serialize_zs(item) for item in zs_objects]
@@ -26,6 +24,7 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
         "klines": [_serialize_row(row) for row in rows],
         "fxs": fxs,
         "bis": bis,
+        "unfinished_bi": unfinished_bi,
         "segs": segs,
         "segments": segs,
         "bi_zhongshus": serialized_zss,
@@ -51,6 +50,7 @@ def serialize_czsc_level(czsc_obj: Any, rows: list[dict], level: str, zhongshus:
         "metadata": {
             "unsupported_fields": unsupported_fields,
             "segment_source": segment_source,
+            "has_unfinished_bi": bool(unfinished_bi),
         },
     }
 

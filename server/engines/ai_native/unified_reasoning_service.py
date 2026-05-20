@@ -14,7 +14,7 @@ from typing import Any
 
 from server import config
 from server.db.database import get_connection
-from server.domain.symbols import normalize_symbol
+from server.domain.symbols import normalize_symbol, symbol_aliases
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
@@ -22,6 +22,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
     now_text,
     stable_hash,
 )
+from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
 from server.engines.ai_native.structure_context_service import (
     _boundary_payload,
     save_ai_structure_context,
@@ -31,29 +32,44 @@ from server.engines.structure.structure_key import normalize_freq
 from server.services.llm_service import AIModelRoute, LLMService
 
 
-UNIFIED_REASONING_VERSION = "unified_reasoning.v1"
+UNIFIED_REASONING_VERSION = "unified_reasoning.v2"
 UNIFIED_FULL_TEXT_VERSION = f"{UNIFIED_REASONING_VERSION}.full_text"
+LEGACY_UNIFIED_REASONING_VERSIONS = {"unified_reasoning.v1"}
+LEGACY_UNIFIED_FULL_TEXT_VERSIONS = {f"{version}.full_text" for version in LEGACY_UNIFIED_REASONING_VERSIONS}
+ALL_UNIFIED_REASONING_VERSIONS = {UNIFIED_REASONING_VERSION, *LEGACY_UNIFIED_REASONING_VERSIONS}
+ALL_UNIFIED_FULL_TEXT_VERSIONS = {UNIFIED_FULL_TEXT_VERSION, *LEGACY_UNIFIED_FULL_TEXT_VERSIONS}
 
-SYSTEM_PROMPT = """你是缠中说禅，用户的盯盘搭档。
+SYSTEM_PROMPT = """你是用户的缠论盯盘搭档。
 
-输入包含：多级别结构快照、历史压力支撑位、用户持仓。
+先理解第一阶段结构推演，再结合多级别结构几何、动力状态、附近压力支撑和持仓背景，做第二阶段综合推演。
 
-看完数据，说清楚当下是什么、接下来怎么走、用户该怎么做。
+重点说明：
+当前走势在做什么；
+第一阶段主线是否被动力和关口支持；
+哪些价格和结构变化会让推演切换；
+接下来最需要盯住什么。
 
 仅供参考，不构成投资建议。"""
 
-MONITOR_EXTRACT_PROMPT = """从以下推演全文中提取盯盘监控条件，返回 JSON：
+WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘卡片展示信息，返回 JSON：
 {
+  "card_summary": "一句话盯盘摘要，不超过28个中文字符",
+  "card_action": "结合当前持仓状态给出的短标签，不超过6个中文字符",
   "triggers": [
     {
       "type": "price_below|price_above",
       "level": 数字,
       "message_on_trigger": "触发时显示的一句话（15字以内）",
-      "action_on_trigger": "关注|加仓|减仓|止损|观望"
+      "action_on_trigger": "触发时应关注的动作"
     }
   ]
 }
-最多 4 个条件，只取推演中明确提到的关键价格。只返回 JSON。"""
+要求：
+- card_summary 只说当前最核心的结构动作，适合盯盘卡片扫一眼，不写解释。
+- card_action 必须结合当前持仓状态；空仓看建仓/观望，持仓看加仓/减仓/止损/锁利等管理动作；只输出短标签，不带价格。
+- triggers 最多 4 个，只取推演中明确提到的关键价格。
+- 不要输出买入、卖出这类下单命令，用盯盘建议语气。
+- 只返回 JSON。"""
 
 
 async def trigger_unified_reasoning(
@@ -79,7 +95,7 @@ async def trigger_unified_reasoning(
         max_tokens=max(int(getattr(config, "AI_NATIVE_MAX_TOKENS", 4096)), 4096),
     )
     user_message = (
-        f"以下是 {canonical} 的完整数据，请给出你的推演和操作建议：\n\n"
+        f"以下是 {canonical} 的完整数据，请给出第二阶段综合推演：\n\n"
         f"{json.dumps(payload['input'], ensure_ascii=False, indent=2)}"
     )
     full_text = await service.infer_ai_native_markdown(
@@ -91,14 +107,18 @@ async def trigger_unified_reasoning(
     full_text = str(full_text or "").strip()
     if not full_text:
         raise RuntimeError("Unified reasoning returned empty content")
-    monitor_conditions = await extract_monitor_conditions(full_text, user_id=user_id)
+    watchboard_payload = await extract_watchboard_payload(
+        full_text,
+        user_id=user_id,
+        position_context=(payload.get("input") or {}).get("position_context") or {},
+    )
     return save_unified_reasoning_result(
         user_id=user_id,
         symbol=canonical,
         payload=payload,
         full_text=full_text,
         model_name=route.model_name,
-        monitor_conditions=monitor_conditions,
+        watchboard_payload=watchboard_payload,
     )
 
 
@@ -130,15 +150,34 @@ def build_unified_reasoning_input(
         for level in normalized_levels
         if level in snapshots
     }
+    structure_geometry = {
+        level_names.get(level, level): _hydrate_structure_geometry(snapshots[level])
+        for level in normalized_levels
+        if level in snapshots
+    }
+    momentum_dynamics = {
+        level_names.get(level, level): hydrate_dynamics((snapshots[level].get("snapshot") or {}).get("klines") or [])
+        for level in normalized_levels
+        if level in snapshots
+    }
     current_price = _current_price(snapshots)
     source_snapshot_ids = [item["snapshot_id"] for item in rows]
+    pressure_support = _compute_pressure_support(snapshots)
+    nearby_pressure_support = _add_pressure_support_semantics(pressure_support, structure_geometry)
+    position_context = _position_context(user_id=user_id, symbol=canonical, current_price=current_price)
     full_input = {
         "symbol": canonical,
         "current_price": current_price,
         "data_as_of": _data_as_of(snapshots),
+        "first_stage_reasoning": structure,
+        "structure_geometry": structure_geometry,
+        "momentum_dynamics": momentum_dynamics,
+        "nearby_pressure_support": nearby_pressure_support,
+        "position_context": position_context,
+        # 旧字段保留给前端、测试脚本和历史消费方，语义等同第一阶段结构参考。
         "structure": structure,
-        "pressure_support": _compute_pressure_support(snapshots),
-        "my_position": _position_context(user_id=user_id, symbol=canonical, current_price=current_price),
+        "pressure_support": nearby_pressure_support,
+        "my_position": position_context,
     }
     return {
         "version": UNIFIED_REASONING_VERSION,
@@ -159,14 +198,21 @@ def save_unified_reasoning_result(
     full_text: str,
     model_name: str = "",
     monitor_conditions: dict[str, Any] | None = None,
+    watchboard_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     canonical = normalize_symbol(symbol)
     source_snapshot_ids = payload.get("source_snapshot_ids") or []
+    normalized_watchboard = normalize_watchboard_payload(
+        watchboard_payload or {"triggers": (monitor_conditions or {}).get("triggers") or []},
+        fallback_summary=summarize_unified_reasoning(full_text),
+    )
     summary = summarize_unified_reasoning(full_text)
     summary_payload = {
         "coach_summary": summary,
+        "card_summary": normalized_watchboard["card_summary"],
+        "card_action": normalized_watchboard["card_action"],
         "version": UNIFIED_REASONING_VERSION,
-        "monitor_conditions": normalize_monitor_conditions(monitor_conditions or {}),
+        "monitor_conditions": normalized_watchboard["monitor_conditions"],
     }
     run = save_reasoning_run(
         user_id=user_id,
@@ -185,8 +231,12 @@ def save_unified_reasoning_result(
         "version": UNIFIED_REASONING_VERSION,
         "structure_summary": summary,
         "coach_summary": summary,
-        "front_panel_text": summary,
-        "pressure_support": (payload.get("input") or {}).get("pressure_support") or [],
+        "front_panel_text": normalized_watchboard["card_summary"] or summary,
+        "card_summary": normalized_watchboard["card_summary"],
+        "card_action": normalized_watchboard["card_action"],
+        "pressure_support": (payload.get("input") or {}).get("nearby_pressure_support")
+        or (payload.get("input") or {}).get("pressure_support")
+        or [],
         "reasoning_meta": {
             "provider": "llm",
             "llm_status": "success",
@@ -234,6 +284,8 @@ def save_unified_reasoning_result(
         "context_id": context["context_id"],
         "run_id": run["run_id"],
         "summary": summary,
+        "card_summary": normalized_watchboard["card_summary"],
+        "card_action": normalized_watchboard["card_action"],
         "monitor_conditions": summary_payload["monitor_conditions"],
         "full_text": full_text,
         "source_snapshot_ids": source_snapshot_ids,
@@ -242,11 +294,16 @@ def save_unified_reasoning_result(
     }
 
 
-async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) -> dict[str, Any]:
-    """Extract compact watchboard price triggers from the full reasoning text."""
+async def extract_watchboard_payload(
+    full_reasoning_text: str,
+    *,
+    user_id: int,
+    position_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract compact watchboard card fields from the full reasoning text."""
     text = str(full_reasoning_text or "").strip()
     if not text:
-        return {"triggers": []}
+        return {"card_summary": "", "card_action": "", "triggers": []}
     service = LLMService()
     route = AIModelRoute(
         model_name=getattr(config, "LLM_MODEL", ""),
@@ -255,21 +312,62 @@ async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) 
         timeout_seconds=45,
         max_tokens=900,
     )
+    user_message = json.dumps(
+        {
+            "position_context": position_context or {},
+            "full_reasoning_text": text[:12000],
+        },
+        ensure_ascii=False,
+    )
     try:
         payload = await service.infer_ai_native_json(
-            MONITOR_EXTRACT_PROMPT,
-            text[:12000],
+            WATCHBOARD_EXTRACT_PROMPT,
+            user_message,
             user_id=user_id,
             model_route=route,
         )
     except Exception:
-        return {"triggers": []}
+        return {"card_summary": "", "card_action": "", "triggers": []}
+    return payload if isinstance(payload, dict) else {"card_summary": "", "card_action": "", "triggers": []}
+
+
+async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) -> dict[str, Any]:
+    """Backward-compatible trigger extraction API."""
+    payload = await extract_watchboard_payload(full_reasoning_text, user_id=user_id, position_context={})
     return normalize_monitor_conditions(payload)
+
+
+def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_summary: str = "") -> dict[str, Any]:
+    """Normalize AI-extracted card fields without turning the card into a rule engine."""
+    raw = payload or {}
+    card_summary = re.sub(r"\s+", "", str(raw.get("card_summary") or "")).strip()
+    if not card_summary:
+        card_summary = str(fallback_summary or "").strip()
+    card_action = re.sub(r"\s+", "", str(raw.get("card_action") or "")).strip()
+    card_action = _normalize_watchboard_action(card_action)
+    return {
+        "card_summary": card_summary[:42],
+        "card_action": card_action[:8],
+        "monitor_conditions": normalize_monitor_conditions(raw),
+    }
 
 
 def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, Any]:
     """Keep monitor trigger JSON small, deterministic, and UI-safe."""
-    allowed_actions = {"关注", "加仓", "减仓", "止损", "观望", "持有"}
+    allowed_actions = {
+        "关注",
+        "观望",
+        "继续观望",
+        "重点跟踪",
+        "等待回踩",
+        "考虑建仓",
+        "继续持有",
+        "考虑加仓",
+        "考虑减仓",
+        "考虑止损",
+        "考虑锁利",
+        "收紧防守",
+    }
     normalized: list[dict[str, Any]] = []
     raw_triggers = (payload or {}).get("triggers") or []
     if not isinstance(raw_triggers, list):
@@ -283,7 +381,7 @@ def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, An
         level = _num(raw.get("level"))
         if level <= 0:
             continue
-        action = str(raw.get("action_on_trigger") or "关注").strip()
+        action = _normalize_monitor_action(str(raw.get("action_on_trigger") or "关注").strip())
         if action not in allowed_actions:
             action = "关注"
         message = re.sub(r"\s+", "", str(raw.get("message_on_trigger") or "")).strip()
@@ -305,8 +403,9 @@ def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, An
 
 def _is_semantically_invalid_monitor_trigger(trigger_type: str, action: str, message: str) -> bool:
     """过滤把确认语义误提成单边价格触发的监控条件。"""
+    action_kind = action.removeprefix("考虑")
     if trigger_type == "price_below":
-        if action == "加仓":
+        if action_kind == "加仓":
             return True
         if "突破失败" in message or "三买失败" in message:
             return False
@@ -315,11 +414,39 @@ def _is_semantically_invalid_monitor_trigger(trigger_type: str, action: str, mes
         if "突破" in message and "跌破" not in message:
             return True
     if trigger_type == "price_above":
-        if action == "止损":
+        if action_kind == "止损":
             return True
         if any(marker in message for marker in ("跌破", "失守", "破位", "转弱")):
             return True
     return False
+
+
+def _normalize_monitor_action(action: str) -> str:
+    """把交易动作统一成教练语气，避免前端显示成机械指令。"""
+    action = _normalize_watchboard_action(action)
+    if action in {"加仓", "考虑加仓"}:
+        return "考虑加仓"
+    if action in {"减仓", "考虑减仓"}:
+        return "考虑减仓"
+    if action in {"止损", "考虑止损"}:
+        return "考虑止损"
+    return action
+
+
+def _normalize_watchboard_action(action: str) -> str:
+    action = str(action or "").strip()
+    action = re.split(r"[，,。；;：:\\s]", action, maxsplit=1)[0].strip()
+    if action in {"买入", "开仓", "建仓"}:
+        return "考虑建仓"
+    if action == "卖出":
+        return "考虑减仓"
+    if action == "清仓":
+        return "考虑止损"
+    if action in {"持有", "继续持有"}:
+        return "继续持有"
+    if action in {"持仓观望", "持仓观察"}:
+        return "持仓观望"
+    return action
 
 
 def get_latest_unified_reasoning(*, user_id: int, symbol: str) -> dict[str, Any] | None:
@@ -349,19 +476,31 @@ def get_latest_unified_reasoning(*, user_id: int, symbol: str) -> dict[str, Any]
 def summarize_unified_reasoning(text: str, *, max_length: int = 96) -> str:
     source = re.sub(r"[*_`]+", "", str(text or "")).strip()
     bad_markers = ("收到数据", "看了数据", "开始", "请坐", "下面", "我的分析")
+    heading_markers = (
+        "当前走势在做什么",
+        "第一阶段主线是否",
+        "哪些价格和结构变化",
+        "接下来最需要盯住",
+        "第二阶段综合推演",
+        "核心判断",
+    )
     preferred_markers = ("当前", "核心", "结构", "走势", "中枢", "三买", "三卖", "回拉", "突破", "跌破", "观察")
     parts = [
-        re.sub(r"^[#>*\\-\\d\\.、\\s]+", "", part).strip()
+        re.sub(r"^[#>*\\-\\d\\.、\\s📈🧭🔄👀【】]+", "", part).strip()
         for part in re.split(r"[。！？\n]", source)
         if part.strip()
     ]
     for part in parts:
         if any(marker in part for marker in bad_markers):
             continue
+        if any(marker == part or marker in part[:24] for marker in heading_markers):
+            continue
         if any(marker in part for marker in preferred_markers):
             return part[:max_length]
     for part in parts:
         if not any(marker in part for marker in bad_markers):
+            if any(marker == part or marker in part[:24] for marker in heading_markers):
+                continue
             return part[:max_length]
     return ""
 
@@ -388,7 +527,7 @@ def _extract_structure_for_llm(snapshot_data: dict[str, Any], level_name: str) -
         }
     if snap.get("price_vs_center"):
         result["price_vs_center"] = snap.get("price_vs_center")
-    bis = snap.get("bis") or []
+    bis, unfinished_bi = _split_confirmed_and_unfinished_bis(snap)
     result["recent_bis"] = [
         {
             "direction": b.get("direction"),
@@ -403,6 +542,17 @@ def _extract_structure_for_llm(snapshot_data: dict[str, Any], level_name: str) -
         if isinstance(b, dict)
     ]
     result["total_bi_count"] = len(bis)
+    if isinstance(unfinished_bi, dict):
+        result["current_unfinished_bi"] = {
+            "direction": unfinished_bi.get("direction"),
+            "start_price": unfinished_bi.get("start_price"),
+            "end_price": unfinished_bi.get("end_price"),
+            "high": unfinished_bi.get("high"),
+            "low": unfinished_bi.get("low"),
+            "bar_count": unfinished_bi.get("bar_count"),
+            "is_sure": False,
+            "status": unfinished_bi.get("status") or "ongoing",
+        }
     zhongshus = snap.get("bi_zhongshus") or snap.get("zhongshus") or []
     if zhongshus:
         result["recent_zhongshus"] = [
@@ -421,6 +571,25 @@ def _extract_structure_for_llm(snapshot_data: dict[str, Any], level_name: str) -
     return result
 
 
+def _hydrate_structure_geometry(snapshot_data: dict[str, Any]) -> dict[str, Any]:
+    snap = snapshot_data.get("snapshot") or {}
+    price = _num(snap.get("price"))
+    active_zs = snap.get("active_zhongshu") or {}
+    bis, unfinished_bi = _split_confirmed_and_unfinished_bis(snap)
+    center = _center_fields(active_zs) if active_zs else {}
+    if center:
+        center["maturity"] = _center_maturity(center.get("bi_count"))
+        center["maturity_note"] = _center_maturity_note(str(center["maturity"]))
+        center["relevance"] = _center_relevance(price, center)
+    return {
+        "center": center,
+        "price_position": _price_position(price, center.get("zg"), center.get("zd")) if center else {"position": "no_center"},
+        "unfinished_bi": _bi_fields(unfinished_bi) if unfinished_bi else None,
+        "recent_bis": [_bi_fields(item) for item in bis[-6:]],
+        "total_confirmed_bi_count": len(bis),
+    }
+
+
 def _compute_pressure_support(snapshots: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     swing_points: list[dict[str, Any]] = []
     current_price = _current_price(snapshots)
@@ -429,7 +598,8 @@ def _compute_pressure_support(snapshots: dict[str, dict[str, Any]]) -> list[dict
     for level, snap_data in snapshots.items():
         snap = snap_data.get("snapshot") or {}
         price = _num(snap.get("price")) or current_price
-        for bi in (snap.get("bis") or [])[-10:]:
+        bis, _unfinished_bi = _split_confirmed_and_unfinished_bis(snap)
+        for bi in bis[-10:]:
             if not isinstance(bi, dict):
                 continue
             high = _num(bi.get("high") or bi.get("end_price"))
@@ -469,17 +639,131 @@ def _compute_pressure_support(snapshots: dict[str, dict[str, Any]]) -> list[dict
     return sorted(result, key=lambda item: abs(item["distance_pct"]))[:6]
 
 
+def _add_pressure_support_semantics(
+    clusters: list[dict[str, Any]],
+    structure_geometry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result = []
+    for cluster in clusters:
+        zone = cluster.get("zone") or []
+        if len(zone) != 2:
+            result.append(cluster)
+            continue
+        zone_center = (_num(zone[0]) + _num(zone[1])) / 2
+        semantics = []
+        for level_name, geometry in structure_geometry.items():
+            center = geometry.get("center") or {}
+            if center.get("relevance") == "distant_context":
+                continue
+            for key, label in (
+                ("zg", "接近中枢上沿ZG，属于离开后回拉观察边界"),
+                ("zd", "接近中枢下沿ZD，属于跌破后反抽观察边界"),
+            ):
+                value = _num(center.get(key))
+                if value > 0 and abs(zone_center - value) / value < 0.01:
+                    semantics.append(f"{level_name}:{label}")
+        enriched = dict(cluster)
+        if semantics:
+            enriched["semantic"] = "；".join(semantics[:2])
+        result.append(enriched)
+    return result
+
+
+def _split_confirmed_and_unfinished_bis(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    raw_bis = [item for item in (snapshot.get("bis") or []) if isinstance(item, dict)]
+    raw_unfinished = snapshot.get("unfinished_bi") if isinstance(snapshot.get("unfinished_bi"), dict) else None
+    if raw_unfinished:
+        return raw_bis, raw_unfinished
+    if raw_bis and _is_unfinished_bi(raw_bis[-1]):
+        return raw_bis[:-1], raw_bis[-1]
+    return raw_bis, None
+
+
+def _is_unfinished_bi(item: dict[str, Any]) -> bool:
+    return bool(item.get("is_sure") is False or item.get("source") == "czsc_ubi" or item.get("status") == "ongoing")
+
+
+def _center_fields(center: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "zg": center.get("zg"),
+        "zd": center.get("zd"),
+        "gg": center.get("gg"),
+        "dd": center.get("dd"),
+        "bi_count": center.get("bi_count"),
+        "begin_date": center.get("begin_date"),
+        "end_date": center.get("end_date"),
+    }
+
+
+def _bi_fields(bi: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not bi:
+        return None
+    return {
+        "direction": bi.get("direction"),
+        "start_price": bi.get("start_price"),
+        "end_price": bi.get("end_price"),
+        "high": bi.get("high"),
+        "low": bi.get("low"),
+        "bar_count": bi.get("bar_count"),
+        "is_sure": bi.get("is_sure"),
+        "status": bi.get("status"),
+    }
+
+
+def _center_maturity(bi_count: Any) -> str:
+    count = int(_num(bi_count))
+    if count <= 3:
+        return "forming"
+    if count <= 5:
+        return "normal_extension"
+    if count <= 8:
+        return "late_extension"
+    return "upgrade_watch"
+
+
+def _center_maturity_note(maturity: str) -> str:
+    return {
+        "forming": "中枢刚形成，重点看是否继续延伸或快速离开",
+        "normal_extension": "中枢正常延伸，方向仍需等待离开与回拉确认",
+        "late_extension": "中枢延伸较充分，需关注离开确认或升级扩展",
+        "upgrade_watch": "中枢延伸充分，需观察离开确认、三买三卖或升级扩展",
+    }.get(maturity, "")
+
+
+def _center_relevance(price: float, center: dict[str, Any]) -> str:
+    zg = _num(center.get("zg"))
+    zd = _num(center.get("zd"))
+    if price <= 0 or zg <= 0 or zd <= 0:
+        return "unknown"
+    nearest = min(abs(price - zg) / zg, abs(price - zd) / zd)
+    return "distant_context" if nearest > 0.2 else "active_boundary"
+
+
+def _price_position(price: float, zg: Any, zd: Any) -> dict[str, Any]:
+    upper = _num(zg)
+    lower = _num(zd)
+    if price <= 0 or upper <= 0 or lower <= 0:
+        return {"position": "no_center"}
+    position = "above_zg" if price > upper else "below_zd" if price < lower else "in_center"
+    return {
+        "position": position,
+        "distance_to_zg_pct": round((price - upper) / upper * 100, 2),
+        "distance_to_zd_pct": round((price - lower) / lower * 100, 2),
+    }
+
+
 def _position_context(*, user_id: int, symbol: str, current_price: float) -> dict[str, Any]:
+    aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:
         row = conn.execute(
-            """
+            f"""
             SELECT quantity, avg_cost, current_price
               FROM positions
-             WHERE user_id = ? AND symbol = ?
+             WHERE user_id = ? AND symbol IN ({",".join("?" for _ in aliases)})
              ORDER BY updated_at DESC LIMIT 1
             """,
-            (int(user_id), normalize_symbol(symbol)),
+            (int(user_id), *aliases),
         ).fetchone()
     finally:
         conn.close()

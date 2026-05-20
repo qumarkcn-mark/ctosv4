@@ -57,6 +57,8 @@ def seed_reasoning(user_id: int, symbol: str):
                 json.dumps(
                     {
                         "coach_summary": "日线三买构建中，盯4.37承接",
+                        "card_summary": "回拉未破支撑，等5分钟确认",
+                        "card_action": "继续持有",
                         "monitor_conditions": {
                             "triggers": [
                                 {
@@ -137,7 +139,8 @@ def test_watchboard_merges_positions_watchlist_reasoning_and_prices(monkeypatch,
     assert position["symbol"] == "sh.600790"
     assert position["price"] == 4.4
     assert position["position"]["pnl_pct"] == 4.27
-    assert position["reasoning_summary"]["one_liner"] == "日线三买构建中，盯4.37承接"
+    assert position["reasoning_summary"]["one_liner"] == "回拉未破支撑，等5分钟确认"
+    assert position["reasoning_summary"]["action"] == "继续持有"
     assert position["reasoning_summary"]["key_level_down"] == 4.37
     assert position["reasoning_summary"]["key_level_up"] == 4.5
     assert position["monitor_conditions"]["triggers"][0]["level"] == 4.37
@@ -223,5 +226,75 @@ def test_watchboard_falls_back_to_legacy_reasoning_and_compacts_opening(monkeypa
     assert item["reasoning_source"] == "legacy"
     assert item["reasoning_summary"]["one_liner"] == "日线回拉考验中枢上沿4.37，等待5分钟背驰确认三买"
     assert item["monitor_conditions"]["triggers"][0]["level"] == 4.37
-    assert item["monitor_conditions"]["triggers"][1]["action_on_trigger"] == "减仓"
+    assert item["monitor_conditions"]["triggers"][1]["action_on_trigger"] == "考虑减仓"
     assert "好的" not in item["reasoning_summary"]["one_liner"]
+
+
+def test_watchboard_prefers_unified_reasoning_over_newer_legacy(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    seed_user(1)
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO positions (user_id, symbol, name, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)",
+            (1, "sz.301076", "新瀚新材", 100, 31.2),
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_structure_reasoning_runs (
+                run_id, user_id, symbol, prompt_version, status,
+                full_reasoning_text, summary_json, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'SUCCESS', ?, ?, ?)
+            """,
+            (
+                "old-unified",
+                1,
+                "sz.301076",
+                UNIFIED_FULL_TEXT_VERSION,
+                "旧统一推演全文",
+                json.dumps({"coach_summary": "旧统一推演提醒"}, ensure_ascii=False),
+                "2026-05-18T10:00:00+08:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_structure_reasoning_runs (
+                run_id, user_id, symbol, prompt_version, status,
+                full_reasoning_text, summary_json, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'SUCCESS', ?, ?, ?)
+            """,
+            (
+                "new-ai-watch",
+                1,
+                "sz.301076",
+                "ai_structure_reasoning.e1_dynamic_growth.full_text",
+                "当前走势处于5分钟承接，日线三买结构未破坏。",
+                json.dumps(
+                    {
+                        "coach_summary": "新 AI 看盘摘要",
+                        "front_panel_text": "小级别承接中，日线三买结构未破坏",
+                    },
+                    ensure_ascii=False,
+                ),
+                "2026-05-20T09:51:22+08:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def empty_prices(symbols):
+        return {}
+
+    monkeypatch.setattr(ai_structure, "get_batch_prices", empty_prices)
+    client = make_client()
+
+    response = client.get("/api/ai-structure/watchboard", headers=auth_headers(1))
+
+    assert response.status_code == 200
+    item = response.json()["data"]["groups"][0]["items"][0]
+    assert item["reasoning_source"] == "unified"
+    assert item["reasoning_run_id"] == "old-unified"
+    assert item["reasoning_summary"]["one_liner"] == "旧统一推演提醒"

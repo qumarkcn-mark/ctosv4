@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from server.config import AI_NATIVE_LLM_TIMEOUT, AI_NATIVE_MAX_TOKENS, STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
-from server.domain.symbols import normalize_symbol
+from server.domain.symbols import normalize_symbol, symbol_aliases
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
@@ -1258,16 +1258,17 @@ def _load_snapshots_by_ids(snapshot_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _position_context(*, user_id: int, symbol: str) -> dict[str, Any]:
+    aliases = symbol_aliases(symbol)
     conn = get_connection()
     try:
         row = conn.execute(
-            """
+            f"""
             SELECT symbol, name, quantity, avg_cost, current_price, stop_loss_price, trailing_stop_price
               FROM positions
-             WHERE user_id = ? AND symbol = ? AND quantity > 0
+             WHERE user_id = ? AND symbol IN ({",".join("?" for _ in aliases)}) AND quantity > 0
              LIMIT 1
             """,
-            (int(user_id), normalize_symbol(symbol)),
+            (int(user_id), *aliases),
         ).fetchone()
         if not row:
             return {"has_position": False, "symbol": normalize_symbol(symbol)}

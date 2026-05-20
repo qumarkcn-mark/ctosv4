@@ -40,8 +40,10 @@ export async function fetchCurrentPrice(symbol) {
   return apiJson(`${API_BASE}/data/price/${encodeURIComponent(symbol)}`)
 }
 
-export async function syncKlines(symbol) {
-  return apiJson(`${API_BASE}/data/sync-klines/${encodeURIComponent(symbol)}`, {
+export async function syncKlines(symbol, periodValue) {
+  const period = periodValue ? getKlinePeriod(periodValue) : null
+  const query = period ? `?interval=${encodeURIComponent(period.apiInterval)}` : ''
+  return apiJson(`${API_BASE}/data/sync-klines/${encodeURIComponent(symbol)}${query}`, {
     method: 'POST',
   })
 }

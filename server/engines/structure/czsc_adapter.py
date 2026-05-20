@@ -161,6 +161,9 @@ def export_czsc_raw_bi_context_sync(
             "level": public_level_name(level),
             "bi_count_total": len(bis),
             "bi_sequence": [_raw_bi_from_serialized(bi) for bi in recent_bis],
+            "current_unfinished_bi": _raw_bi_from_serialized(payload["unfinished_bi"])
+            if isinstance(payload.get("unfinished_bi"), dict)
+            else None,
             "last_close": payload.get("price"),
             "last_bar_time": _last_bar_time(payload),
             "algorithm_zhongshus": [_raw_zs_from_serialized(zs) for zs in list(payload.get("bi_zhongshus") or [])[-5:]],
@@ -261,6 +264,15 @@ def _derive_zs_list(czsc_api, bis: list) -> list:
     if not bis or not hasattr(czsc_api, "ZS"):
         return []
 
+    try:
+        from czsc.utils.sig import get_zs_seq
+
+        native_zss = [zs for zs in get_zs_seq(bis) if _valid_zs_object(zs)]
+        if native_zss:
+            return native_zss
+    except Exception:
+        logger.debug("CZSC native get_zs_seq unavailable; falling back to local ZS grouping", exc_info=True)
+
     groups: list[list] = []
     current: list = []
     for bi in bis:
@@ -279,6 +291,16 @@ def _derive_zs_list(czsc_api, bis: list) -> list:
     if _valid_zs(czsc_api, current):
         groups.append(current)
     return [czsc_api.ZS(group) for group in groups]
+
+
+def _valid_zs_object(zs) -> bool:
+    bis = list(getattr(zs, "bis", []) or [])
+    if len(bis) < 3:
+        return False
+    try:
+        return bool(zs.is_valid()) and float(getattr(zs, "zg", 0)) >= float(getattr(zs, "zd", 0))
+    except Exception:
+        return False
 
 
 def _bi_breaks_zs(bi, zs) -> bool:

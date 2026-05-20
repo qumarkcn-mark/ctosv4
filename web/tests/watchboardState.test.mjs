@@ -38,7 +38,9 @@ assert.equal(computeTacticalState(baseItem, 100).state, 'idle')
 assert.equal(computeTacticalState(baseItem, 96).state, 'near')
 assert.equal(computeTacticalState(baseItem, 89).state, 'invalid')
 assert.equal(computeTacticalState(baseItem, 111).state, 'confirmed')
-assert.equal(computeTacticalState(baseItem, 89).displayLine, '跌破 90，路径失效')
+assert.equal(computeTacticalState(baseItem, 100).displayLine, '等待结构确认')
+assert.equal(computeTacticalState(baseItem, 89).displayLine, '跌破失败线，路径失效')
+assert.equal(computeTacticalState(baseItem, 111).displayLine, '突破确认')
 assert.equal(
   computeTacticalState({
     monitor_conditions: {

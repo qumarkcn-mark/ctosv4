@@ -134,7 +134,7 @@ def test_serialize_czsc_level_does_not_derive_segments_from_bis_when_native_miss
     assert "segs" in result["metadata"]["unsupported_fields"]
 
 
-def test_serialize_czsc_level_appends_unfinished_bi():
+def test_serialize_czsc_level_exposes_unfinished_bi_separately():
     fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
     raw_bars = [
         Obj(dt="2026-01-02"),
@@ -159,9 +159,11 @@ def test_serialize_czsc_level_appends_unfinished_bi():
         level="day",
     )
 
-    assert result["stats"]["bi_count"] == 1
-    assert result["bis"][0]["is_sure"] is False
-    assert result["bis"][0]["source"] == "czsc_ubi"
-    assert result["bis"][0]["status"] == "ongoing"
-    assert result["bis"][0]["x1"] == "2026-01-03"
-    assert result["bis"][0]["end_price"] == 12.8
+    assert result["stats"]["bi_count"] == 0
+    assert result["bis"] == []
+    assert result["unfinished_bi"]["is_sure"] is False
+    assert result["unfinished_bi"]["source"] == "czsc_ubi"
+    assert result["unfinished_bi"]["status"] == "ongoing"
+    assert result["unfinished_bi"]["x1"] == "2026-01-03"
+    assert result["unfinished_bi"]["end_price"] == 12.8
+    assert result["metadata"]["has_unfinished_bi"] is True

@@ -523,13 +523,36 @@
 }
 
 .watchboard-chat-message > span {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-bottom: 8px;
   font-family: var(--font-mono, monospace);
   font-size: var(--text-2xs, 10px);
   font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+
+.watchboard-chat-message > span em {
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  padding: 1px 5px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-style: normal;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.watchboard-chat-message > span time {
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-weight: 600;
+  text-transform: none;
+}
+
+.watchboard-chat-message.is-historical {
+  opacity: 0.68;
+  border-style: dashed;
 }
 
 .watchboard-chat-message p,

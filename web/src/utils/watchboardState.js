@@ -33,11 +33,15 @@ function triggerMessage(trigger) {
   return String(trigger?.message_on_trigger || '')
 }
 
+function triggerDisplayLine(trigger, fallback) {
+  return triggerMessage(trigger) || fallback
+}
+
 function isInvalidTrigger(trigger) {
   if (!trigger || trigger.type !== 'price_below') return false
   const action = String(trigger.action_on_trigger || '')
   const message = triggerMessage(trigger)
-  return action === '止损' || /失效|止损|破位/.test(message)
+  return /止损/.test(action) || /失效|止损|破位/.test(message)
 }
 
 function collectWatchLevels(item) {
@@ -116,7 +120,7 @@ export function computeTacticalState(item, currentPrice, options = {}) {
       activeTrigger,
       nearestLevel: nearest,
       distancePct: 0,
-      displayLine: `跌破 ${formatWatchPrice(activeTrigger.level)}，路径失效`,
+      displayLine: triggerDisplayLine(activeTrigger, `跌破 ${formatWatchPrice(activeTrigger.level)}，路径失效`),
       actionLabel: activeTrigger.action_on_trigger || '止损',
     }
   }
@@ -128,7 +132,7 @@ export function computeTacticalState(item, currentPrice, options = {}) {
       activeTrigger,
       nearestLevel: nearest,
       distancePct: 0,
-      displayLine: `站上 ${formatWatchPrice(activeTrigger.level)}，确认增强`,
+      displayLine: triggerDisplayLine(activeTrigger, `站上 ${formatWatchPrice(activeTrigger.level)}，确认增强`),
       actionLabel: activeTrigger.action_on_trigger || baseAction,
     }
   }
@@ -140,20 +144,21 @@ export function computeTacticalState(item, currentPrice, options = {}) {
       activeTrigger,
       nearestLevel: nearest,
       distancePct: 0,
-      displayLine: `触及 ${formatWatchPrice(activeTrigger.level)}，观察承接`,
+      displayLine: triggerDisplayLine(activeTrigger, `触及 ${formatWatchPrice(activeTrigger.level)}，观察承接`),
       actionLabel: activeTrigger.action_on_trigger || '关注',
     }
   }
 
   if (nearest && distancePct <= nearThreshold) {
     const verb = nearest.direction === 'above' ? '接近压力' : '接近支撑'
+    const fallbackLine = `${verb} ${formatWatchPrice(nearest.level)}，观察反应`
     return {
       state: 'near',
       priority: 2,
       activeTrigger: nearest.trigger || null,
       nearestLevel: nearest,
       distancePct,
-      displayLine: `${verb} ${formatWatchPrice(nearest.level)}，观察反应`,
+      displayLine: nearest.trigger ? triggerDisplayLine(nearest.trigger, fallbackLine) : fallbackLine,
       actionLabel: nearest.trigger?.action_on_trigger || '关注',
     }
   }
@@ -165,7 +170,7 @@ export function computeTacticalState(item, currentPrice, options = {}) {
     activeTrigger: null,
     nearestLevel: nearest,
     distancePct,
-    displayLine: levels ? `等待接近 ${levels}` : (summary.one_liner || '等待关键位'),
+    displayLine: summary.one_liner || (levels ? `等待接近 ${levels}` : '等待关键位'),
     actionLabel: baseAction,
   }
 }
