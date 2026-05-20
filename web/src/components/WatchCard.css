@@ -1,26 +1,33 @@
 .watch-card {
   position: relative;
   display: flex;
-  min-height: 150px;
+  min-height: 160px;
   flex-direction: column;
-  gap: var(--space-4, 8px);
-  padding: 12px 12px 10px 14px;
-  border: 0.5px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  gap: var(--space-3, 6px);
+  padding: 12px 14px 10px 14px;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
   border-left: 4px solid var(--border-strong, rgba(255, 255, 255, 0.18));
-  border-radius: 12px;
+  border-radius: var(--radius-md, 6px);
   background: var(--surface-2, #111115);
   color: var(--text-primary, rgba(255, 255, 255, 0.92));
   text-align: left;
   cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  width: 100%;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
 
 .watch-card:hover {
   background: var(--surface-3, #18181e);
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.18));
   transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25);
 }
 
 .watch-card.state-alert {
+  border-left-color: var(--signal-amber, #f59e0b);
+}
+
+.watch-card.state-near {
   border-left-color: var(--signal-amber, #f59e0b);
 }
 
@@ -28,8 +35,16 @@
   border-left-color: var(--warning-red, #dc2626);
 }
 
+.watch-card.state-invalid {
+  border-left-color: var(--warning-red, #dc2626);
+}
+
 .watch-card.state-confirm {
-  border-left-color: var(--bear-green, #10b981);
+  border-left-color: var(--accent-cyan, #06b6d4);
+}
+
+.watch-card.state-confirmed {
+  border-left-color: var(--accent-cyan, #06b6d4);
 }
 
 .watch-card-top {
@@ -37,14 +52,15 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  margin-top: 4px;
 }
 
 .watch-card-top strong {
   display: block;
   overflow: hidden;
-  max-width: 116px;
+  max-width: 120px;
   font-family: var(--font-cn, sans-serif);
-  font-size: var(--text-md, 14px);
+  font-size: var(--text-base, 13px);
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -72,29 +88,40 @@
 
 .watch-card-price span {
   font-size: var(--text-xs, 11px);
+  font-family: var(--font-mono, monospace);
+  margin-left: 4px;
 }
 
 .watch-card-position {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs, 11px);
+  background: var(--surface-1, #0d0d0f);
+  padding: 4px 8px;
+  border-radius: var(--radius-xs, 2px);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+.watch-card-position span.position-pnl {
+  margin-left: auto;
 }
 
 .watch-card-summary {
   display: -webkit-box;
   overflow: hidden;
-  min-height: 36px;
+  min-height: 38px;
   max-height: 38px;
-  margin: 0;
+  margin: 4px 0;
   color: var(--text-primary, rgba(255, 255, 255, 0.92));
   font-family: var(--font-cn, sans-serif);
-  font-size: var(--text-base, 13px);
-  font-weight: 600;
+  font-size: var(--text-sm, 12px);
+  font-weight: 500;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  line-height: 1.4;
+  line-height: 1.5;
   transition: color 160ms ease;
 }
 
@@ -102,12 +129,71 @@
   color: var(--signal-amber, #f59e0b);
 }
 
+.state-near .watch-card-summary {
+  color: var(--signal-amber, #f59e0b);
+}
+
 .state-danger .watch-card-summary {
   color: var(--warning-red, #dc2626);
 }
 
-.state-confirm .watch-card-summary {
-  color: var(--bear-green, #10b981);
+.state-invalid .watch-card-summary {
+  color: var(--warning-red, #dc2626);
+}
+
+.state-confirm .watch-card-summary,
+.state-confirmed .watch-card-summary {
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.watch-card-range-bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  margin: 2px 0 4px;
+}
+
+.range-bar-track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-1, #0d0d0f);
+  overflow: visible;
+}
+
+.range-bar-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--border-strong, rgba(255, 255, 255, 0.18));
+}
+
+.range-bar-dot {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--accent-cyan, #06b6d4);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 6px var(--accent-cyan, #06b6d4);
+}
+
+.state-danger .range-bar-dot {
+  background: var(--warning-red, #dc2626);
+  box-shadow: 0 0 6px var(--warning-red, #dc2626);
+}
+
+.state-confirm .range-bar-dot,
+.state-confirmed .range-bar-dot {
+  background: var(--accent-cyan, #06b6d4);
+  box-shadow: 0 0 6px var(--accent-cyan, #06b6d4);
 }
 
 .watch-card-bottom {
@@ -116,6 +202,8 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
 }
 
 .watch-card-levels {
@@ -124,18 +212,19 @@
   gap: 8px;
   color: var(--text-secondary, rgba(255, 255, 255, 0.55));
   font-family: var(--font-mono, monospace);
-  font-size: var(--text-xs, 11px);
+  font-size: var(--text-2xs, 10px);
 }
 
 .watch-card-no-level {
   color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
-  font-size: var(--text-xs, 11px);
+  font-size: var(--text-2xs, 10px);
 }
 
 .watch-action-badge {
   flex: 0 0 auto;
-  border-radius: var(--radius-sm, 4px);
-  padding: 3px 7px;
+  border-radius: var(--radius-xs, 2px);
+  padding: 2px 6px;
+  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs, 11px);
   font-weight: 700;
 }
