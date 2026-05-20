@@ -41,6 +41,9 @@ export default function WatchCard({ item, currentPrice, onClick }) {
   const hasAnyKeyLevel = Boolean(Number(summary.key_level_down || 0) || Number(summary.key_level_up || 0))
   const quoteTime = item.price_data?.quote_time || ''
   const pnlPct = Number(position?.pnl_pct ?? 0)
+  const cost = Number(position?.cost ?? 0)
+  const hasPnlPct = position?.pnl_pct !== null && position?.pnl_pct !== undefined
+  const hasNegativeCost = cost < 0
   const pnlLabel = pnlPct >= 0 ? '盈' : '亏'
 
   const minL = Number(summary.key_level_down || 0)
@@ -68,9 +71,9 @@ export default function WatchCard({ item, currentPrice, onClick }) {
       {position && (
         <div className="watch-card-position">
           <span className="position-main">{position.shares}股 @{formatPrice(position.cost)}</span>
-          {position.pnl_pct !== null && position.pnl_pct !== undefined && (
-            <span className={`position-pnl ${Number(position.pnl_pct) >= 0 ? 'is-up' : 'is-down'}`}>
-              {pnlLabel} {formatPct(position.pnl_pct)}
+          {(hasPnlPct || hasNegativeCost) && (
+            <span className={`position-pnl ${hasNegativeCost || Number(position.pnl_pct) >= 0 ? 'is-up' : 'is-down'}`}>
+              {hasNegativeCost && !hasPnlPct ? '负成本' : `${pnlLabel} ${formatPct(position.pnl_pct)}`}
             </span>
           )}
         </div>
