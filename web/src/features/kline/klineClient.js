@@ -8,6 +8,7 @@ export const KLINE_PERIODS = [
   { value: 'm30', apiInterval: 'm30', chartType: 'minute', chartSpan: 30, label: '30' },
   { value: 'm15', apiInterval: 'm15', chartType: 'minute', chartSpan: 15, label: '15' },
   { value: 'm5', apiInterval: 'm5', chartType: 'minute', chartSpan: 5, label: '5' },
+  { value: 'm1', apiInterval: 'm1', chartType: 'minute', chartSpan: 1, label: '1', supportsStructure: false },
 ]
 
 const PERIOD_BY_VALUE = new Map(KLINE_PERIODS.map((item) => [item.value, item]))
@@ -18,6 +19,7 @@ export function normalizeKlinePeriod(value) {
   if (value === '30') return 'm30'
   if (value === '15') return 'm15'
   if (value === '5') return 'm5'
+  if (value === '1' || value === '1m') return 'm1'
   return 'day'
 }
 

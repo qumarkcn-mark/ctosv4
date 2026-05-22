@@ -118,6 +118,28 @@ def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
 
     monkeypatch.setattr(service, "get_latest_snapshot", fake_latest_snapshot)
     monkeypatch.setattr(service, "_position_context", lambda **kwargs: {"holding": False})
+    monkeypatch.setattr(
+        service,
+        "_intraday_observation",
+        lambda symbol: {
+            "source": "tdx_quote_aggregation",
+            "usage": "intraday_preview",
+            "as_of": "2026-05-22 13:30:00",
+            "coverage": {"quality": "partial"},
+            "levels": {"30m": {"last_bar_status": "FORMING"}},
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "build_reasoning_continuity_context",
+        lambda **kwargs: {
+            "version": "reasoning_continuity.v1",
+            "previous_reasoning": {"card_summary": "上一轮关注10.30压力"},
+            "trigger_status_since_last_run": [
+                {"type": "price_above", "level": 10.3, "status": "not_touched"}
+            ],
+        },
+    )
 
     payload = service.build_unified_reasoning_input(user_id=1, symbol="sh600519", levels=["day", "5", "week"])
     data = payload["input"]
@@ -134,6 +156,17 @@ def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
     assert "macd_state" in data["momentum_dynamics"]["日线"]
     assert data["resonance_evidence"]["grade"] in {"LOW", "MEDIUM", "HIGH"}
     assert "space_ratio" in data["resonance_evidence"]
+    assert data["practical_evidence"]["version"] == "practical_evidence.v1"
+    assert data["intraday_observation"]["source"] == "tdx_quote_aggregation"
+    assert data["intraday_observation"]["levels"]["30m"]["last_bar_status"] == "FORMING"
+    assert data["reasoning_continuity_context"]["version"] == "reasoning_continuity.v1"
+    assert data["reasoning_continuity_context"]["previous_reasoning"]["card_summary"] == "上一轮关注10.30压力"
+    assert data["market_task_context"]["version"] == "market_task_context.v1"
+    assert "task_candidates" in data["market_task_context"]
+    assert "small_to_large_turn" in data["market_task_context"]
+    assert "bi_completion" in data["practical_evidence"]["by_level"]["日线"]
+    assert "level_interaction" in data["practical_evidence"]
+    assert data["chan_signal_digest"]["version"] == "chan_signal_digest.v1"
     assert data["chan_signals"]["日线"] == [
         {"key": "日线_五笔形态", "value": "向上突破", "source": "czsc.signals"}
     ]
@@ -176,3 +209,10 @@ def test_resonance_evidence_marks_boundary_cluster_overlap():
     assert result["space_ratio"]["nearest_support"] == 9.05
     assert result["overlap_keys"][0]["level"] == "日线"
     assert "日线中枢上沿ZG" in result["reasons"][0]
+
+
+def test_unified_prompt_treats_chan_digest_as_auxiliary_evidence():
+    assert "chan_signal_digest 是 CZSC 原生辅助证据，不是最终裁决" in service.SYSTEM_PROMPT
+    assert "intraday_observation 是盘中观察层，不是正式结构确认" in service.SYSTEM_PROMPT
+    assert "reasoning_continuity_context 是上一轮推演" in service.SYSTEM_PROMPT
+    assert "market_task_context 是走势任务" in service.SYSTEM_PROMPT

@@ -13,6 +13,7 @@ from server.services.tdx_minute_service import (
     RECORD_FMT,
     encode_lc1_date,
     read_tdx_1m_klines,
+    resolve_tdx_minute_vipdoc,
     tdx_minute_file_path,
     tdx_minute_status,
 )
@@ -43,6 +44,13 @@ def test_tdx_minute_file_path_uses_minline_lc1(tmp_path):
     path = tdx_minute_file_path("sh.600519", vipdoc=str(tmp_path))
 
     assert path.endswith("sh/minline/sh600519.lc1")
+
+
+def test_resolve_tdx_minute_vipdoc_accepts_tdx_root_with_nested_vipdoc(tmp_path):
+    nested = tmp_path / "vipdoc" / "sh" / "minline"
+    nested.mkdir(parents=True)
+
+    assert resolve_tdx_minute_vipdoc(str(tmp_path)) == str(tmp_path / "vipdoc")
 
 
 def test_read_tdx_1m_klines_parses_lc1_records(tmp_path):

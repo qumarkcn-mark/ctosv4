@@ -55,6 +55,74 @@ function formatChatTime(value) {
   return `${month}-${day} ${hour}:${minute}`
 }
 
+function formatMetaTime(value) {
+  if (!value) return ''
+  const text = String(value).replace('T', ' ').replace(/\+\d\d:\d\d|Z$/g, '').trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(5, 16)
+  return text.slice(0, 16)
+}
+
+function formatElapsed(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)))
+  if (total < 60) return `${total}s`
+  const minutes = Math.floor(total / 60)
+  const rest = `${total % 60}`.padStart(2, '0')
+  return `${minutes}m${rest}s`
+}
+
+function buildReasoningStatus(freshness, running, nowMs = Date.now(), summary = {}) {
+  if (running) {
+    const started = Date.parse(running.startedAt || new Date().toISOString())
+    const elapsed = Number.isFinite(started) ? (nowMs - started) / 1000 : 0
+    return {
+      tone: 'active',
+      label: '生成中',
+      detail: `LLM 推理 ${formatElapsed(elapsed)}`,
+      compact: `LLM ${formatElapsed(elapsed)}`,
+      actionLabel: '生成中',
+      rows: [
+        ['当前阶段', 'LLM 推理'],
+        ['已用时间', formatElapsed(elapsed)],
+      ],
+    }
+  }
+  const status = freshness?.status || 'missing'
+  const generatedAt = formatMetaTime(freshness?.generated_at || summary?.generated_at)
+  const dataAsOf = formatMetaTime(freshness?.data_as_of || summary?.data_as_of)
+  const latestAsOf = formatMetaTime(freshness?.latest_snapshot_as_of)
+  const quoteTime = formatMetaTime(freshness?.quote_time)
+  const rows = [
+    ['推演生成', generatedAt || '无'],
+    ['推演基于', dataAsOf || '无'],
+    ['最新结构', latestAsOf || '无'],
+    ['当前价', quoteTime || '无'],
+  ]
+  if (status === 'stale') {
+    return {
+      tone: 'stale',
+      label: '旧推演',
+      detail: freshness?.detail || '结构已更新，推演待刷新',
+      compact: dataAsOf ? `基于 ${dataAsOf}` : '结构待刷新',
+      actionLabel: '更新推演',
+      rows,
+    }
+  }
+  if (status === 'ready' || (!freshness && generatedAt)) {
+    return {
+      tone: 'ready',
+      label: '最新推演',
+      detail: freshness?.detail || '结构与推演一致',
+      compact: [generatedAt, dataAsOf ? `基于 ${dataAsOf}` : ''].filter(Boolean).join(' · '),
+      actionLabel: '刷新推演',
+      rows,
+    }
+  }
+  if (status === 'failed') {
+    return { tone: 'failed', label: '推演失败', detail: '需要重新生成', compact: '需重试', actionLabel: '重试', rows }
+  }
+  return { tone: 'idle', label: '无推演', detail: '尚未生成完整推演', compact: '待生成', actionLabel: '生成推演', rows }
+}
+
 function restoreWatchboardChatMessages(rows, currentContextId = '') {
   return (rows || []).flatMap((row) => {
     const contextId = row.context_id || ''
@@ -92,6 +160,8 @@ export default function WatchBoard() {
   const [detailStatus, setDetailStatus] = useState('idle')
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [reasoningRunning, setReasoningRunning] = useState(false)
+  const [reasoningRun, setReasoningRun] = useState(null)
+  const [nowTick, setNowTick] = useState(Date.now())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [targetGroup, setTargetGroup] = useState('自选')
@@ -102,6 +172,7 @@ export default function WatchBoard() {
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const [activeDetailTab, setActiveDetailTab] = useState('reasoning')
   const chatLogRef = useRef(null)
+  const autoOpenedRef = useRef(false)
 
   const allItems = useMemo(() => flattenGroups(groups), [groups])
   const displayGroups = useMemo(() => (
@@ -126,14 +197,25 @@ export default function WatchBoard() {
         }),
     }))
   ), [groups, prices])
+  const selectedReasoningStatus = useMemo(() => (
+    buildReasoningStatus(
+      selected?.reasoning_freshness,
+      reasoningRun?.symbol === selected?.symbol ? reasoningRun : null,
+      nowTick,
+      selected?.reasoning_summary || {},
+    )
+  ), [selected, reasoningRun, nowTick])
 
   const loadWatchboard = useCallback(async () => {
     setError('')
     try {
       const json = await apiJson('/api/ai-structure/watchboard')
-      setGroups(json.data?.groups || [])
+      const nextGroups = json.data?.groups || []
+      setGroups(nextGroups)
+      return nextGroups
     } catch (err) {
       setError(err.message || '盯盘面板加载失败')
+      return null
     } finally {
       setLoading(false)
     }
@@ -172,6 +254,12 @@ export default function WatchBoard() {
     })
   }, [activeDetailTab, chatMessages, chatLoading])
 
+  useEffect(() => {
+    if (!reasoningRun) return undefined
+    const timer = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [reasoningRun])
+
   const restoreChatHistory = useCallback(async (item) => {
     if (!item?.symbol) return
     const currentContextId = item.context_id || ''
@@ -196,7 +284,7 @@ export default function WatchBoard() {
     }
   }, [])
 
-  const openDetail = async (item) => {
+  const openDetail = useCallback(async (item) => {
     const current = mergePrice(item, prices)
     setSelected(current)
     setFullText('')
@@ -216,11 +304,20 @@ export default function WatchBoard() {
     } finally {
       setDrawerLoading(false)
     }
-  }
+  }, [prices, restoreChatHistory])
+
+  useEffect(() => {
+    if (autoOpenedRef.current || selected || loading) return
+    const firstItem = displayGroups.flatMap((group) => group.items || [])[0]
+    if (!firstItem) return
+    autoOpenedRef.current = true
+    openDetail(firstItem)
+  }, [displayGroups, loading, openDetail, selected])
 
   const runReasoningForSelected = async () => {
     if (!selected) return
     setReasoningRunning(true)
+    setReasoningRun({ symbol: selected.symbol, startedAt: new Date().toISOString(), phase: 'llm_reasoning' })
     setDetailStatus('loading')
     try {
       await apiJson('/api/ai-structure/unified-reasoning/trigger', {
@@ -231,13 +328,16 @@ export default function WatchBoard() {
       const json = await apiJson(`/api/ai-structure/unified-reasoning/full/${encodeURIComponent(selected.symbol)}`)
       setFullText(json.data?.full_text || '')
       setDetailStatus('ready')
-      await loadWatchboard()
+      const nextGroups = await loadWatchboard()
+      const updated = flattenGroups(nextGroups || []).find((item) => item.symbol === selected.symbol)
+      if (updated) setSelected(mergePrice(updated, prices))
     } catch (err) {
       setDetailStatus('missing')
       setFullText('')
       setError(err.message || '统一推演生成失败')
     } finally {
       setReasoningRunning(false)
+      setReasoningRun(null)
       setDrawerLoading(false)
     }
   }
@@ -374,26 +474,36 @@ export default function WatchBoard() {
             ))}
           </div>
 
-          <div className="watchboard-detail-tabs" role="tablist" aria-label="盯盘详情内容">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeDetailTab === 'reasoning'}
-              className={activeDetailTab === 'reasoning' ? 'is-active' : ''}
-              onClick={() => setActiveDetailTab('reasoning')}
-            >
-              完整推演
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeDetailTab === 'chat'}
-              className={activeDetailTab === 'chat' ? 'is-active' : ''}
-              onClick={() => setActiveDetailTab('chat')}
-            >
-              问答追踪
-              {chatMessages.length ? <span>{chatMessages.length}</span> : null}
-            </button>
+          <div className="watchboard-detail-bar">
+            <div className="watchboard-detail-tabs" role="tablist" aria-label="盯盘详情内容">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeDetailTab === 'reasoning'}
+                className={activeDetailTab === 'reasoning' ? 'is-active' : ''}
+                onClick={() => setActiveDetailTab('reasoning')}
+              >
+                完整推演
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeDetailTab === 'chat'}
+                className={activeDetailTab === 'chat' ? 'is-active' : ''}
+                onClick={() => setActiveDetailTab('chat')}
+              >
+                问答追踪
+                {chatMessages.length ? <span>{chatMessages.length}</span> : null}
+              </button>
+            </div>
+            <div className={`watchboard-tab-status is-${selectedReasoningStatus.tone}`}>
+              <span aria-hidden="true" />
+              <strong>{selectedReasoningStatus.label}</strong>
+              <em>{selectedReasoningStatus.compact || selectedReasoningStatus.detail}</em>
+              <button type="button" onClick={runReasoningForSelected} disabled={reasoningRunning}>
+                {selectedReasoningStatus.actionLabel}
+              </button>
+            </div>
           </div>
 
           <div className="watchboard-drawer-body">

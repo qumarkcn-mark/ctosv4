@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from server.config import DEBUG
+from server.config import BAOSTOCK_AUTO_SYNC_ENABLED, DEBUG
 from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
@@ -14,6 +14,7 @@ from server.workers.ai_structure_snapshot_worker import ai_structure_snapshot_wo
 from server.workers.ai_structure_context_worker import ai_structure_context_worker
 from server.workers.ai_structure_outcome_worker import ai_structure_outcome_worker
 from server.workers.unified_reasoning_worker import unified_reasoning_worker
+from server.workers.intraday_quote_sampler_worker import intraday_quote_sampler_worker
 from server.services.baostock_service import shutdown_baostock
 
 logger = logging.getLogger(__name__)
@@ -37,19 +38,25 @@ async def lifespan(app: FastAPI):
         logger.warning(f"孤儿清理失败: {e}")
 
     monitor.start()
-    kline_sync.start()
+    if BAOSTOCK_AUTO_SYNC_ENABLED:
+        kline_sync.start()
+    else:
+        logger.info("📊 BaoStock 自动同步已关闭，正式结构由 TDX/source policy 驱动")
     ai_structure_snapshot_worker.start()
     ai_structure_context_worker.start()
     ai_structure_outcome_worker.start()
     unified_reasoning_worker.start()
+    intraday_quote_sampler_worker.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
-    kline_sync.stop()
+    if BAOSTOCK_AUTO_SYNC_ENABLED:
+        kline_sync.stop()
     ai_structure_snapshot_worker.stop()
     ai_structure_context_worker.stop()
     ai_structure_outcome_worker.stop()
     unified_reasoning_worker.stop()
+    intraday_quote_sampler_worker.stop()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
@@ -83,11 +90,12 @@ async def health():
     return {"status": "healthy"}
 
 
-from server.api import trades, positions, data, trade_imports
+from server.api import trades, positions, data, trade_imports, intraday
 
 app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
+app.include_router(intraday.router, prefix="/api/intraday", tags=["intraday preview"])
 app.include_router(trade_imports.router, prefix="/api/trade-imports", tags=["trade imports"])
 
 from server.api import auth, behavior, search

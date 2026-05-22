@@ -236,13 +236,20 @@
   font-size: var(--text-2xs, 10px);
 }
 
+.watchboard-detail-bar {
+  display: grid;
+  grid-template-columns: minmax(180px, 210px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  padding: 4px 14px;
+  background: var(--surface-1, #0d0d0f);
+}
+
 .watchboard-detail-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2px;
-  border-bottom: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
-  padding: 4px 14px;
-  background: var(--surface-1, #0d0d0f);
 }
 
 .watchboard-detail-tabs button {
@@ -280,6 +287,101 @@
   height: 2px;
   background: var(--action-gold, #c8a832);
   content: '';
+}
+
+.watchboard-tab-status {
+  display: grid;
+  grid-template-columns: 8px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-sm, 4px);
+  padding: 0 4px 0 8px;
+  background: var(--surface-2, #111115);
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+}
+
+.watchboard-tab-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--agent-idle, rgba(255, 255, 255, 0.12));
+}
+
+.watchboard-tab-status strong {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.watchboard-tab-status em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchboard-tab-status button {
+  height: 24px;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-xs, 2px);
+  padding: 0 8px;
+  background: var(--surface-1, #0d0d0f);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+  font-weight: 700;
+}
+
+.watchboard-tab-status button:hover:not(:disabled) {
+  border-color: var(--action-gold, #c8a832);
+  color: var(--action-gold, #c8a832);
+}
+
+.watchboard-tab-status button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.watchboard-tab-status.is-ready > span {
+  background: var(--agent-clear, #22c55e);
+}
+
+.watchboard-tab-status.is-ready strong {
+  color: var(--agent-clear, #22c55e);
+}
+
+.watchboard-tab-status.is-active > span {
+  background: var(--accent-cyan, #06b6d4);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.6);
+}
+
+.watchboard-tab-status.is-active strong,
+.watchboard-tab-status.is-active em {
+  color: var(--accent-cyan, #06b6d4);
+}
+
+.watchboard-tab-status.is-stale > span {
+  background: var(--signal-amber, #f59e0b);
+}
+
+.watchboard-tab-status.is-stale strong {
+  color: var(--signal-amber, #f59e0b);
+}
+
+.watchboard-tab-status.is-failed > span {
+  background: var(--warning-red, #dc2626);
+}
+
+.watchboard-tab-status.is-failed strong {
+  color: var(--warning-red, #dc2626);
 }
 
 .watchboard-detail-tabs span {

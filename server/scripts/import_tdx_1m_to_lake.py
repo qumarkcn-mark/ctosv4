@@ -39,7 +39,7 @@ def import_tdx_1m_to_lake(
             "1",
             rows,
             adjustflag="3",
-            source="qmt",
+            source="tdx",
         )
         summaries.append(
             {

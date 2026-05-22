@@ -55,4 +55,4 @@ def test_import_tdx_1m_to_lake_writes_rows(monkeypatch):
     assert imported["symbol"] == "sh.603893"
     assert imported["freq"] == "1"
     assert imported["adjustflag"] == "3"
-    assert imported["source"] == "qmt"
+    assert imported["source"] == "tdx"

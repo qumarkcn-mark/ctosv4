@@ -133,6 +133,9 @@ def sync_new_watchlist_symbol(symbol: str) -> dict:
         "full": [],
         "errors": [],
     }
+    if not getattr(config, "BAOSTOCK_AUTO_SYNC_ENABLED", False):
+        result.update(_sync_new_watchlist_symbol_from_tdx(canonical_symbol))
+        return result
 
     for freq in ("day", "5"):
         try:
@@ -183,6 +186,79 @@ def sync_new_watchlist_symbol(symbol: str) -> dict:
         len(result["snapshot_prewarm"].get("items", [])),
     )
     return result
+
+
+def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
+    """新增自选后的 TDX 单股初始化链路。
+
+    BaoStock 自动同步关闭后，新票只走 TDX 本地/bridge：先拉全展示级别入湖，
+    再按有数据的级别触发 CZSC snapshot。失败不阻断添加自选，状态接口会暴露卡点。
+    """
+    from functools import partial
+
+    from server.db.kline_lake import upsert_klines
+    from server.services.tdx_bridge_client import fetch_tdx_klines
+
+    async def _run() -> dict:
+        changed = []
+        full = []
+        errors = []
+        for freq in ALL_FREQS:
+            period = {
+                "week": "1w",
+                "day": "1d",
+                "60": "60m",
+                "30": "30m",
+                "15": "15m",
+                "5": "5m",
+            }.get(freq)
+            if not period:
+                continue
+            try:
+                rows = await fetch_tdx_klines(symbol, period=period, count=5000, refresh=True)
+                written = await run_in_threadpool(
+                    partial(upsert_klines, symbol, freq, rows, adjustflag="2", source="tdx")
+                )
+                item = {
+                    "freq": freq,
+                    "period": period,
+                    "written": written,
+                    "status": "ok" if rows else "no_data",
+                    "source": "tdx",
+                    "first": rows[0]["date"] if rows else "",
+                    "last": rows[-1]["date"] if rows else "",
+                }
+                full.append(item)
+                if written > 0:
+                    changed.append({"symbol": symbol, "freq": freq, "written": written})
+            except Exception as exc:
+                errors.append({"stage": "tdx", "freq": freq, "error": str(exc)})
+                full.append({"freq": freq, "period": period, "written": 0, "status": "error", "source": "tdx"})
+
+        structure_jobs = enqueue_structure_jobs_for_changes(
+            changed,
+            priority=85,
+            reason="watchlist_new_symbol_tdx_sync",
+        )
+
+        from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, prewarm_structure_snapshots
+
+        snapshot_prewarm = prewarm_structure_snapshots(
+            symbols=[symbol],
+            levels=list(DEFAULT_LEVELS),
+            priority=85,
+            reason="watchlist_new_symbol_tdx_policy",
+        )
+        return {
+            "skipped": False,
+            "source": "tdx",
+            "full": full,
+            "errors": errors,
+            "structure_jobs": structure_jobs,
+            "snapshot_prewarm": snapshot_prewarm,
+        }
+
+    return asyncio.run(_run())
 
 
 def _is_trading_day(dt: datetime) -> bool:
@@ -502,6 +578,9 @@ class KlineSyncWorker:
 
     def start(self):
         """启动后台同步任务"""
+        if not getattr(config, "BAOSTOCK_AUTO_SYNC_ENABLED", False):
+            logger.info("📊 K线自动同步 Worker 未启动：BAOSTOCK_AUTO_SYNC_ENABLED=false")
+            return
         if not self._running:
             self._running = True
             self._task = asyncio.create_task(self._sync_loop())

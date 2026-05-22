@@ -14,9 +14,9 @@ from fastapi.concurrency import run_in_threadpool
 
 from server.config import STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
-from server.db.kline_lake import get_kline_window_signature
 from server.domain.symbols import normalize_symbol
 from server.engines.structure import czsc_adapter
+from server.engines.structure.source_policy import resolve_structure_source_policy, structure_signature_for_policy
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FORMAL_ADJUSTFLAG, FORMAL_SOURCE, normalize_freq, resolve_compute_bars
 
 
@@ -163,8 +163,8 @@ def enqueue_snapshot_job(
                 conn.commit()
                 retried = conn.execute("SELECT * FROM structure_snapshot_jobs WHERE id = ?", (row["id"],)).fetchone()
                 return _job_row(retried, enqueued=True, bumped=False, retried=True)
-            # force_rebuild: 把已成功的 job 重置为 PENDING，强制重跑 serializer
-            if force_rebuild and row["status"] == "SUCCESS":
+            # force_rebuild: 把已终止但可复用幂等键的 job 重置为 PENDING，强制重跑 serializer
+            if force_rebuild and row["status"] in {"SUCCESS", "SKIPPED"}:
                 new_job_id = _new_id("v5snapjob")
                 conn.execute(
                     """
@@ -277,7 +277,13 @@ def get_snapshot_status(
             SELECT *
               FROM structure_snapshots
              WHERE symbol = ? AND level = ? AND engine = 'czsc' AND compute_profile = ?
-             ORDER BY updated_at DESC, id DESC
+             ORDER BY
+               CASE
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 0
+                 ELSE 1
+               END,
+               updated_at DESC,
+               id DESC
              LIMIT 1
             """,
             (canonical, normalized_level, compute_profile),
@@ -716,18 +722,31 @@ def save_snapshot(
 
 def _signature_for_level(*, symbol: str, level: str, compute_profile: str) -> dict[str, Any]:
     compute_bars = resolve_compute_bars(compute_profile, level)
-    return get_kline_window_signature(
-        normalize_symbol(symbol),
-        normalize_freq(level),
+    policy = resolve_structure_source_policy(
+        symbol=symbol,
+        level=level,
         limit=compute_bars,
-        adjustflag=FORMAL_ADJUSTFLAG,
-        source=FORMAL_SOURCE,
     )
+    signature = get_kline_window_signature(symbol, level, limit=compute_bars, policy=policy)
+    signature["source_policy"] = policy
+    return signature
+
+
+def get_kline_window_signature(
+    symbol: str,
+    level: str,
+    *,
+    limit: int,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compatibility seam for tests around the source-policy signature lookup."""
+    return structure_signature_for_policy(symbol=symbol, level=level, limit=limit, policy=policy)
 
 
 def _freshness_from_signature(signature: dict[str, Any], stale_reason: str = "") -> dict[str, Any]:
     return {
         "source": signature.get("source") or FORMAL_SOURCE,
+        "source_policy": signature.get("source_policy") or {},
         "kline_count": int(signature.get("row_count") or 0),
         "first_bar_at": signature.get("first_date") or "",
         "last_bar_at": signature.get("last_date") or "",

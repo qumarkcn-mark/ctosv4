@@ -11,6 +11,7 @@ import asyncio
 import logging
 from typing import Any
 
+from server import config
 from server.db.kline_lake import count_klines
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import (
@@ -70,14 +71,15 @@ async def ensure_ai_structure_pipeline(
         priority=max(1, priority - 10),
         reason=reason,
     )
-    _schedule_backfill_rewarm(
-        user_id=user_id,
-        symbols=normalized_symbols,
-        levels=normalized_levels,
-        compute_profile=compute_profile,
-        priority=priority,
-        reason=f"{reason}_backfill",
-    )
+    if config.BAOSTOCK_AUTO_SYNC_ENABLED:
+        _schedule_backfill_rewarm(
+            user_id=user_id,
+            symbols=normalized_symbols,
+            levels=normalized_levels,
+            compute_profile=compute_profile,
+            priority=priority,
+            reason=f"{reason}_backfill",
+        )
 
     return {
         "symbols": normalized_symbols,
@@ -100,6 +102,19 @@ async def _ensure_symbol_level_kline(
     level: str,
     compute_profile: str,
 ) -> dict[str, Any]:
+    if not config.BAOSTOCK_AUTO_SYNC_ENABLED:
+        target_bars = resolve_compute_bars(compute_profile, level)
+        return {
+            "symbol": symbol,
+            "level": level,
+            "before": 0,
+            "after": 0,
+            "target_bars": target_bars,
+            "ready": True,
+            "status": "skipped",
+            "reason": "BAOSTOCK_AUTO_SYNC_DISABLED",
+        }
+
     before = count_klines(symbol, level)
     target_bars = resolve_compute_bars(compute_profile, level)
     try:

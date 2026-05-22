@@ -70,7 +70,7 @@ def get_structure_view(
     ]
     active_center = None
     if isinstance(snapshot.get("active_zhongshu"), dict) and snapshot.get("active_zhongshu"):
-        active_center = _normalize_center(
+        candidate_active_center = _normalize_center(
             snapshot["active_zhongshu"],
             index=len(centers),
             time_axis=time_axis,
@@ -79,7 +79,9 @@ def get_structure_view(
             snapshot_id=snapshot_row["snapshot_id"],
             active=True,
         )
-        centers = _mark_active_center(centers, active_center)
+        if candidate_active_center and candidate_active_center.get("exit_status") == "open":
+            active_center = candidate_active_center
+            centers = _mark_active_center(centers, active_center)
     segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
     unsupported_fields = _unsupported_fields(snapshot)
     segment_source = _segment_source(snapshot, segments)

@@ -45,6 +45,35 @@ def test_prewarm_enqueues_without_computing(monkeypatch, tmp_path):
     assert item["enqueued"] is True
 
 
+def test_snapshot_force_rebuild_requeues_existing_skipped(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(service, "_signature_for_level", lambda *args, **kwargs: fake_signature())
+
+    first = service.prewarm_structure_snapshots(symbols=["sh600519"], levels=["day"], requested_by_user_id=1)
+    first_job = first["items"][0]
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE structure_snapshot_jobs SET status = 'SKIPPED', error_code = 'STALE_INPUT' WHERE job_id = ?",
+            (first_job["job_id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rebuilt = service.prewarm_structure_snapshots(
+        symbols=["sh600519"],
+        levels=["day"],
+        requested_by_user_id=1,
+        force_rebuild=True,
+    )
+
+    item = rebuilt["items"][0]
+    assert item["status"] == "PENDING"
+    assert item["enqueued"] is True
+    assert item["job_id"] != first_job["job_id"]
+
+
 def test_snapshot_worker_creates_czsc_snapshot(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: fake_signature())

@@ -74,6 +74,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const [addingToWatchlist, setAddingToWatchlist] = useState(false)
   const [watchlistMessage, setWatchlistMessage] = useState('')
   const activePeriod = useMemo(() => getKlinePeriod(period), [period])
+  const supportsStructureLayers = activePeriod.supportsStructure !== false
 
   const updatePriceLine = useCallback(() => {
     const chart = chartRef.current
@@ -419,7 +420,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     structureViewRef.current = null
     setStructureView(null)
     setStructureOverlay(null)
-    if (!symbol || !structureLayer) {
+    if (!symbol || !structureLayer || !supportsStructureLayers) {
       setStructureStatus('idle')
       return () => {
         cancelled = true
@@ -442,14 +443,14 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     return () => {
       cancelled = true
     }
-  }, [period, structureLayer, symbol, updateStructureOverlay])
+  }, [period, structureLayer, supportsStructureLayers, symbol, updateStructureOverlay])
 
   useEffect(() => {
     let cancelled = false
     momentumContextRef.current = null
     setMomentumContext(null)
     setMomentumOverlay(null)
-    if (!symbol || !momentumLayer) {
+    if (!symbol || !momentumLayer || !supportsStructureLayers) {
       setMomentumStatus('idle')
       return () => {
         cancelled = true
@@ -472,7 +473,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     return () => {
       cancelled = true
     }
-  }, [momentumLayer, period, symbol, updateMomentumOverlay])
+  }, [momentumLayer, period, supportsStructureLayers, symbol, updateMomentumOverlay])
 
   useEffect(() => {
     aiEvidenceContextRef.current = chartContext || null
@@ -644,6 +645,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
                 type="button"
                 className={structureLayer ? 'is-layer-active' : ''}
                 onClick={handleStructureLayerToggle}
+                disabled={!supportsStructureLayers}
                 title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
               >
                 结构
@@ -652,12 +654,13 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
                 type="button"
                 className={momentumLayer ? 'is-layer-active' : ''}
                 onClick={handleMomentumLayerToggle}
+                disabled={!supportsStructureLayers}
                 title="显示/隐藏当前段与上一同向段力量对比"
               >
                 力量
               </button>
             </div>
-            {structureLayer && (
+            {structureLayer && supportsStructureLayers && (
               <div className="base-kline__legend" aria-label="结构图例">
                 <span><i className="is-bi" />笔</span>
                 <span><i className="is-center" />中枢</span>
@@ -665,8 +668,9 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
               </div>
             )}
             <span>{loading ? '加载中' : `${barCount} 根`}</span>
-            {structureLayer && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
-            {momentumLayer && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
+            {!supportsStructureLayers && <span>TDX 1分</span>}
+            {structureLayer && supportsStructureLayers && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
+            {momentumLayer && supportsStructureLayers && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
           </div>
           <div className="base-kline__quote-actions">
             {quote?.price && (

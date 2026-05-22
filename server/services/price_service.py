@@ -13,6 +13,7 @@ from server.config import PRICE_API_TIMEOUT
 from server.db.kline_lake import query_klines, count_klines
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.services.baostock_service import fetch_klines_sync, fetch_klines_quick, FREQ_MAP, _executor as bs_executor
+from server.services.tdx_bridge_client import fetch_tdx_quote, fetch_tdx_quotes
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,10 @@ async def get_current_price(symbol: str) -> Optional[dict]:
         }
     """
     qt_symbol = to_tencent_symbol(symbol)
+    tdx_quote = await fetch_tdx_quote(symbol)
+    if tdx_quote:
+        return tdx_quote
+
     try:
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
             resp = await client.get(f"{_QT_BASE}{qt_symbol}")
@@ -310,13 +315,18 @@ async def get_batch_prices(symbols: list[str]) -> dict[str, dict]:
         return {}
     qt_symbols = [to_tencent_symbol(symbol) for symbol in symbols]
 
+    tdx_results = await fetch_tdx_quotes(symbols)
+    missing_qt_symbols = [symbol for symbol in qt_symbols if symbol not in tdx_results]
+    if not missing_qt_symbols:
+        return tdx_results
+
     try:
-        query = ",".join(qt_symbols)
+        query = ",".join(missing_qt_symbols)
         async with httpx.AsyncClient(timeout=PRICE_API_TIMEOUT) as client:
             resp = await client.get(f"{_QT_BASE}{query}")
             resp.raise_for_status()
 
-        results = {}
+        results = dict(tdx_results)
         # 响应是多行，每行一只股票
         for line in resp.text.strip().split("\n"):
             line = line.strip()

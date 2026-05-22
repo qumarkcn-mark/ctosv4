@@ -123,3 +123,89 @@ def test_normalize_watchboard_payload_compacts_card_action():
     )
 
     assert result["card_action"] == "持仓观望"
+
+
+def test_normalize_watchboard_payload_keeps_watch_plan_and_derives_triggers():
+    payload = {
+        "watch_plan": {
+            "main_task": "日线回拉后等待5分钟三买确认",
+            "card": {
+                "summary": "4.33压力，观察5分三买",
+                "action": "持仓观望",
+            },
+            "key_levels": [
+                {
+                    "price": 4.33,
+                    "side": "up",
+                    "type": "pressure",
+                    "shape_to_watch": "站上后回踩不破",
+                    "meaning": "反弹压力位",
+                    "trigger": "price_above",
+                    "ai_review_when": "触及后5分钟动能增强或衰减",
+                },
+                {
+                    "price": 4.18,
+                    "side": "down",
+                    "type": "support",
+                    "shape_to_watch": "跌破后反抽回不去",
+                    "meaning": "盘中承接位",
+                    "trigger": "price_below",
+                },
+            ],
+            "t_plan": {
+                "enabled": True,
+                "condition": "有底仓且冲到压力区，1/5分钟动能衰减",
+                "watch_price": 4.33,
+                "reentry_area": "4.18-4.22",
+                "risk": "直接放量突破容易卖飞",
+            },
+            "recheck_policy": {
+                "no_touch": "不重推",
+                "near_key_level": "卡片轻量提示",
+                "touched_with_momentum_change": "触发AI复核",
+            },
+        }
+    }
+
+    result = normalize_watchboard_payload(payload, fallback_summary="fallback")
+
+    assert result["card_summary"] == "4.33压力，观察5分三买"
+    assert result["card_action"] == "持仓观望"
+    assert result["watch_plan"]["main_task"] == "日线回拉后等待5分钟三买确认"
+    assert result["watch_plan"]["key_levels"][0]["price"] == 4.33
+    assert result["watch_plan"]["key_levels"][0]["trigger"] == "price_above"
+    assert result["watch_plan"]["t_plan"]["enabled"] is True
+    assert result["monitor_conditions"]["triggers"] == [
+        {
+            "id": "t1",
+            "type": "price_above",
+            "level": 4.33,
+            "message_on_trigger": "站上后回踩不破",
+            "action_on_trigger": "关注",
+        },
+        {
+            "id": "t2",
+            "type": "price_below",
+            "level": 4.18,
+            "message_on_trigger": "跌破后反抽回不去",
+            "action_on_trigger": "关注",
+        },
+    ]
+
+
+def test_normalize_watchboard_payload_builds_watch_plan_from_legacy_triggers():
+    result = normalize_watchboard_payload(
+        {
+            "card_summary": "196压力，冲高动能衰减",
+            "card_action": "考虑做T",
+            "triggers": [
+                {"type": "price_above", "level": 196.0, "message_on_trigger": "测试196压力", "action_on_trigger": "关注"}
+            ],
+        },
+        fallback_summary="fallback",
+    )
+
+    assert result["watch_plan"]["card"]["summary"] == "196压力，冲高动能衰减"
+    assert result["watch_plan"]["card"]["action"] == "考虑做T"
+    assert result["watch_plan"]["key_levels"][0]["price"] == 196.0
+    assert result["watch_plan"]["key_levels"][0]["type"] == "pressure"
