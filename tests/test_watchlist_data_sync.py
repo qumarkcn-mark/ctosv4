@@ -43,7 +43,7 @@ def _memory_connection(path: str = ":memory:") -> sqlite3.Connection:
     return conn
 
 
-def test_add_watchlist_stock_queues_baostock_backfill(monkeypatch, tmp_path):
+def test_add_watchlist_stock_queues_tdx_init_when_baostock_auto_sync_disabled(monkeypatch, tmp_path):
     db_path = tmp_path / "ctos.db"
     conn = _memory_connection(str(db_path))
     conn.close()
@@ -55,6 +55,7 @@ def test_add_watchlist_stock_queues_baostock_backfill(monkeypatch, tmp_path):
         return test_conn
 
     monkeypatch.setattr(watchlist_api, "get_connection", get_test_connection)
+    monkeypatch.setattr(watchlist_api.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
     monkeypatch.setattr(
         watchlist_api,
         "sync_new_watchlist_symbol",
@@ -75,9 +76,50 @@ def test_add_watchlist_stock_queues_baostock_backfill(monkeypatch, tmp_path):
     assert payload["status"] == "ok"
     assert payload["symbol"] == "sh600118"
     assert payload["data_sync"]["status"] == "queued"
+    assert payload["data_sync"]["source"] == "tdx"
+    assert payload["data_sync"]["reason"] == "TDX_SINGLE_SYMBOL_INIT"
     assert payload["data_sync"]["quick_freqs"] == ["day", "5"]
     assert payload["data_sync"]["full_freqs"] == ["week", "day", "60", "30", "15", "5"]
     assert queued == ["sh.600118"]
+
+
+def test_watchlist_stock_init_status_reports_tdx_and_snapshot_readiness(monkeypatch):
+    def fake_query_lake(symbol, freq, **kwargs):
+        assert symbol == "sh.600118"
+        assert kwargs["source"] == "tdx"
+        assert kwargs["adjustflag"] == "2"
+        if freq in {"week", "day", "30", "5"}:
+            return [{"date": "2026-05-22", "close": 10}]
+        return []
+
+    def fake_snapshot_status_batch(**kwargs):
+        return {
+            "sh.600118": {
+                level: {
+                    "status": "fresh",
+                    "freshness": {"last_bar_at": "2026-05-22"},
+                    "job": None,
+                }
+                for level in ("week", "day", "30", "5")
+            }
+        }
+
+    monkeypatch.setattr(watchlist_api, "query_lake_klines", fake_query_lake)
+    monkeypatch.setattr(watchlist_api, "get_snapshot_status_batch", fake_snapshot_status_batch)
+
+    app = FastAPI()
+    app.include_router(watchlist_api.router, prefix="/watchlist")
+    client = TestClient(app)
+
+    response = client.get("/watchlist/stocks/sh600118/init-status")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["symbol"] == "sh.600118"
+    assert payload["stage"] == "ready_for_reasoning"
+    assert payload["ready_for_reasoning"] is True
+    assert payload["kline"]["ready"] is True
+    assert payload["snapshots"]["ready"] is True
 
 
 def test_get_all_tracked_symbols_includes_watchlist(monkeypatch):
@@ -162,6 +204,7 @@ def test_sync_new_watchlist_symbol_runs_quick_then_full(monkeypatch):
         calls.append(("full", symbol, freq))
         return 2
 
+    monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", True)
     monkeypatch.setattr("server.services.baostock_service.fetch_klines_quick", fake_quick)
     monkeypatch.setattr("server.services.baostock_service.fetch_klines_sync", fake_full)
     monkeypatch.setattr(kline_sync_worker, "ALL_FREQS", ["week", "day", "60", "30", "15", "5"])
@@ -182,6 +225,58 @@ def test_sync_new_watchlist_symbol_runs_quick_then_full(monkeypatch):
     ]
 
 
+def test_sync_new_watchlist_symbol_runs_tdx_init_when_baostock_disabled(monkeypatch):
+    fetched = []
+    upserts = []
+    enqueued_changes = []
+
+    async def fake_fetch(symbol, period, count=5000, refresh=True):
+        fetched.append((symbol, period, count, refresh))
+        if period == "60m":
+            return []
+        return [
+            {
+                "date": "2026-05-22 15:00:00" if period.endswith("m") else "2026-05-22",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 1000,
+                "amount": 10000,
+            }
+        ]
+
+    def fake_upsert(symbol, freq, rows, adjustflag="2", source="baostock"):
+        upserts.append((symbol, freq, len(rows), adjustflag, source))
+        return len(rows)
+
+    def fake_enqueue(changes, **_kwargs):
+        enqueued_changes.extend(changes)
+        return {"count": len(changes), "items": []}
+
+    def fake_prewarm(**kwargs):
+        return {"count": len(kwargs["levels"]), "items": []}
+
+    monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
+    monkeypatch.setattr("server.services.tdx_bridge_client.fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
+    monkeypatch.setattr(kline_sync_worker, "enqueue_structure_jobs_for_changes", fake_enqueue)
+    monkeypatch.setattr(
+        "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
+        fake_prewarm,
+    )
+
+    result = kline_sync_worker.sync_new_watchlist_symbol("sh600118")
+
+    assert result["source"] == "tdx"
+    assert result["errors"] == []
+    assert ("sh.600118", "1d", 5000, True) in fetched
+    assert ("sh.600118", "day", 1, "2", "tdx") in upserts
+    assert any(item["freq"] == "60" and item["status"] == "no_data" for item in result["full"])
+    assert all(change["freq"] != "60" for change in enqueued_changes)
+    assert result["snapshot_prewarm"]["count"] == 4
+
+
 def test_sync_new_watchlist_symbol_enqueues_all_changed_structure_levels(monkeypatch):
     enqueued_changes = []
 
@@ -195,6 +290,7 @@ def test_sync_new_watchlist_symbol_enqueues_all_changed_structure_levels(monkeyp
         enqueued_changes.extend(changes)
         return {"count": len(changes), "items": []}
 
+    monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", True)
     monkeypatch.setattr("server.services.baostock_service.fetch_klines_quick", fake_quick)
     monkeypatch.setattr("server.services.baostock_service.fetch_klines_sync", fake_full)
     monkeypatch.setattr(kline_sync_worker, "ALL_FREQS", ["week", "day", "60", "30", "15", "5"])

@@ -23,10 +23,12 @@ from server.engines.ai_native.structure_context_service import (
     reasoning_availability,
 )
 from server.engines.ai_native.unified_reasoning_service import ALL_UNIFIED_FULL_TEXT_VERSIONS
+from server.engines.ai_native.reasoning_continuity_service import build_reasoning_continuity_context
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
 )
+from server.services.intraday_observation_service import get_intraday_observation, get_intraday_observation_snapshot
 from server.engines.ai_native.scenario_outcome_service import get_memory_context_for_chat, list_symbol_outcome_reviews
 
 
@@ -75,6 +77,14 @@ def answer_structure_question(
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
     runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
+    intraday_observation = _chat_intraday_observation(canonical)
+    reasoning_continuity_context = build_reasoning_continuity_context(
+        user_id=user_id,
+        symbol=canonical,
+        current_price=_num(runtime_context.get("current_price")),
+        intraday_observation=intraday_observation,
+        prompt_versions=ALL_UNIFIED_FULL_TEXT_VERSIONS,
+    )
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
@@ -89,6 +99,8 @@ def answer_structure_question(
         context=context,
         chart_focus=chart_focus,
         runtime_context=runtime_context,
+        intraday_observation=intraday_observation,
+        reasoning_continuity_context=reasoning_continuity_context,
         data_status=data_status,
         memory_context=memory_context,
         review_context=review_context,
@@ -112,6 +124,8 @@ def answer_structure_question(
         "referenced_boundaries": answer["referenced_boundaries"],
         "chart_focus": chart_focus,
         "runtime_context": runtime_context,
+        "intraday_observation": intraday_observation,
+        "reasoning_continuity_context": reasoning_continuity_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
         "memory_context": memory_context,
@@ -475,6 +489,8 @@ def _build_ai_answer_from_full_reasoning(
     context: dict[str, Any],
     chart_focus: dict[str, Any],
     runtime_context: dict[str, Any] | None = None,
+    intraday_observation: dict[str, Any] | None = None,
+    reasoning_continuity_context: dict[str, Any] | None = None,
     data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
     review_context: dict[str, Any] | None = None,
@@ -499,13 +515,21 @@ def _build_ai_answer_from_full_reasoning(
             "question": question,
             "full_reasoning_text": full_text,
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "intraday_observation": intraday_observation or {},
+            "reasoning_continuity_context": reasoning_continuity_context or {},
+            "runtime_context": runtime_context or {},
+            "data_status": data_status or {},
             "memory_context": memory_context or {},
             "conversation_context": conversation_context or {},
             "chart_focus": chart_focus,
         }
         system_prompt = (
             "你是缠中说禅，用户的盯盘搭档。"
-            "根据完整推演和用户问题，聚焦这一次问题，回答该怎么看、怎么做、错了怎么办。"
+            "根据完整推演、连续性上下文、盘中观察、持仓和用户问题，聚焦这一次问题。"
+            "盘中问题优先简明给出方向、动作和失效点；用户要求详细解释时再展开。"
+            "intraday_observation 是盘中预览事实，FORMING bar 可能漂移；请自行权衡 source、as_of、coverage。"
+            "reasoning_continuity_context 是上一轮推演、触发状态、近期问答和历史结果的事实集合，不是规则。"
+            "动作表达使用“观察、考虑、关注、防守思路”等口径，不写成交易命令。"
             f"{RISK_DISCLAIMER}。"
         )
     else:
@@ -559,7 +583,7 @@ def _build_ai_answer_from_full_reasoning(
                     thinking_enabled=False if is_unified else True,
                     reasoning_effort="high",
                     timeout_seconds=45 if is_unified else max(float(AI_NATIVE_LLM_TIMEOUT), 150),
-                    max_tokens=1200 if is_unified else 2400,
+                    max_tokens=700 if is_unified else 2400,
                 ),
             )
         )
@@ -847,6 +871,19 @@ def _chat_runtime_context(
             "full_reasoning_run_id": str(meta.get("full_reasoning_run_id") or ""),
         },
     }
+
+
+def _chat_intraday_observation(symbol: str) -> dict[str, Any]:
+    """Best-effort intraday preview for chat; never blocks the fallback answer."""
+    try:
+        asyncio.get_running_loop()
+        return get_intraday_observation_snapshot(symbol)
+    except RuntimeError:
+        pass
+    try:
+        return asyncio.run(get_intraday_observation(symbol))
+    except Exception:
+        return {}
 
 
 def _freshness_note(data_status: dict[str, Any] | None) -> str:

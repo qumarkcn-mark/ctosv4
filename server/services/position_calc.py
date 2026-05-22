@@ -104,6 +104,109 @@ def recalculate_position(conn: sqlite3.Connection, user_id: int, symbol: str):
     }
 
 
+def apply_trade_to_position(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    symbol: str,
+    name: str | None,
+    direction: str,
+    price: float,
+    quantity: int,
+    traded_at: str,
+):
+    """基于当前持仓快照增量应用一笔交易。
+
+    CT-OS 允许用券商持仓截图校准 positions。普通手工录入后不能再从历史
+    trades 全量重算，否则会丢掉截图校准过的成本口径。
+    """
+    aliases = symbol_aliases(symbol)
+    position_symbol = to_tencent_symbol(symbol)
+    row = conn.execute(
+        """
+        SELECT * FROM positions
+         WHERE user_id = ? AND symbol IN (?, ?, ?)
+         ORDER BY CASE symbol
+                  WHEN ? THEN 0
+                  WHEN ? THEN 1
+                  ELSE 2
+                  END
+         LIMIT 1
+        """,
+        (user_id, *aliases, aliases[0], aliases[1]),
+    ).fetchone()
+    current = dict(row) if row else None
+
+    current_qty = int(current["quantity"]) if current else 0
+    current_avg = float(current["avg_cost"]) if current else 0.0
+    current_price = current["current_price"] if current else None
+
+    if direction == "BUY":
+        next_qty = current_qty + quantity
+        next_cost = (current_avg * current_qty) + (price * quantity)
+        next_avg = next_cost / next_qty if next_qty > 0 else 0.0
+        next_price = current_price if current_price is not None else price
+    elif direction == "SELL":
+        next_qty = max(0, current_qty - quantity)
+        next_avg = current_avg
+        next_price = current_price
+    else:
+        raise ValueError(f"unsupported direction: {direction}")
+
+    if next_qty <= 0:
+        conn.execute(
+            "DELETE FROM positions WHERE user_id = ? AND symbol IN (?, ?, ?)",
+            (user_id, *aliases),
+        )
+        return None
+
+    next_unrealized = None
+    if next_price is not None:
+        next_unrealized = round((float(next_price) - next_avg) * next_qty, 2)
+
+    first_buy = current["entry_date"] if current and current.get("entry_date") else None
+    entry_date = first_buy or (traded_at[:10] if direction == "BUY" else None)
+
+    conn.execute(
+        """
+        INSERT INTO positions (
+            user_id, symbol, name, quantity, avg_cost, current_price,
+            unrealized_pnl, entry_date, days_held, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?)
+        ON CONFLICT(user_id, symbol) DO UPDATE SET
+            name = excluded.name,
+            quantity = excluded.quantity,
+            avg_cost = excluded.avg_cost,
+            current_price = excluded.current_price,
+            unrealized_pnl = excluded.unrealized_pnl,
+            entry_date = COALESCE(positions.entry_date, excluded.entry_date),
+            updated_at = excluded.updated_at
+        """,
+        (
+            user_id,
+            position_symbol,
+            name or (current["name"] if current else None),
+            next_qty,
+            round(next_avg, 6),
+            next_price,
+            next_unrealized,
+            entry_date,
+            current["days_held"] if current else 0,
+            datetime.now().isoformat(),
+        ),
+    )
+    ensure_unknown_entry_thesis(conn, user_id=user_id, symbol=position_symbol)
+
+    return {
+        "symbol": position_symbol,
+        "quantity": next_qty,
+        "avg_cost": round(next_avg, 6),
+        "current_price": next_price,
+        "unrealized_pnl": next_unrealized,
+    }
+
+
 def recalculate_all_positions(conn: sqlite3.Connection, user_id: int):
     """重算用户所有持仓 (CSV 导入后使用)"""
     symbols = conn.execute(

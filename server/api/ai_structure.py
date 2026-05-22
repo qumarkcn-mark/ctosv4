@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
+from server import config
 from server.api.auth import get_current_user_id
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
@@ -59,7 +60,6 @@ from server.engines.ai_native.unified_reasoning_service import (
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
-from server.services.baostock_service import fetch_klines_sync
 from server.services.price_service import get_batch_prices
 
 
@@ -683,13 +683,13 @@ def _load_watchboard_groups(user_id: int) -> list[dict]:
             watch_groups.append({
                 "name": name,
                 "type": group_type,
-                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"])) for item in items],
+                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"]), conn=conn) for item in items],
             })
         return [
             {
                 "name": "持仓",
                 "type": "position",
-                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"])) for item in positions],
+                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"]), conn=conn) for item in positions],
             },
             *watch_groups,
         ]
@@ -793,7 +793,7 @@ def _load_watchboard_reasoning(conn, user_id: int, symbol: str) -> dict:
     placeholders = ",".join("?" for _ in accepted_versions)
     row = conn.execute(
         f"""
-        SELECT run_id, context_id, prompt_version, full_reasoning_text, summary_json, updated_at
+        SELECT run_id, context_id, prompt_version, source_snapshot_ids_json, full_reasoning_text, summary_json, updated_at
           FROM ai_structure_reasoning_runs
          WHERE user_id = ?
            AND symbol = ?
@@ -830,11 +830,12 @@ def _load_watchboard_reasoning(conn, user_id: int, symbol: str) -> dict:
         "prompt_version": row["prompt_version"] or "",
         "full_reasoning_text": row["full_reasoning_text"] or "",
         "summary": summary,
+        "source_snapshot_ids": _loads_json_list(row["source_snapshot_ids_json"]),
         "updated_at": row["updated_at"] or "",
     }
 
 
-def _attach_watchboard_reasoning(item: dict, reasoning: dict | None) -> dict:
+def _attach_watchboard_reasoning(item: dict, reasoning: dict | None, *, conn=None) -> dict:
     enriched = dict(item)
     summary = (reasoning or {}).get("summary") or {}
     safe_summary = dict(summary)
@@ -842,6 +843,7 @@ def _attach_watchboard_reasoning(item: dict, reasoning: dict | None) -> dict:
     if not safe_summary["monitor_conditions"]["triggers"]:
         safe_summary["monitor_conditions"] = _fallback_monitor_conditions_from_key_boundaries(summary)
     enriched["reasoning_summary"] = _watchboard_summary(safe_summary, reasoning or {})
+    enriched["reasoning_freshness"] = _watchboard_reasoning_freshness(enriched, reasoning or {}, conn=conn)
     enriched["monitor_conditions"] = safe_summary["monitor_conditions"]
     prompt_version = (reasoning or {}).get("prompt_version") or ""
     enriched["reasoning_source"] = "unified" if prompt_version in (ALL_UNIFIED_FULL_TEXT_VERSIONS | ALL_UNIFIED_REASONING_VERSIONS) else "legacy"
@@ -872,7 +874,122 @@ def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
         "stop_loss": summary.get("stop_loss"),
         "scenarios": summary.get("scenarios") or [],
         "generated_at": summary.get("generated_at") or reasoning.get("updated_at") or "",
+        "data_as_of": summary.get("data_as_of") or "",
     }
+
+
+def _watchboard_reasoning_freshness(item: dict, reasoning: dict, *, conn=None) -> dict:
+    """盯盘页使用的推演新鲜度；实时价不直接判旧，结构快照更新才判旧。"""
+    symbol = item.get("symbol") or ""
+    summary = (reasoning or {}).get("summary") or {}
+    generated_at = summary.get("generated_at") or (reasoning or {}).get("updated_at") or ""
+    source_snapshot_ids = (reasoning or {}).get("source_snapshot_ids") or []
+    owns_connection = conn is None
+    active_conn = conn or get_connection()
+    try:
+        source_as_of = _snapshot_as_of_by_ids(active_conn, source_snapshot_ids)
+        latest_as_of = _latest_snapshot_as_of_by_level(active_conn, symbol)
+    finally:
+        if owns_connection:
+            active_conn.close()
+    reasoning_as_of_by_level = source_as_of or {}
+    reasoning_data_as_of = (
+        _primary_level_as_of(reasoning_as_of_by_level)
+        or summary.get("data_as_of")
+        or ""
+    )
+    latest_snapshot_as_of = _primary_level_as_of(latest_as_of)
+    is_stale = bool(
+        reasoning_data_as_of
+        and latest_snapshot_as_of
+        and _timestamp_sort_key(latest_snapshot_as_of) > _timestamp_sort_key(reasoning_data_as_of)
+    )
+    if not reasoning:
+        status = "missing"
+        label = "无推演"
+        detail = "尚未生成"
+    elif is_stale:
+        status = "stale"
+        label = "旧推演"
+        detail = "结构已更新，推演待刷新"
+    else:
+        status = "ready"
+        label = "最新推演"
+        detail = "结构与推演一致"
+    return {
+        "status": status,
+        "phase": "",
+        "label": label,
+        "detail": detail,
+        "generated_at": generated_at,
+        "data_as_of": reasoning_data_as_of,
+        "data_as_of_by_level": reasoning_as_of_by_level,
+        "latest_snapshot_as_of": latest_snapshot_as_of,
+        "latest_snapshot_as_of_by_level": latest_as_of,
+        "quote_time": (item.get("price_data") or {}).get("quote_time") or "",
+        "elapsed_seconds": 0,
+        "is_stale": is_stale,
+        "stale_reason": "latest_snapshot_newer" if is_stale else "",
+    }
+
+
+def _snapshot_as_of_by_ids(conn, snapshot_ids: list[str]) -> dict[str, str]:
+    ids = [str(item) for item in snapshot_ids if item]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT level, data_as_of
+          FROM structure_snapshots
+         WHERE snapshot_id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    return {row["level"]: row["data_as_of"] or "" for row in rows}
+
+
+def _latest_snapshot_as_of_by_level(conn, symbol: str) -> dict[str, str]:
+    try:
+        canonical = normalize_symbol(symbol)
+    except ValueError:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT level, data_as_of
+          FROM structure_snapshots
+         WHERE symbol = ?
+           AND compute_profile = ?
+           AND level IN ('week', 'day', '30', '5')
+         ORDER BY
+           CASE
+             WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 0
+             ELSE 1
+           END,
+           updated_at DESC,
+           id DESC
+        """,
+        (canonical, DEFAULT_COMPUTE_PROFILE),
+    ).fetchall()
+    latest: dict[str, str] = {}
+    for row in rows:
+        latest.setdefault(row["level"], row["data_as_of"] or "")
+    return latest
+
+
+def _primary_level_as_of(items: dict[str, str]) -> str:
+    for level in ("30", "5", "day", "week"):
+        value = str((items or {}).get(level) or "")
+        if value:
+            return value
+    return ""
+
+
+def _timestamp_sort_key(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.replace("T", " ").replace("+08:00", "").replace("Z", "").strip()
 
 
 def _fallback_monitor_conditions_from_key_boundaries(summary: dict) -> dict:
@@ -1035,6 +1152,20 @@ def _regenerate_context_chain(
 
 
 def _sync_regenerate_klines(symbol: str, levels: list[str]) -> dict:
+    if not config.BAOSTOCK_AUTO_SYNC_ENABLED:
+        return {
+            "status": "skipped",
+            "source": "tdx",
+            "total_written": 0,
+            "errors": 0,
+            "levels": [
+                {"level": level, "written": 0, "status": "skipped", "reason": "BAOSTOCK_AUTO_SYNC_DISABLED"}
+                for level in levels
+            ],
+        }
+
+    from server.services.baostock_service import fetch_klines_sync
+
     results = []
     total_written = 0
     error_count = 0
@@ -1103,6 +1234,14 @@ def _loads_json(value: str) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _loads_json_list(value: str) -> list:
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 def _num(value) -> float:

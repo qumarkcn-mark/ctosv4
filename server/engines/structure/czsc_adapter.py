@@ -13,10 +13,10 @@ from typing import Optional
 import pandas as pd
 from fastapi.concurrency import run_in_threadpool
 
-from server.db.kline_lake import query_klines
 from server.domain.symbols import normalize_symbol
 from server.engines.structure.czsc_serializer import serialize_czsc_level
 from server.engines.structure.engine_contract import ENGINE_CZSC, engine_envelope
+from server.engines.structure.source_policy import query_structure_klines, resolve_structure_source_policy
 from server.engines.structure.structure_key import FORMAL_ADJUSTFLAG, FORMAL_SOURCE, normalize_freq, resolve_compute_bars
 
 
@@ -57,37 +57,39 @@ def analyze_czsc_structure_sync(
 
     level_payloads = {}
     errors = {}
+    source_policies = {}
     for level in requested_levels:
         if level not in SUPPORTED_LEVELS:
             errors[level] = "UNSUPPORTED_LEVEL"
             continue
         limit = _compute_bars(level, count, compute_profile)
-        rows = query_klines(
-            canonical_symbol,
-            level,
+        source_policy = resolve_structure_source_policy(
+            symbol=canonical_symbol,
+            level=level,
             limit=limit,
-            adjustflag=FORMAL_ADJUSTFLAG,
-            source=FORMAL_SOURCE,
         )
+        source_policies[level] = source_policy
+        rows = query_structure_klines(symbol=canonical_symbol, level=level, limit=limit, policy=source_policy)
         if not rows:
             level_payloads[level] = {
                 "level": level,
                 "error": "NO_DATA",
-                "metadata": {"requested_bars": limit},
+                "metadata": {"requested_bars": limit, "source_policy": source_policy},
             }
             continue
         try:
             czsc_obj = _run_czsc(czsc_api, canonical_symbol, level, rows)
             zhongshus = _derive_zs_list(czsc_api, list(getattr(czsc_obj, "bi_list", []) or []))
             level_payloads[level] = serialize_czsc_level(czsc_obj, rows, level, zhongshus=zhongshus)
-            level_payloads[level]["source"] = _source_meta()
+            level_payloads[level]["source"] = _source_meta(source_policy)
+            level_payloads[level]["source_policy"] = source_policy
         except Exception as exc:
             logger.exception("CZSC adapter failed for %s/%s", canonical_symbol, level)
             level_payloads[level] = {
                 "level": level,
                 "error": "ENGINE_ERROR",
                 "message": str(exc)[:200],
-                "metadata": {"requested_bars": limit, "row_count": len(rows)},
+                "metadata": {"requested_bars": limit, "row_count": len(rows), "source_policy": source_policy},
             }
 
     return engine_envelope(
@@ -100,6 +102,7 @@ def analyze_czsc_structure_sync(
             "requested_levels": requested_levels,
             "compute_profile": compute_profile or "legacy_default",
             "level_errors": errors,
+            "source_policies": source_policies,
         },
     )
 
@@ -240,7 +243,7 @@ def get_czsc_engine_version() -> str:
 def _run_czsc(czsc_api, symbol: str, level: str, rows: list[dict]):
     df = pd.DataFrame(
         {
-            "dt": [row.get("date") for row in rows],
+            "dt": [_normalize_dt_for_czsc(level, row.get("date")) for row in rows],
             "symbol": [symbol] * len(rows),
             "open": [row.get("open") for row in rows],
             "close": [row.get("close") for row in rows],
@@ -252,6 +255,13 @@ def _run_czsc(czsc_api, symbol: str, level: str, rows: list[dict]):
     )
     bars = czsc_api.format_standard_kline(df, freq=_FREQ_NAMES[level])
     return czsc_api.CZSC(bars)
+
+
+def _normalize_dt_for_czsc(level: str, value: object) -> str:
+    text = str(value or "")
+    if level in {"day", "week"} and len(text) >= 10:
+        return text[:10]
+    return text[:19] if len(text) >= 19 else text
 
 
 def _derive_zs_list(czsc_api, bis: list) -> list:
@@ -387,11 +397,13 @@ def _compute_bars(level: str, count: int, compute_profile: Optional[str]) -> int
     return int(count or 800)
 
 
-def _source_meta() -> dict:
+def _source_meta(source_policy: dict | None = None) -> dict:
+    selected = (source_policy or {}).get("selected") or {}
     return {
-        "provider": FORMAL_SOURCE,
-        "adjustflag": FORMAL_ADJUSTFLAG,
+        "provider": selected.get("source") or FORMAL_SOURCE,
+        "adjustflag": selected.get("adjustflag") or FORMAL_ADJUSTFLAG,
         "engine": STRUCTURE_ENGINE,
         "adapter": "server.engines.structure.czsc_adapter",
         "adapter_version": ADAPTER_VERSION,
+        "source_policy": source_policy or {},
     }

@@ -17,6 +17,12 @@ from server.domain.symbols import parse_symbol
 
 RECORD_SIZE = 32
 RECORD_FMT = "<HHfffffII"  # date, minute, open/high/low/close, amount, volume, reserved
+DEFAULT_VIPDOC_CANDIDATES = (
+    TDX_VIPDOC,
+    "/Users/markqu/Desktop/tdx_vipdoc_mount/vipdoc",
+    "/Users/markqu/Desktop/tdx_vipdoc_mount",
+    "/Volumes/tdx_vipdoc",
+)
 
 
 @dataclass(frozen=True)
@@ -26,17 +32,32 @@ class TdxMinuteStatus:
     reason: str = ""
 
 
-def tdx_minute_file_path(symbol: str, vipdoc: str = TDX_VIPDOC, freq: str = "1") -> str:
+def resolve_tdx_minute_vipdoc(vipdoc: Optional[str] = None) -> str:
+    """Resolve the first readable TDX vipdoc path for minute files."""
+    candidates = [vipdoc] if vipdoc else list(DEFAULT_VIPDOC_CANDIDATES)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        root = Path(candidate)
+        if _has_minute_shape(root):
+            return str(root)
+        nested = root / "vipdoc"
+        if _has_minute_shape(nested):
+            return str(nested)
+    return str(Path(candidates[0] or TDX_VIPDOC))
+
+
+def tdx_minute_file_path(symbol: str, vipdoc: Optional[str] = None, freq: str = "1") -> str:
     """Return expected TDX minute file path for a symbol."""
     parsed = parse_symbol(symbol)
     extension = ".lc1" if str(freq).lower() in {"1", "1m", "m1"} else ".lc5"
     filename = f"{parsed.market}{parsed.code}{extension}"
-    return str(Path(vipdoc) / parsed.market / "minline" / filename)
+    return str(Path(resolve_tdx_minute_vipdoc(vipdoc)) / parsed.market / "minline" / filename)
 
 
-def tdx_minute_status(symbol: Optional[str] = None, vipdoc: str = TDX_VIPDOC) -> dict:
+def tdx_minute_status(symbol: Optional[str] = None, vipdoc: Optional[str] = None) -> dict:
     """Return local TDX minute source status."""
-    root = Path(vipdoc)
+    root = Path(resolve_tdx_minute_vipdoc(vipdoc))
     if not root.exists():
         return {
             "available": False,
@@ -92,7 +113,7 @@ def tdx_minute_status(symbol: Optional[str] = None, vipdoc: str = TDX_VIPDOC) ->
 def read_tdx_1m_klines(
     symbol: str,
     limit: int = 240,
-    vipdoc: str = TDX_VIPDOC,
+    vipdoc: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> list[dict]:
@@ -138,6 +159,10 @@ def _read_lc1_tail(path: str, tail_count: int, symbol: str) -> list[dict]:
             if row:
                 rows.append(row)
     return rows
+
+
+def _has_minute_shape(root: Path) -> bool:
+    return (root / "sh" / "minline").is_dir() or (root / "sz" / "minline").is_dir()
 
 
 def _parse_lc1_record(raw: bytes, symbol: str) -> Optional[dict]:

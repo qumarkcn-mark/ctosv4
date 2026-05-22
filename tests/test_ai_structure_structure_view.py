@@ -116,6 +116,8 @@ def test_structure_view_service_returns_chart_ready_geometry(monkeypatch, tmp_pa
     assert view["capabilities"]["segments"] is True
     assert view["capabilities"]["segment_status"] == "ready"
     assert view["centers"][0]["active"] is True
+    assert view["centers"][0]["end_index"] == 2
+    assert view["centers"][0]["exit_status"] == "open"
     assert view["active_center"]["begin_index"] == 0
     assert view["active_center"]["end_index"] == 2
     assert view["active_center"]["begin_bar_time"] == "2026-05-10"
@@ -303,6 +305,121 @@ def test_structure_view_active_center_extends_to_latest_bar_when_not_fully_left(
     assert center["begin_bar_time"] == "2026-05-11"
     assert center["end_bar_time"] == "2026-05-14"
     assert center["exit_status"] == "open"
+
+
+def test_structure_view_replaces_duplicate_center_with_open_active_center(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-active-center-replace",
+        data_as_of="2026-05-14",
+        snapshot_payload={
+            "level": "day",
+            "price": 10.8,
+            "klines": [
+                {"time": "2026-05-10", "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.2},
+                {"time": "2026-05-11", "open": 10.2, "high": 10.8, "low": 10.1, "close": 10.6},
+                {"time": "2026-05-12", "open": 10.6, "high": 10.9, "low": 10.2, "close": 10.5},
+                {"time": "2026-05-13", "open": 10.5, "high": 10.9, "low": 10.3, "close": 10.7},
+                {"time": "2026-05-14", "open": 10.7, "high": 10.8, "low": 10.4, "close": 10.6},
+            ],
+            "bis": [
+                {"direction": "up", "is_up": True, "is_sure": True, "x0": "2026-05-10", "x1": "2026-05-11", "y0": 10.2, "y1": 10.6},
+                {"direction": "down", "is_up": False, "is_sure": True, "x0": "2026-05-11", "x1": "2026-05-12", "y0": 10.6, "y1": 10.5},
+                {"direction": "up", "is_up": True, "is_sure": True, "x0": "2026-05-12", "x1": "2026-05-13", "y0": 10.5, "y1": 10.7},
+            ],
+            "bi_zhongshus": [
+                {
+                    "begin_date": "2026-05-10",
+                    "end_date": "2026-05-13",
+                    "zd": 10.2,
+                    "zg": 10.8,
+                    "zz": 10.5,
+                    "bi_count": 3,
+                    "is_valid": True,
+                }
+            ],
+            "active_zhongshu": {
+                "begin_date": "2026-05-10",
+                "end_date": "2026-05-13",
+                "zd": 10.2,
+                "zg": 10.8,
+                "zz": 10.5,
+                "bi_count": 3,
+                "is_valid": True,
+            },
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    assert len(view["centers"]) == 1
+    assert view["centers"][0]["active"] is True
+    assert view["centers"][0]["end_index"] == 4
+    assert view["centers"][0]["end_bar_time"] == "2026-05-14"
+    assert view["centers"][0]["exit_status"] == "open"
+
+
+def test_structure_view_does_not_mark_closed_latest_center_as_active(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    snapshot_service.save_snapshot(
+        symbol="sh600519",
+        level="day",
+        compute_profile=snapshot_service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-active-center-closed",
+        data_as_of="2026-05-15",
+        snapshot_payload={
+            "level": "day",
+            "price": 11.5,
+            "klines": [
+                {"time": "2026-05-10", "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.2},
+                {"time": "2026-05-11", "open": 10.2, "high": 10.8, "low": 10.1, "close": 10.6},
+                {"time": "2026-05-12", "open": 10.6, "high": 10.9, "low": 10.2, "close": 10.5},
+                {"time": "2026-05-13", "open": 10.5, "high": 10.9, "low": 10.3, "close": 10.7},
+                {"time": "2026-05-14", "open": 11.0, "high": 11.3, "low": 11.0, "close": 11.2},
+                {"time": "2026-05-15", "open": 11.2, "high": 11.6, "low": 11.1, "close": 11.5},
+            ],
+            "bis": [
+                {"direction": "up", "is_up": True, "is_sure": True, "x0": "2026-05-10", "x1": "2026-05-11", "y0": 10.2, "y1": 10.6},
+                {"direction": "down", "is_up": False, "is_sure": True, "x0": "2026-05-11", "x1": "2026-05-12", "y0": 10.6, "y1": 10.5},
+                {"direction": "up", "is_up": True, "is_sure": True, "x0": "2026-05-12", "x1": "2026-05-15", "y0": 10.5, "y1": 11.5},
+            ],
+            "bi_zhongshus": [
+                {
+                    "begin_date": "2026-05-10",
+                    "end_date": "2026-05-13",
+                    "zd": 10.2,
+                    "zg": 10.8,
+                    "zz": 10.5,
+                    "bi_count": 3,
+                    "is_valid": True,
+                }
+            ],
+            "active_zhongshu": {
+                "begin_date": "2026-05-10",
+                "end_date": "2026-05-13",
+                "zd": 10.2,
+                "zg": 10.8,
+                "zz": 10.5,
+                "bi_count": 3,
+                "is_valid": True,
+            },
+        },
+        raw_bi_context={"levels": {}},
+        engine_version="test-czsc",
+        adapter_version="test-adapter",
+    )
+
+    view = get_structure_view(symbol="sh600519", level="day")
+
+    assert view["active_center"] is None
+    assert view["centers"][0]["active"] is False
+    assert view["centers"][0]["exit_status"] == "closed"
 
 
 def test_structure_view_api_returns_public_snapshot_view(monkeypatch, tmp_path):

@@ -68,9 +68,20 @@ AI_UNIFIED_REASONING_SYMBOLS_PER_USER = int(os.getenv("AI_UNIFIED_REASONING_SYMB
 AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED = os.getenv("AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", "false").lower() == "true"
 AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_SYMBOLS_PER_USER = int(os.getenv("AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_SYMBOLS_PER_USER", "30"))
 
+# BaoStock 只保留手动补历史能力；正式结构默认走 TDX source policy。
+# 关闭后不会在应用启动、定时窗口、新增自选或 AI pipeline ensure 中自动拉 BaoStock。
+BAOSTOCK_AUTO_SYNC_ENABLED = os.getenv("BAOSTOCK_AUTO_SYNC_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
 # 行情 API
 PRICE_API_TIMEOUT = 5  # 秒
 PRICE_MONITOR_INTERVAL = 30  # 秒，持仓价格检查间隔
+
+# TDX 只读行情桥。为空时禁用；启用后实时价格和盘中 K 线优先走 TDX，失败自动降级。
+TDX_BRIDGE_URL = os.getenv("TDX_BRIDGE_URL", "").rstrip("/")
+TDX_BRIDGE_TIMEOUT = float(os.getenv("TDX_BRIDGE_TIMEOUT", "5"))
+INTRADAY_QUOTE_SAMPLER_ENABLED = os.getenv("INTRADAY_QUOTE_SAMPLER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+INTRADAY_QUOTE_SAMPLER_INTERVAL = float(os.getenv("INTRADAY_QUOTE_SAMPLER_INTERVAL", "5"))
+INTRADAY_QUOTE_SAMPLER_MAX_SYMBOLS = int(os.getenv("INTRADAY_QUOTE_SAMPLER_MAX_SYMBOLS", "60"))
 
 # QMT 只读行情桥。默认指向 Windows 侧本机端口；未启动时后端必须可降级。
 QMT_BRIDGE_URL = os.getenv("QMT_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")

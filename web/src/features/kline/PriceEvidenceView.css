@@ -342,8 +342,9 @@
 }
 
 .base-kline__bi.is-unsure {
-  opacity: 0.56;
-  stroke-dasharray: 4 3;
+  opacity: 0.88;
+  stroke-width: 2.7;
+  stroke-dasharray: 6 4;
 }
 
 .base-kline__segment {

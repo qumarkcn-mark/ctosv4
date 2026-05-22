@@ -10,7 +10,7 @@ from server.db.database import get_connection
 from server.domain.symbols import parse_symbol, symbol_aliases, to_tencent_symbol
 from server.engines.coach.event_log import log_user_action
 from server.services.entry_thesis import build_entry_thesis_from_trade, persist_entry_thesis
-from server.services.position_calc import recalculate_position
+from server.services.position_calc import apply_trade_to_position, recalculate_position
 
 router = APIRouter()
 
@@ -216,7 +216,16 @@ async def create_trade(trade: TradeCreate, current_user_id: int = Depends(get_cu
                 base_values,
             )
             trade_id = cursor.lastrowid
-            recalculate_position(conn, user_id, trade_symbol)
+            apply_trade_to_position(
+                conn,
+                user_id,
+                symbol=trade_symbol,
+                name=trade.name,
+                direction=trade.direction,
+                price=trade.price,
+                quantity=trade.quantity,
+                traded_at=traded_at,
+            )
 
             # ── 入场战法持久化（仅 BUY，且只在首次建仓或战法未知时写入）──
             if trade.direction == "BUY":

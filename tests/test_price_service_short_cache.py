@@ -117,3 +117,60 @@ def test_minute_klines_return_fresh_short_cache_without_baostock(monkeypatch):
     )
 
     assert len(rows) == 1
+
+
+def test_get_current_price_prefers_tdx_bridge(monkeypatch):
+    tdx_quote = {"symbol": "sz301590", "price": 12.34, "source": "tdx_tq"}
+
+    async def fake_tdx_quote(symbol):
+        return tdx_quote
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            raise AssertionError("Tencent fallback should not run when TDX has quote")
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr(price_service, "fetch_tdx_quote", fake_tdx_quote)
+    monkeypatch.setattr(price_service.httpx, "AsyncClient", FailingClient)
+
+    result = asyncio.run(price_service.get_current_price("sz.301590"))
+
+    assert result == tdx_quote
+
+
+def test_get_batch_prices_uses_tdx_and_falls_back_for_missing(monkeypatch):
+    async def fake_tdx_quotes(symbols):
+        return {"sz301590": {"symbol": "sz301590", "price": 12.34, "source": "tdx_tq"}}
+
+    class FakeResponse:
+        text = 'v_sh600519="1~贵州茅台~600519~1293.67~1311.00~1310.95~32214~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~20260522121438~0~0~1311.91~1291.11";'
+
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.requested_url = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            assert url.endswith("sh600519")
+            return FakeResponse()
+
+    monkeypatch.setattr(price_service, "fetch_tdx_quotes", fake_tdx_quotes)
+    monkeypatch.setattr(price_service.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(price_service.get_batch_prices(["sz.301590", "sh.600519"]))
+
+    assert result["sz301590"]["source"] == "tdx_tq"
+    assert result["sh600519"]["price"] == 1293.67

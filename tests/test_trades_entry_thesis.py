@@ -162,3 +162,42 @@ def test_sell_trade_accepts_canonical_symbol_against_compact_position(monkeypatc
     asyncio.run(trades.create_trade(trade, current_user_id=1))
 
     assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+
+
+def test_create_trade_applies_to_existing_snapshot_position(monkeypatch):
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO positions (
+            user_id, symbol, name, quantity, avg_cost, current_price, unrealized_pnl
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, "sh600519", "贵州茅台", 1000, 100.0, 120.0, 20000.0),
+    )
+    conn.execute(
+        """
+        INSERT INTO trades (user_id, symbol, name, direction, price, quantity, amount, traded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, "sh600519", "贵州茅台", "BUY", 80.0, 1000, 80000.0, "2026-04-25T10:00:00"),
+    )
+    monkeypatch.setattr(trades, "get_connection", lambda: ConnWrapper(conn))
+
+    trade = trades.TradeCreate(
+        symbol="sh600519",
+        name="贵州茅台",
+        direction="BUY",
+        price=110.0,
+        quantity=500,
+        stop_loss_price=92.0,
+        traded_at="2026-04-26T10:00:00",
+    )
+
+    asyncio.run(trades.create_trade(trade, current_user_id=1))
+
+    row = conn.execute("SELECT quantity, avg_cost, current_price, unrealized_pnl FROM positions WHERE symbol='sh600519'").fetchone()
+    assert row["quantity"] == 1500
+    assert round(row["avg_cost"], 6) == 103.333333
+    assert row["current_price"] == 120.0
+    assert row["unrealized_pnl"] == 25000.0

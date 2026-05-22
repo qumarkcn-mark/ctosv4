@@ -70,7 +70,7 @@ def get_structure_view(
     ]
     active_center = None
     if isinstance(snapshot.get("active_zhongshu"), dict) and snapshot.get("active_zhongshu"):
-        active_center = _normalize_center(
+        candidate_active_center = _normalize_center(
             snapshot["active_zhongshu"],
             index=len(centers),
             time_axis=time_axis,
@@ -79,7 +79,9 @@ def get_structure_view(
             snapshot_id=snapshot_row["snapshot_id"],
             active=True,
         )
-        centers = _mark_active_center(centers, active_center)
+        if candidate_active_center and candidate_active_center.get("exit_status") == "open":
+            active_center = candidate_active_center
+            centers = _mark_active_center(centers, active_center)
     segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
     unsupported_fields = _unsupported_fields(snapshot)
     segment_source = _segment_source(snapshot, segments)
@@ -290,7 +292,7 @@ def _mark_active_center(centers: list[dict[str, Any] | None], active_center: dic
             and abs(_num(item.get("zd")) - _num(active_center.get("zd"))) < 1e-8
             and abs(_num(item.get("zg")) - _num(active_center.get("zg"))) < 1e-8
         )
-        marked.append({**item, "active": same_range})
+        marked.append(active_center if same_range else {**item, "active": False})
     return marked
 
 

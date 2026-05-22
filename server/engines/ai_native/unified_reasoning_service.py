@@ -15,6 +15,7 @@ from typing import Any
 from server import config
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, symbol_aliases
+from server.engines.ai_native.chan_signal_digest import build_chan_signal_digest
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
@@ -23,12 +24,16 @@ from server.engines.ai_native.czsc_snapshot_service import (
     stable_hash,
 )
 from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
+from server.engines.ai_native.market_task_context_hydrator import hydrate_market_task_context
+from server.engines.ai_native.practical_evidence_hydrator import hydrate_practical_evidence
+from server.engines.ai_native.reasoning_continuity_service import build_reasoning_continuity_context
 from server.engines.ai_native.structure_context_service import (
     _boundary_payload,
     save_ai_structure_context,
     save_reasoning_run,
 )
 from server.engines.structure.structure_key import normalize_freq
+from server.services.intraday_observation_service import get_intraday_observation, get_intraday_observation_snapshot
 from server.services.llm_service import AIModelRoute, LLMService
 
 
@@ -58,7 +63,7 @@ CHAN_SIGNAL_MARKERS = (
 
 SYSTEM_PROMPT = """你是用户的缠论盯盘搭档。
 
-先理解第一阶段结构推演，再结合多级别结构几何、动力状态、附近压力支撑和持仓背景，做第二阶段综合推演。
+先理解第一阶段结构推演，再结合多级别结构几何、动力状态、实盘证据、盘中观察、附近压力支撑和持仓背景，做第二阶段综合推演。
 
 重点说明：
 当前走势在做什么；
@@ -66,26 +71,53 @@ SYSTEM_PROMPT = """你是用户的缠论盯盘搭档。
 哪些价格和结构变化会让推演切换；
 接下来最需要盯住什么。
 
+chan_signal_digest 是 CZSC 原生辅助证据，不是最终裁决；若它与笔序列、动力状态、压力支撑冲突，需要说明冲突点。
+intraday_observation 是盘中观察层，不是正式结构确认；数据里的 source、as_of、coverage、bar_status 表示事实来源和新鲜度，请自行权衡。
+reasoning_continuity_context 是上一轮推演、触发状态、用户近期观察和历史结果的事实集合，不是规则；请结合当前结构与盘中观察自行判断原推演是延续、触发、增强、减弱还是失效。
+market_task_context 是走势任务、压力语义、量能阶段和小转大观察事实，不是规则；请用它理解当前走势正在完成什么任务，但不要被它替代你的综合判断。
+
 仅供参考，不构成投资建议。"""
 
-WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘卡片展示信息，返回 JSON：
+WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘计划，返回 JSON：
 {
-  "card_summary": "一句话盯盘摘要，不超过28个中文字符",
-  "card_action": "结合当前持仓状态给出的短标签，不超过6个中文字符",
-  "triggers": [
-    {
-      "type": "price_below|price_above",
-      "level": 数字,
-      "message_on_trigger": "触发时显示的一句话（15字以内）",
-      "action_on_trigger": "触发时应关注的动作"
+  "watch_plan": {
+    "main_task": "当前走势正在完成什么任务，不超过40个中文字符",
+    "card": {
+      "summary": "关键价格+关键形态，不超过28个中文字符",
+      "action": "结合当前持仓状态给出的短标签，不超过6个中文字符"
+    },
+    "key_levels": [
+      {
+        "price": 数字,
+        "side": "up|down",
+        "type": "pressure|support|confirm|invalidate|t_watch|reentry",
+        "shape_to_watch": "要盯的关键形态，不超过24个中文字符",
+        "meaning": "这个价位的盘中含义，不超过30个中文字符",
+        "trigger": "price_above|price_below",
+        "ai_review_when": "什么盘中变化值得AI复核，不超过36个中文字符"
+      }
+    ],
+    "t_plan": {
+      "enabled": true,
+      "condition": "有底仓时是否支持考虑做T的条件",
+      "watch_price": 数字或null,
+      "reentry_area": "接回观察区，没有则空字符串",
+      "risk": "做T主要风险，没有则空字符串"
+    },
+    "recheck_policy": {
+      "no_touch": "不触及关键位时怎么处理",
+      "near_key_level": "接近关键位时怎么处理",
+      "touched_with_momentum_change": "触及且动能变化时怎么处理"
     }
-  ]
+  }
 }
 要求：
-- card_summary 只说当前最核心的结构动作，适合盯盘卡片扫一眼，不写解释。
-- card_action 必须结合当前持仓状态；空仓看建仓/观望，持仓看加仓/减仓/止损/锁利等管理动作；只输出短标签，不带价格。
-- triggers 最多 4 个，只取推演中明确提到的关键价格。
-- 不要输出买入、卖出这类下单命令，用盯盘建议语气。
+- card.summary 只写“关键价格 + 关键形态”，适合盯盘卡片扫一眼，不写解释。
+- card.action 必须结合当前持仓状态；空仓看观察/考虑建仓，持仓看持仓观察/考虑加仓/考虑减仓/考虑做T/等待接回/风险收缩；只输出短标签，不带价格。
+- key_levels 最多 4 个，只取推演中明确提到的关键价格；没有明确价格就少给，不要编。
+- key_levels 是盘中监控计划：不触及关键位时不需要重推；触及关键位且动能/形态发生变化时才值得 AI 复核。
+- t_plan 只在完整推演明确支持“有底仓 + 压力区/支撑区 + 小级别动能条件”时 enabled=true，否则 false。
+- 不要输出买入、卖出、清仓这类下单命令，用“考虑/观察/关注/防守”语气。
 - 只返回 JSON。"""
 
 
@@ -186,6 +218,28 @@ def build_unified_reasoning_input(
         structure_geometry=structure_geometry,
         pressure_support=nearby_pressure_support,
     )
+    practical_evidence = hydrate_practical_evidence(
+        snapshots,
+        pressure_support=nearby_pressure_support,
+        level_names=level_names,
+    )
+    intraday_observation = _intraday_observation(canonical)
+    reasoning_continuity_context = build_reasoning_continuity_context(
+        user_id=user_id,
+        symbol=canonical,
+        current_price=current_price,
+        intraday_observation=intraday_observation,
+        prompt_versions=ALL_UNIFIED_FULL_TEXT_VERSIONS,
+    )
+    market_task_context = hydrate_market_task_context(
+        current_price=current_price,
+        structure_geometry=structure_geometry,
+        momentum_dynamics=momentum_dynamics,
+        intraday_observation=intraday_observation,
+        nearby_pressure_support=nearby_pressure_support,
+        reasoning_continuity_context=reasoning_continuity_context,
+    )
+    chan_signal_digest = build_chan_signal_digest(snapshots, level_names=level_names)
     chan_signals = _collect_chan_signals(snapshots, level_names)
     position_context = _position_context(user_id=user_id, symbol=canonical, current_price=current_price)
     full_input = {
@@ -197,6 +251,11 @@ def build_unified_reasoning_input(
         "momentum_dynamics": momentum_dynamics,
         "nearby_pressure_support": nearby_pressure_support,
         "resonance_evidence": resonance_evidence,
+        "practical_evidence": practical_evidence,
+        "intraday_observation": intraday_observation,
+        "reasoning_continuity_context": reasoning_continuity_context,
+        "market_task_context": market_task_context,
+        "chan_signal_digest": chan_signal_digest,
         "chan_signals": chan_signals,
         "position_context": position_context,
         # 旧字段保留给前端、测试脚本和历史消费方，语义等同第一阶段结构参考。
@@ -213,6 +272,25 @@ def build_unified_reasoning_input(
         "snapshots": rows,
         "input": full_input,
     }
+
+
+def _intraday_observation(symbol: str) -> dict[str, Any]:
+    """Best-effort intraday preview; never required for formal reasoning."""
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+        return get_intraday_observation_snapshot(symbol)
+    except RuntimeError:
+        pass
+    except Exception:
+        return {}
+    try:
+        import asyncio
+
+        return asyncio.run(get_intraday_observation(symbol))
+    except Exception:
+        return {}
 
 
 def save_unified_reasoning_result(
@@ -232,12 +310,16 @@ def save_unified_reasoning_result(
         fallback_summary=summarize_unified_reasoning(full_text),
     )
     summary = summarize_unified_reasoning(full_text)
+    generated_at = now_text()
     summary_payload = {
         "coach_summary": summary,
         "card_summary": normalized_watchboard["card_summary"],
         "card_action": normalized_watchboard["card_action"],
+        "watch_plan": normalized_watchboard["watch_plan"],
         "version": UNIFIED_REASONING_VERSION,
         "monitor_conditions": normalized_watchboard["monitor_conditions"],
+        "data_as_of": (payload.get("input") or {}).get("data_as_of") or "",
+        "generated_at": generated_at,
     }
     run = save_reasoning_run(
         user_id=user_id,
@@ -259,6 +341,7 @@ def save_unified_reasoning_result(
         "front_panel_text": normalized_watchboard["card_summary"] or summary,
         "card_summary": normalized_watchboard["card_summary"],
         "card_action": normalized_watchboard["card_action"],
+        "watch_plan": normalized_watchboard["watch_plan"],
         "pressure_support": (payload.get("input") or {}).get("nearby_pressure_support")
         or (payload.get("input") or {}).get("pressure_support")
         or [],
@@ -311,6 +394,7 @@ def save_unified_reasoning_result(
         "summary": summary,
         "card_summary": normalized_watchboard["card_summary"],
         "card_action": normalized_watchboard["card_action"],
+        "watch_plan": normalized_watchboard["watch_plan"],
         "monitor_conditions": summary_payload["monitor_conditions"],
         "full_text": full_text,
         "source_snapshot_ids": source_snapshot_ids,
@@ -365,15 +449,52 @@ async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) 
 def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_summary: str = "") -> dict[str, Any]:
     """Normalize AI-extracted card fields without turning the card into a rule engine."""
     raw = payload or {}
-    card_summary = re.sub(r"\s+", "", str(raw.get("card_summary") or "")).strip()
+    watch_plan = normalize_watch_plan(raw, fallback_summary=fallback_summary)
+    card_summary = re.sub(
+        r"\s+",
+        "",
+        str(raw.get("card_summary") or (watch_plan.get("card") or {}).get("summary") or ""),
+    ).strip()
     if not card_summary:
         card_summary = str(fallback_summary or "").strip()
-    card_action = re.sub(r"\s+", "", str(raw.get("card_action") or "")).strip()
+    card_action = re.sub(
+        r"\s+",
+        "",
+        str(raw.get("card_action") or (watch_plan.get("card") or {}).get("action") or ""),
+    ).strip()
     card_action = _normalize_watchboard_action(card_action)
     return {
         "card_summary": card_summary[:42],
         "card_action": card_action[:8],
         "monitor_conditions": normalize_monitor_conditions(raw),
+        "watch_plan": watch_plan,
+    }
+
+
+def normalize_watch_plan(payload: dict[str, Any] | None, *, fallback_summary: str = "") -> dict[str, Any]:
+    """Normalize the AI watch plan while keeping it as observation data."""
+    raw = payload or {}
+    plan = raw.get("watch_plan") if isinstance(raw.get("watch_plan"), dict) else {}
+    raw_card = plan.get("card") if isinstance(plan.get("card"), dict) else {}
+    card_summary = re.sub(
+        r"\s+",
+        "",
+        str(raw_card.get("summary") or raw.get("card_summary") or fallback_summary or ""),
+    ).strip()[:42]
+    card_action = _normalize_watchboard_action(str(raw_card.get("action") or raw.get("card_action") or "").strip())[:8]
+    key_levels = _normalize_watch_key_levels(plan, raw)
+    return {
+        "version": "watch_plan.v1",
+        "main_task": re.sub(r"\s+", "", str(plan.get("main_task") or "")).strip()[:60],
+        "card": {
+            "summary": card_summary,
+            "action": card_action,
+        },
+        "key_levels": key_levels,
+        "t_plan": _normalize_t_plan(plan.get("t_plan") if isinstance(plan.get("t_plan"), dict) else {}),
+        "recheck_policy": _normalize_recheck_policy(
+            plan.get("recheck_policy") if isinstance(plan.get("recheck_policy"), dict) else {}
+        ),
     }
 
 
@@ -394,7 +515,7 @@ def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, An
         "收紧防守",
     }
     normalized: list[dict[str, Any]] = []
-    raw_triggers = (payload or {}).get("triggers") or []
+    raw_triggers = _monitor_trigger_candidates(payload or {})
     if not isinstance(raw_triggers, list):
         return {"triggers": []}
     for raw in raw_triggers:
@@ -424,6 +545,111 @@ def normalize_monitor_conditions(payload: dict[str, Any] | None) -> dict[str, An
         if len(normalized) >= 4:
             break
     return {"triggers": normalized}
+
+
+def _monitor_trigger_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_triggers = payload.get("triggers")
+    if isinstance(raw_triggers, list) and raw_triggers:
+        return raw_triggers
+    plan = payload.get("watch_plan") if isinstance(payload.get("watch_plan"), dict) else {}
+    levels = plan.get("key_levels") if isinstance(plan.get("key_levels"), list) else []
+    candidates = []
+    for item in levels:
+        if not isinstance(item, dict):
+            continue
+        trigger_type = _watch_level_trigger_type(item)
+        price = _num(item.get("price"))
+        if not trigger_type or price <= 0:
+            continue
+        message = str(item.get("shape_to_watch") or item.get("meaning") or "触发关键位")
+        candidates.append(
+            {
+                "type": trigger_type,
+                "level": price,
+                "message_on_trigger": message,
+                "action_on_trigger": item.get("action_on_trigger") or "关注",
+            }
+        )
+    return candidates
+
+
+def _normalize_watch_key_levels(plan: dict[str, Any], raw: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_levels = plan.get("key_levels") if isinstance(plan.get("key_levels"), list) else []
+    if not raw_levels and isinstance(raw.get("triggers"), list):
+        raw_levels = [
+            {
+                "price": item.get("level"),
+                "trigger": item.get("type"),
+                "shape_to_watch": item.get("message_on_trigger"),
+                "meaning": item.get("message_on_trigger"),
+            }
+            for item in raw["triggers"]
+            if isinstance(item, dict)
+        ]
+    result = []
+    for item in raw_levels:
+        if not isinstance(item, dict):
+            continue
+        price = _num(item.get("price"))
+        if price <= 0:
+            continue
+        trigger_type = _watch_level_trigger_type(item)
+        if not trigger_type:
+            continue
+        side = "up" if trigger_type == "price_above" else "down"
+        level_type = str(item.get("type") or "").strip()
+        if level_type not in {"pressure", "support", "confirm", "invalidate", "t_watch", "reentry"}:
+            level_type = "pressure" if trigger_type == "price_above" else "support"
+        result.append(
+            {
+                "id": f"k{len(result) + 1}",
+                "price": round(price, 4),
+                "side": side,
+                "type": level_type,
+                "shape_to_watch": re.sub(r"\s+", "", str(item.get("shape_to_watch") or "")).strip()[:32],
+                "meaning": re.sub(r"\s+", "", str(item.get("meaning") or "")).strip()[:40],
+                "trigger": trigger_type,
+                "ai_review_when": re.sub(r"\s+", "", str(item.get("ai_review_when") or "")).strip()[:48],
+            }
+        )
+        if len(result) >= 4:
+            break
+    return result
+
+
+def _watch_level_trigger_type(item: dict[str, Any]) -> str:
+    trigger = str(item.get("trigger") or item.get("type") or "").strip()
+    if trigger in {"price_above", "price_below"}:
+        return trigger
+    side = str(item.get("side") or "").strip()
+    if side == "up":
+        return "price_above"
+    if side == "down":
+        return "price_below"
+    level_type = str(item.get("type") or "").strip()
+    if level_type in {"pressure", "confirm", "t_watch"}:
+        return "price_above"
+    if level_type in {"support", "invalidate", "reentry"}:
+        return "price_below"
+    return ""
+
+
+def _normalize_t_plan(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "condition": str(raw.get("condition") or "").strip()[:80],
+        "watch_price": round(_num(raw.get("watch_price")), 4) if _num(raw.get("watch_price")) > 0 else None,
+        "reentry_area": str(raw.get("reentry_area") or "").strip()[:40],
+        "risk": str(raw.get("risk") or "").strip()[:80],
+    }
+
+
+def _normalize_recheck_policy(raw: dict[str, Any]) -> dict[str, str]:
+    return {
+        "no_touch": str(raw.get("no_touch") or "不重推").strip()[:40],
+        "near_key_level": str(raw.get("near_key_level") or "卡片轻量提示").strip()[:40],
+        "touched_with_momentum_change": str(raw.get("touched_with_momentum_change") or "触发AI复核").strip()[:48],
+    }
 
 
 def _is_semantically_invalid_monitor_trigger(trigger_type: str, action: str, message: str) -> bool:

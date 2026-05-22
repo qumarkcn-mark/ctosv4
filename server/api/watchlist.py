@@ -3,9 +3,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 import sqlite3
 from datetime import datetime
+from server import config
 from server.api.auth import get_current_user_id
+from server.db.kline_lake import query_klines as query_lake_klines
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, symbol_aliases, to_tencent_symbol
+from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, get_snapshot_status_batch
 from server.workers.kline_sync_worker import ALL_FREQS, sync_new_watchlist_symbol
 
 router = APIRouter()
@@ -168,15 +171,74 @@ def add_stock(
             "symbol": stock_symbol,
             "data_sync": {
                 "status": "queued",
-                "source": "baostock",
+                "source": "baostock" if config.BAOSTOCK_AUTO_SYNC_ENABLED else "tdx",
                 "quick_freqs": ["day", "5"],
                 "full_freqs": ALL_FREQS,
+                "reason": "" if config.BAOSTOCK_AUTO_SYNC_ENABLED else "TDX_SINGLE_SYMBOL_INIT",
             },
         }
     except sqlite3.IntegrityError:
         raise HTTPException(400, "添加失败")
     finally:
         conn.close()
+
+
+@router.get("/stocks/{symbol}/init-status")
+def get_stock_init_status(symbol: str, current_user_id: int = Depends(get_current_user_id)):
+    """查询新票初始化状态：TDX K线、CZSC snapshot、是否可推演。"""
+    canonical_symbol = normalize_symbol(symbol)
+    kline_items = []
+    for freq in ALL_FREQS:
+        rows = query_lake_klines(canonical_symbol, freq, limit=1, adjustflag="2", source="tdx")
+        latest = rows[-1]["date"] if rows else ""
+        kline_items.append({
+            "freq": freq,
+            "ready": bool(rows),
+            "latest": latest,
+            "source": "tdx",
+            "adjustflag": "2",
+        })
+
+    snapshots = get_snapshot_status_batch(
+        symbols=[canonical_symbol],
+        levels=list(DEFAULT_LEVELS),
+    ).get(canonical_symbol, {})
+    snapshot_items = [
+        {
+            "level": level,
+            "status": (snapshots.get(level) or {}).get("status", "unknown"),
+            "ready": (snapshots.get(level) or {}).get("status") == "fresh",
+            "last_bar_at": ((snapshots.get(level) or {}).get("freshness") or {}).get("last_bar_at", ""),
+            "job_status": (((snapshots.get(level) or {}).get("job") or {}).get("status") or ""),
+        }
+        for level in DEFAULT_LEVELS
+    ]
+    kline_ready = all(item["ready"] for item in kline_items if item["freq"] in {"week", "day", "30", "5"})
+    snapshot_ready = all(item["ready"] for item in snapshot_items)
+    if snapshot_ready:
+        stage = "ready_for_reasoning"
+    elif kline_ready:
+        stage = "snapshot_pending"
+    else:
+        stage = "tdx_kline_pending"
+
+    return {
+        "symbol": canonical_symbol,
+        "source": "tdx",
+        "stage": stage,
+        "ready_for_reasoning": snapshot_ready,
+        "kline": {"ready": kline_ready, "items": kline_items},
+        "snapshots": {"ready": snapshot_ready, "items": snapshot_items},
+        "next_action": _init_next_action(stage),
+    }
+
+
+def _init_next_action(stage: str) -> str:
+    if stage == "ready_for_reasoning":
+        return "可以生成 AI 推演"
+    if stage == "snapshot_pending":
+        return "等待 CZSC snapshot worker 生成四级别结构"
+    return "请先同步 TDX K 线或确认 Windows TDX 本地数据可用"
 
 @router.delete("/groups/{group_name}/stocks/{symbol}")
 def remove_stock(group_name: str, symbol: str, current_user_id: int = Depends(get_current_user_id)):

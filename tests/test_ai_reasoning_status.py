@@ -300,6 +300,94 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
     assert answer["coach_answer"].endswith("仅供参考，不构成投资建议")
 
 
+def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, openid, nickname, settings_json) VALUES (1, 'u1', 'U1', ?)",
+            (json.dumps({"deepseek_api_key": "sk-test"}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = save_ai_structure_context(
+        user_id=1,
+        symbol="sh.600790",
+        prompt_version="unified_reasoning.v2",
+        context_fingerprint="e" * 64,
+        source_snapshot_ids=["snap-u"],
+        raw_context={"position_context": {"holding": True, "shares": 40000, "cost": 4.39, "current_price": 4.01}},
+        reasoning={
+            "reasoning_meta": {"provider": "llm", "llm_status": "success"},
+            "structure_summary": "日线中枢下沿观察。",
+            "scenario_branches": [],
+        },
+        background={},
+        boundary={
+            "levels": {
+                "day": {
+                    "snapshot_id": "snap-u",
+                    "active_center": {"zg": 4.09, "zd": 3.79},
+                    "evidence": {"trigger_line": "snap-u:day:line:trigger"},
+                }
+            }
+        },
+        summary_text="日线中枢下沿观察。",
+        coach_summary="日线中枢下沿观察。",
+        main_level="day",
+        trigger_level="5",
+    )
+    save_reasoning_run(
+        user_id=1,
+        symbol="sh.600790",
+        source_snapshot_ids=["snap-u"],
+        prompt_version="unified_reasoning.v2.full_text",
+        status="SUCCESS",
+        full_reasoning_text="统一推演全文：轻纺城围绕4.09和3.79观察。仅供参考，不构成投资建议",
+        summary={
+            "card_summary": "测试4.09压力",
+            "card_action": "持仓观察",
+            "monitor_conditions": {
+                "triggers": [
+                    {"type": "price_above", "level": 4.09, "message_on_trigger": "站回上沿", "action_on_trigger": "关注"},
+                    {"type": "price_below", "level": 3.79, "message_on_trigger": "跌破下沿", "action_on_trigger": "关注"},
+                ]
+            },
+        },
+        context_id=context["context_id"],
+    )
+
+    monkeypatch.setattr(
+        "server.engines.ai_native.structure_chat_service._chat_intraday_observation",
+        lambda symbol: {"as_of": "2026-05-22 14:30:00", "coverage": {"quality": "partial"}, "quote": {"price": 4.01}},
+    )
+
+    async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
+        payload = json.loads(context_json)
+        continuity = payload["reasoning_continuity_context"]
+        assert payload["version"] == "unified_reasoning_chat.v1"
+        assert "连续性上下文" in system_prompt
+        assert continuity["previous_reasoning"]["card_summary"] == "测试4.09压力"
+        assert continuity["trigger_status_since_last_run"][0]["status"] == "not_touched"
+        assert continuity["intraday_reference"]["coverage"]["quality"] == "partial"
+        return "上一轮4.09还没触发，当前仍按中枢下沿观察；盘中若站回4.09再看增强。仅供参考，不构成投资建议"
+
+    monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
+
+    answer = answer_structure_question(
+        user_id=1,
+        symbol="sh.600790",
+        question="现在盘中怎么看？",
+    )
+
+    assert answer["reasoning_continuity_context"]["previous_reasoning"]["card_summary"] == "测试4.09压力"
+    assert answer["reasoning_continuity_context"]["trigger_status_since_last_run"][0]["status"] == "not_touched"
+    assert "4.09" in answer["coach_answer"]
+
+
 def test_chat_does_not_use_full_reasoning_from_different_snapshot_set(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "ctos.db"))
     database.init_db()

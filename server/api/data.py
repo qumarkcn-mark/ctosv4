@@ -1,6 +1,7 @@
 """CSV 导入 + 行情查询 API"""
 
 from datetime import datetime
+from functools import partial
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -8,15 +9,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from server.api.auth import get_current_user_id
 from server.db.database import get_connection
-from server.db.kline_lake import lake_status
+from server.db.kline_lake import lake_status, query_klines as query_lake_klines, upsert_klines
 from server.domain.symbols import normalize_symbol
 from server.services.csv_importer import import_csv
 from server.services.price_service import (
     get_current_price,
     get_batch_prices,
-    get_daily_klines,
-    get_weekly_klines,
-    get_minute_klines,
 )
 from server.services.qmt_bridge_client import (
     fetch_qmt_klines,
@@ -26,6 +24,7 @@ from server.services.qmt_bridge_client import (
     qmt_stream_probe,
 )
 from server.services.tdx_minute_service import read_tdx_1m_klines, tdx_minute_status
+from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines, fetch_tdx_quote
 from server.services.tdx_daily_sync_service import (
     get_sync_job,
     latest_sync_job,
@@ -34,6 +33,16 @@ from server.services.tdx_daily_sync_service import (
 )
 
 router = APIRouter()
+
+TDX_PERIOD_BY_FREQ = {
+    "1": "1m",
+    "5": "5m",
+    "15": "15m",
+    "30": "30m",
+    "60": "60m",
+    "day": "1d",
+    "week": "1w",
+}
 
 
 def _normalize_kline_sync_interval(interval: Optional[str]) -> Optional[str]:
@@ -54,10 +63,54 @@ def _normalize_kline_sync_interval(interval: Optional[str]) -> Optional[str]:
         "15": "15",
         "m5": "5",
         "5": "5",
+        "m1": "1",
+        "1m": "1",
+        "1": "1",
     }
     if value not in aliases:
-        raise ValueError("interval 只支持 week/day/m60/m30/m15/m5")
+        raise ValueError("interval 只支持 week/day/m60/m30/m15/m5/m1")
     return aliases[value]
+
+
+def _normalize_kline_query_interval(interval: str) -> str:
+    """把外部 K 线查询周期归一成 price_service / TDX 展示层使用的周期。"""
+    value = str(interval or "day").strip().lower()
+    aliases = {
+        "week": "week",
+        "w": "week",
+        "day": "day",
+        "d": "day",
+        "m60": "m60",
+        "60m": "m60",
+        "60": "m60",
+        "m30": "m30",
+        "30m": "m30",
+        "30": "m30",
+        "m15": "m15",
+        "15m": "m15",
+        "15": "m15",
+        "m5": "m5",
+        "5m": "m5",
+        "5": "m5",
+        "m1": "m1",
+        "1m": "m1",
+        "1": "m1",
+    }
+    if value not in aliases:
+        raise HTTPException(400, "interval 只支持 week/day/m60/m30/m15/m5/m1")
+    return aliases[value]
+
+
+def _interval_to_freq(interval: str) -> str:
+    return {
+        "week": "week",
+        "day": "day",
+        "m60": "60",
+        "m30": "30",
+        "m15": "15",
+        "m5": "5",
+        "m1": "1",
+    }[interval]
 
 
 # ── CSV 导入 ──
@@ -115,16 +168,51 @@ async def query_batch_prices(symbols: str = Query(..., description="逗号分隔
 @router.get("/klines/{symbol}")
 async def query_klines(
     symbol: str,
-    interval: str = Query("day", description="week / day / m60 / m30 / m15 / m5"),
+    interval: str = Query("day", description="week / day / m60 / m30 / m15 / m5 / m1"),
     count: int = Query(200, ge=10, le=2000)
 ):
     """获取 K 线数据用于前端图表渲染"""
-    if interval == "week":
-        klines = await get_weekly_klines(symbol, count=count, allow_short_fresh_cache=True)
-    elif interval == "day":
-        klines = await get_daily_klines(symbol, count=count, allow_short_fresh_cache=True)
+    normalized_interval = _normalize_kline_query_interval(interval)
+    canonical_symbol = normalize_symbol(symbol)
+    freq = _interval_to_freq(normalized_interval)
+    if normalized_interval == "m1":
+        klines = await fetch_tdx_klines(symbol, period="1m", count=count)
+        if not klines:
+            klines = await run_in_threadpool(read_tdx_1m_klines, symbol, count)
+        quote = await fetch_tdx_quote(symbol)
+        klines = append_live_quote_1m_bar(klines, quote, symbol, count)
+        interval = "m1"
+        if not klines:
+            minute_status = await run_in_threadpool(tdx_minute_status, symbol)
+            reason = minute_status.get("reason") or "NO_LOCAL_1M_ROWS"
+            vipdoc = minute_status.get("vipdoc") or ""
+            raise HTTPException(
+                404,
+                (
+                    f"无法获取 {symbol} 的 1分钟K线：Windows TDX bridge /kline 未返回数据，"
+                    f"本机 TDX vipdoc 也不可用（{reason}{'，' + vipdoc if vipdoc else ''}）。"
+                    "请先在 Windows bridge 补 /kline，或挂载 TDX vipdoc。"
+                ),
+            )
     else:
-        klines = await get_minute_klines(symbol, interval=interval, count=count, allow_short_fresh_cache=True)
+        klines = await run_in_threadpool(
+            partial(
+                query_lake_klines,
+                canonical_symbol,
+                freq,
+                limit=count,
+                adjustflag="2",
+                source="tdx",
+            )
+        )
+        if not klines:
+            klines = await fetch_tdx_klines(canonical_symbol, period=TDX_PERIOD_BY_FREQ[freq], count=count)
+        if not klines:
+            raise HTTPException(
+                404,
+                f"无法获取 {symbol} 的 {normalized_interval} K线：TDX 本地/bridge 未返回数据，请先同步 TDX。",
+            )
+        interval = normalized_interval
     if not klines:
         raise HTTPException(404, f"无法获取 {symbol} 的 {interval} K 线数据")
     return {"symbol": symbol, "interval": interval, "count": len(klines), "klines": klines}
@@ -134,19 +222,20 @@ async def query_klines(
 
 @router.post("/sync-klines")
 async def sync_klines():
-    """手动触发所有自选股 K 线数据同步"""
-    from server.workers.kline_sync_worker import kline_sync
-    result = await kline_sync.force_sync()
-    return result
+    """旧 BaoStock 全量同步入口已下线，避免运行态误写 BaoStock。"""
+    return {
+        "status": "disabled",
+        "source": "tdx",
+        "message": "全量 BaoStock 同步已关闭。请使用 TDX 盘后同步或单股 TDX 刷新。",
+    }
 
 
 @router.post("/sync-klines/{symbol}")
 async def sync_symbol_klines(
     symbol: str,
-    interval: Optional[str] = Query(None, description="week / day / m60 / m30 / m15 / m5；不传则刷新全级别"),
+    interval: Optional[str] = Query(None, description="week / day / m60 / m30 / m15 / m5 / m1；不传则刷新全级别"),
 ):
-    """轻量刷新当前股票 K 线数据，供看盘页手动刷新使用。"""
-    from server.services.baostock_service import refresh_symbol_qfq
+    """轻量刷新当前股票 TDX K 线数据，供看盘页手动刷新使用。"""
     from server.workers.kline_sync_worker import ALL_FREQS, enqueue_structure_jobs_for_changes
 
     try:
@@ -155,48 +244,70 @@ async def sync_symbol_klines(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    def _sync_one_symbol():
-        started_at = datetime.now().isoformat(timespec="seconds")
-        freqs = [requested_freq] if requested_freq else list(ALL_FREQS)
-        results = []
-        total_written = 0
-        error_count = 0
-        changed = []
+    started_at = datetime.now().isoformat(timespec="seconds")
+    freqs = [requested_freq] if requested_freq else list(ALL_FREQS)
+    results = []
+    total_written = 0
+    error_count = 0
+    changed = []
 
-        for freq in freqs:
-            try:
-                written = refresh_symbol_qfq(canonical_symbol, freq)
-                total_written += written
-                results.append({"freq": freq, "written": written, "status": "ok"})
-                if written > 0:
-                    changed.append({"symbol": canonical_symbol, "freq": freq, "written": written})
-            except Exception as exc:  # 单级别失败不阻断其他级别
-                error_count += 1
-                results.append({
-                    "freq": freq,
-                    "written": 0,
-                    "status": "error",
-                    "error": str(exc),
-                })
+    for freq in freqs:
+        period = TDX_PERIOD_BY_FREQ.get(freq)
+        if not period:
+            results.append({"freq": freq, "written": 0, "status": "skipped", "reason": "UNSUPPORTED_TDX_PERIOD"})
+            continue
+        try:
+            rows = await fetch_tdx_klines(canonical_symbol, period=period, count=5000, refresh=True)
+            written = await run_in_threadpool(
+                partial(
+                    upsert_klines,
+                    canonical_symbol,
+                    freq,
+                    rows,
+                    adjustflag="2",
+                    source="tdx",
+                )
+            )
+            total_written += written
+            results.append({
+                "freq": freq,
+                "period": period,
+                "written": written,
+                "status": "ok" if rows else "no_data",
+                "first": rows[0]["date"] if rows else "",
+                "last": rows[-1]["date"] if rows else "",
+                "source": "tdx",
+            })
+            if written > 0:
+                changed.append({"symbol": canonical_symbol, "freq": freq, "written": written})
+        except Exception as exc:  # 单级别失败不阻断其他级别
+            error_count += 1
+            results.append({
+                "freq": freq,
+                "period": period,
+                "written": 0,
+                "status": "error",
+                "source": "tdx",
+                "error": str(exc),
+            })
 
-        structure_jobs = enqueue_structure_jobs_for_changes(
-            changed,
-            priority=90,
-            reason="manual_symbol_sync",
-        )
-        return {
-            "status": "success" if error_count == 0 else "partial",
-            "symbol": canonical_symbol,
-            "freqs": freqs,
-            "total_written": total_written,
-            "errors": error_count,
-            "results": results,
-            "structure_jobs": structure_jobs,
-            "started_at": started_at,
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-        }
-
-    return await run_in_threadpool(_sync_one_symbol)
+    structure_jobs = enqueue_structure_jobs_for_changes(
+        changed,
+        priority=90,
+        reason="manual_symbol_tdx_sync",
+    )
+    return {
+        "status": "success" if error_count == 0 else "partial",
+        "source": "tdx",
+        "symbol": canonical_symbol,
+        "freqs": freqs,
+        "total_written": total_written,
+        "errors": error_count,
+        "results": results,
+        "structure_jobs": structure_jobs,
+        "started_at": started_at,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 @router.get("/sync-status")

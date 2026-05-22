@@ -2,7 +2,7 @@ export function formatWatchPrice(value, options = {}) {
   const num = Number(value || 0)
   if (!num) return '--'
   if (options.fixed) return num.toFixed(2)
-  const fixed = num >= 100 ? num.toFixed(2) : num.toFixed(3)
+  const fixed = Math.abs(num) >= 100 ? num.toFixed(2) : num.toFixed(3)
   return fixed.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
 }
 

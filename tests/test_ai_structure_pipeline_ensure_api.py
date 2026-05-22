@@ -48,6 +48,7 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
             "reason": kwargs["reason"],
         }
 
+    monkeypatch.setattr(service.config, "BAOSTOCK_AUTO_SYNC_ENABLED", True)
     monkeypatch.setattr(service, "count_klines", fake_count)
     monkeypatch.setattr(service, "fetch_klines_quick", fake_quick)
     monkeypatch.setattr(service, "prewarm_structure_snapshots", fake_snapshot_prewarm)
@@ -79,6 +80,39 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
     assert data["snapshots"]["count"] == 2
     assert data["contexts"]["count"] == 1
     assert data["contexts"]["user_id"] == 1
+
+
+def test_pipeline_ensure_skips_baostock_fetch_when_auto_sync_disabled(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    quick_calls = []
+    backfill_calls = []
+
+    monkeypatch.setattr(service.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
+    monkeypatch.setattr(service, "fetch_klines_quick", lambda *args, **kwargs: quick_calls.append(args))
+    monkeypatch.setattr(service, "_schedule_backfill_rewarm", lambda **kwargs: backfill_calls.append(kwargs))
+    monkeypatch.setattr(
+        service,
+        "prewarm_structure_snapshots",
+        lambda **kwargs: {"count": len(kwargs["levels"]), "items": []},
+    )
+    monkeypatch.setattr(
+        service,
+        "prewarm_ai_structure_contexts",
+        lambda **kwargs: {"count": len(kwargs["symbols"]), "items": []},
+    )
+
+    response = make_client().post(
+        "/api/ai-structure/pipeline/ensure",
+        json={"symbols": ["sh600519"], "levels": ["day"], "reason": "test_disabled"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["kline"]["ready"] is True
+    assert data["kline"]["items"][0]["status"] == "skipped"
+    assert data["kline"]["items"][0]["reason"] == "BAOSTOCK_AUTO_SYNC_DISABLED"
+    assert quick_calls == []
+    assert backfill_calls == []
 
 
 def test_backfill_rewarms_changed_symbol(monkeypatch, tmp_path):
