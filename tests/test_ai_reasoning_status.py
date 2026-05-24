@@ -375,7 +375,33 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
 
     monkeypatch.setattr(
         "server.engines.ai_native.structure_chat_service._chat_intraday_observation",
-        lambda symbol: {"as_of": "2026-05-22 14:30:00", "coverage": {"quality": "partial"}, "quote": {"price": 4.01}},
+        lambda symbol: {
+            "as_of": "2026-05-22 14:30:00",
+            "source": "tdx_quote_aggregation",
+            "usage": "intraday_preview",
+            "coverage": {"quality": "partial"},
+            "quote": {"price": 4.12, "change_pct": 1.2},
+            "levels": {
+                "5m": {
+                    "last_bar_at": "2026-05-22 14:30:00",
+                    "last_bar_status": "FORMING",
+                    "last_close": 4.12,
+                    "intraday_bar_count": 48,
+                    "macd_closed_only": {
+                        "basis": "closed_only",
+                        "macd_state": "below_zero",
+                        "macd_momentum": "improving",
+                        "volume_state": "low_volume",
+                    },
+                    "macd_with_forming": {
+                        "basis": "with_forming",
+                        "macd_state": "near_zero",
+                        "macd_momentum": "strengthening",
+                        "volume_state": "expanding",
+                    },
+                }
+            },
+        },
     )
 
     async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
@@ -383,15 +409,21 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
         continuity = payload["reasoning_continuity_context"]
         assert payload["version"] == "unified_reasoning_chat.v1"
         assert payload["chat_style"] == "intraday_companion"
+        assert payload["chat_context"]["version"] == "ai_structure_chat_context.v1"
+        assert payload["chat_context"]["live_tape"]["price"] == 4.12
+        assert payload["chat_context"]["live_tape"]["price_source"] == "intraday_quote"
+        assert payload["chat_context"]["live_tape"]["levels"]["5m"]["with_forming"]["macd_momentum"] == "strengthening"
+        assert payload["chat_context"]["trigger_state"]["crossed"][0]["level"] == 4.09
         assert "full_reasoning_text" not in payload
         assert payload["full_reasoning_excerpt"].startswith("统一推演全文")
         assert payload["answer_contract"]["mode"] == "concise"
-        assert "不是报告生成器" in system_prompt
+        assert "像正常对话一样" in system_prompt
         assert "连续性上下文" in system_prompt
         assert continuity["previous_reasoning"]["card_summary"] == "测试4.09压力"
-        assert continuity["trigger_status_since_last_run"][0]["status"] == "not_touched"
+        assert continuity["trigger_status_since_last_run"][0]["status"] == "crossed"
+        assert continuity["trigger_status_since_last_run"][0]["current_price"] == 4.12
         assert continuity["intraday_reference"]["coverage"]["quality"] == "partial"
-        return "上一轮4.09还没触发，当前仍按中枢下沿观察；盘中若站回4.09再看增强。仅供参考，不构成投资建议"
+        return "盘中已经站到4.09上方，这比上一轮更强；但5分钟还是FORMING，先看能不能守住4.09。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
 
@@ -402,7 +434,7 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
     )
 
     assert answer["reasoning_continuity_context"]["previous_reasoning"]["card_summary"] == "测试4.09压力"
-    assert answer["reasoning_continuity_context"]["trigger_status_since_last_run"][0]["status"] == "not_touched"
+    assert answer["reasoning_continuity_context"]["trigger_status_since_last_run"][0]["status"] == "crossed"
     assert "4.09" in answer["coach_answer"]
 
 
