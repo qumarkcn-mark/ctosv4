@@ -416,6 +416,7 @@ export default function AIStructureCoachPanel({
       />
 
       <ReasoningBrief context={reasoningContext} status={status} />
+      <WatchPlanPanel context={reasoningContext} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
@@ -518,6 +519,122 @@ function ReasoningBrief({ context, status }) {
       )}
     </section>
   )
+}
+
+function WatchPlanPanel({ context }) {
+  if (!context) return null
+  if (!isAiReasoningReady({ context })) return null
+  const reasoning = context.reasoning || context
+  const plan = buildWatchPlan(reasoning, context)
+  if (!plan.mainTask && !plan.levels.length && !plan.tPlan) return null
+  return (
+    <section className="ai-watch-plan" aria-label="AI 观察任务">
+      <div className="ai-watch-plan-head">
+        <strong>观察任务</strong>
+        <span>关键位不是交易指令</span>
+      </div>
+      {plan.mainTask && <p>{plan.mainTask}</p>}
+      {!!plan.levels.length && (
+        <div className="ai-watch-plan-levels">
+          {plan.levels.map((item, index) => (
+            <div key={`${item.type}-${item.price}-${index}`} className={`ai-watch-plan-level ai-watch-plan-level--${item.tone}`}>
+              <div className="ai-watch-plan-level-price">
+                <span>{item.label}</span>
+                <strong>{formatPlanPrice(item.price)}</strong>
+              </div>
+              <em>{item.note}</em>
+            </div>
+          ))}
+        </div>
+      )}
+      {plan.tPlan && (
+        <div className="ai-watch-plan-t">
+          <span>盘中做T观察</span>
+          <em>{plan.tPlan}</em>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function buildWatchPlan(reasoning = {}, context = {}) {
+  const watchPlan = reasoning.watch_plan || {}
+  const monitorTriggers = (reasoning.monitor_conditions || {}).triggers || []
+  const growth = reasoning.trend_growth || {}
+  const mainTask = String(
+    watchPlan.main_task ||
+    watchPlan.card?.summary ||
+    reasoning.card_summary ||
+    reasoning.one_liner ||
+    growth.next_confirmation ||
+    growth.current_state ||
+    '',
+  ).trim()
+  const keyLevels = Array.isArray(watchPlan.key_levels) && watchPlan.key_levels.length
+    ? watchPlan.key_levels
+    : monitorTriggers.length
+      ? monitorTriggers.map((item) => ({
+        type: item.type === 'price_below' ? 'support' : 'pressure',
+        price: item.level,
+        trigger: item.type,
+        note: item.message_on_trigger,
+        after: item.action_on_trigger,
+      }))
+      : fallbackWatchLevels(reasoning, context)
+  return {
+    mainTask,
+    levels: keyLevels
+      .map(normalizeWatchLevel)
+      .filter((item) => item.price > 0)
+      .slice(0, 4),
+    tPlan: watchPlan.t_plan?.enabled ? String(watchPlan.t_plan?.note || watchPlan.t_plan?.plan || '只在触发关键位后再结合分时确认').trim() : '',
+  }
+}
+
+function fallbackWatchLevels(reasoning = {}, context = {}) {
+  const level = reasoning.main_level || context.main_level || context.boundary?.primary_level || ''
+  const center = (((context.boundary || {}).levels || {})[level] || {}).active_center || {}
+  const zg = Number(center.zg || 0)
+  const zd = Number(center.zd || 0)
+  const items = []
+  if (zg > 0) {
+    items.push({
+      type: 'pressure',
+      price: zg,
+      trigger: 'price_above',
+      note: `站上${formatLevel(level)}中枢上沿后再看增强确认`,
+    })
+  }
+  if (zd > 0) {
+    items.push({
+      type: 'support',
+      price: zd,
+      trigger: 'price_below',
+      note: `跌破${formatLevel(level)}中枢下沿后看结构是否转弱`,
+    })
+  }
+  return items
+}
+
+function normalizeWatchLevel(item = {}) {
+  const trigger = String(item.trigger || item.type || '')
+  const price = Number(item.price ?? item.level ?? 0)
+  const rawType = String(item.type || '')
+  const isSupport = rawType.includes('support') || trigger === 'price_below'
+  const note = String(item.note || item.after || item.message_on_trigger || '').trim()
+  return {
+    type: rawType || (isSupport ? 'support' : 'pressure'),
+    tone: isSupport ? 'support' : 'pressure',
+    label: isSupport ? '下方支撑' : '上方压力',
+    price,
+    note: note || (isSupport ? '跌破后看是否快速收回' : '站上后看是否回踩确认'),
+  }
+}
+
+function formatPlanPrice(value) {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num) || num <= 0) return '--'
+  return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
 }
 
 function DataFreshnessStrip({ status, context }) {
