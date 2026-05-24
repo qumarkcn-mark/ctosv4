@@ -417,6 +417,135 @@
   line-height: 1.4;
 }
 
+.ai-watch-plan {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.025);
+}
+
+.ai-watch-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-watch-plan-head strong {
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.ai-watch-plan-head span {
+  flex: 0 0 auto;
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.ai-watch-plan p {
+  margin: 0;
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-watch-plan-levels {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-watch-plan-level {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 5px;
+  background: rgba(255,255,255,0.025);
+}
+
+.ai-watch-plan-level-price {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ai-watch-plan-level-price span {
+  color: var(--text-tertiary, rgba(255,255,255,0.32));
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.ai-watch-plan-level-price strong {
+  color: var(--text-primary, rgba(255,255,255,0.92));
+  font-family: var(--font-mono, monospace);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.ai-watch-plan-level em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-watch-plan-level--pressure {
+  border-color: rgba(244,63,94,0.18);
+  background: rgba(244,63,94,0.045);
+}
+
+.ai-watch-plan-level--pressure .ai-watch-plan-level-price strong {
+  color: var(--bull-red, #f43f5e);
+}
+
+.ai-watch-plan-level--support {
+  border-color: rgba(16,185,129,0.18);
+  background: rgba(16,185,129,0.045);
+}
+
+.ai-watch-plan-level--support .ai-watch-plan-level-price strong {
+  color: var(--bear-green, #10b981);
+}
+
+.ai-watch-plan-t {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(245,158,11,0.18);
+  border-radius: 5px;
+  background: rgba(245,158,11,0.055);
+}
+
+.ai-watch-plan-t span {
+  color: var(--signal-amber, #f59e0b);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.ai-watch-plan-t em {
+  color: var(--text-secondary, rgba(255,255,255,0.55));
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
 .ai-structure-empty button,
 .ai-reminder-list button,
 .ai-structure-input button {
