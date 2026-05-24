@@ -275,13 +275,20 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
 
     async def fake_markdown(self, system_prompt, context_json, *, user_id=1, model_route=None):
         payload = json.loads(context_json)
-        assert "Think全文" in payload["full_reasoning_text"]
+        assert payload["version"] == "ai_structure_chat_from_saved_reasoning.v2"
+        assert payload["chat_style"] == "intraday_companion"
+        assert "Think全文" in payload["full_reasoning_excerpt"]
+        assert "full_reasoning_text" not in payload
+        assert payload["chat_context"]["version"] == "ai_structure_chat_context.v1"
+        assert payload["answer_contract"]["mode"] == "concise"
         assert payload["question"] == "我先持仓2000股，成本135，要不要加仓？"
         assert payload["runtime_context"]["current_price"] == 247.98
         assert payload["runtime_context"]["think"]["ready"] is True
         assert payload["runtime_context"]["think"]["llm_status"] == "success"
-        assert model_route.thinking_enabled is True
+        assert model_route.model_name == "deepseek-v4-flash"
+        assert model_route.thinking_enabled is False
         assert model_route.reasoning_effort == "high"
+        assert "像正常对话一样" in system_prompt
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)

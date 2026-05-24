@@ -11,7 +11,6 @@ import asyncio
 import uuid
 from typing import Any
 
-from server.config import AI_NATIVE_LLM_TIMEOUT
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import DEFAULT_LEVELS, now_text, stable_hash
@@ -524,16 +523,16 @@ def _build_ai_answer_from_full_reasoning(
         "question_chars": len(question or ""),
         "answer_source": "unified" if is_unified else "legacy_context",
     }
+    wants_detail = _wants_detailed_chat_answer(question)
+    chat_context = _build_chat_context_pack(
+        question=question,
+        intent_type=intent_type,
+        intraday_observation=intraday_observation or {},
+        reasoning_continuity_context=reasoning_continuity_context or {},
+        conversation_context=conversation_context or {},
+        runtime_context=runtime_context or {},
+    )
     if is_unified:
-        wants_detail = _wants_detailed_chat_answer(question)
-        chat_context = _build_chat_context_pack(
-            question=question,
-            intent_type=intent_type,
-            intraday_observation=intraday_observation or {},
-            reasoning_continuity_context=reasoning_continuity_context or {},
-            conversation_context=conversation_context or {},
-            runtime_context=runtime_context or {},
-        )
         prompt = {
             "version": "unified_reasoning_chat.v1",
             "chat_style": "intraday_companion",
@@ -565,37 +564,39 @@ def _build_ai_answer_from_full_reasoning(
         )
     else:
         prompt = {
-            "version": "ai_structure_chat_from_full_reasoning.v1",
+            "version": "ai_structure_chat_from_saved_reasoning.v2",
+            "chat_style": "intraday_companion",
             "symbol": symbol,
             "question": question,
             "intent_type": intent_type,
-            "full_reasoning_text": full_text,
+            "chat_context": chat_context,
+            "full_reasoning_excerpt": _clip_text(full_text, 3200),
             "summary": {
                 "coach_summary": context.get("coach_summary") or "",
                 "reasoning": context.get("reasoning") or {},
             },
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "intraday_observation": intraday_observation or {},
+            "reasoning_continuity_context": reasoning_continuity_context or {},
             "memory_context": memory_context or {},
             "review_context": review_context or {},
             "conversation_context": conversation_context or {},
             "data_status": data_status or {},
             "runtime_context": runtime_context or {},
             "chart_focus": chart_focus,
-        }
-        prompt["rules"] = {
-            "answer_from_full_reasoning_only": True,
-            "do_not_recalculate_structure": True,
-            "do_not_add_new_price_levels": True,
-            "no_direct_trade_instruction": True,
-            "required_risk_disclaimer": RISK_DISCLAIMER,
+            "answer_contract": {
+                "mode": "detailed" if wants_detail else "concise",
+                "preference": "像盘中搭档一样回答当前这句话；默认短，用户要求详细再展开。",
+                "context_priority": "chat_context 是当前事实摘要；保存推演只是背景锚点。",
+                "risk_disclaimer": RISK_DISCLAIMER,
+            },
         }
         system_prompt = (
-            "你是 CT-OS AI Native V5 的问答解释层。"
-            "你只能根据已保存的完整推演全文、摘要、持仓和历史记忆回答。"
-            "不要重新计算中枢、笔、背驰或级别结构，不要引入新价格。"
-            "回答用户真实问题，给条件化观察、风险边界、提醒/复盘建议。"
-            "不要直接给买入、卖出、满仓、清仓指令。"
-            f"结尾必须包含：{RISK_DISCLAIMER}"
+            "你是用户的盘中盯盘搭档。像正常对话一样，先回答用户此刻问的事。"
+            "chat_context、盘中观察、连续性上下文和保存推演都是事实材料，不是固定模板。"
+            "如果盘中新价、MACD或触发状态改变了上一轮看法，直接说变化在哪里。"
+            "默认短答；用户要求详细时再解释逻辑。"
+            f"{RISK_DISCLAIMER}。"
         )
     try:
         from server.services.llm_service import AIModelRoute, LLMService
@@ -610,11 +611,11 @@ def _build_ai_answer_from_full_reasoning(
                 _json(prompt),
                 user_id=user_id,
                 model_route=AIModelRoute(
-                    model_name="deepseek-v4-flash" if is_unified else "",
-                    thinking_enabled=False if is_unified else True,
+                    model_name="deepseek-v4-flash",
+                    thinking_enabled=False,
                     reasoning_effort="high",
-                    timeout_seconds=45 if is_unified else max(float(AI_NATIVE_LLM_TIMEOUT), 150),
-                    max_tokens=700 if is_unified else 2400,
+                    timeout_seconds=45,
+                    max_tokens=700,
                 ),
             )
         )
