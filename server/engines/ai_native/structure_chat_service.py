@@ -83,13 +83,16 @@ def answer_structure_question(
         raise ValueError("evidence ids do not belong to context")
     runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
     intraday_observation = _chat_intraday_observation(canonical)
+    chat_current_price = _chat_current_price(runtime_context, intraday_observation)
     reasoning_continuity_context = build_reasoning_continuity_context(
         user_id=user_id,
         symbol=canonical,
-        current_price=_num(runtime_context.get("current_price")),
+        current_price=chat_current_price,
         intraday_observation=intraday_observation,
         prompt_versions=ALL_UNIFIED_FULL_TEXT_VERSIONS,
     )
+    runtime_context["chat_current_price"] = chat_current_price
+    runtime_context["chat_current_price_source"] = "intraday_quote" if _num((intraday_observation.get("quote") or {}).get("price")) > 0 else runtime_context.get("price_source")
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
@@ -417,6 +420,7 @@ def get_recent_conversation_context(*, user_id: int, session_id: str, limit: int
             "context_id": item.get("context_id") or "",
             "message_id": item.get("message_id") or "",
             "evidence_refs": item.get("evidence_refs") or [],
+            "answer_excerpt": _clip_text(str((item.get("answer") or {}).get("coach_answer") or ""), 220),
         }
         for item in recent
     ]
@@ -522,11 +526,20 @@ def _build_ai_answer_from_full_reasoning(
     }
     if is_unified:
         wants_detail = _wants_detailed_chat_answer(question)
+        chat_context = _build_chat_context_pack(
+            question=question,
+            intent_type=intent_type,
+            intraday_observation=intraday_observation or {},
+            reasoning_continuity_context=reasoning_continuity_context or {},
+            conversation_context=conversation_context or {},
+            runtime_context=runtime_context or {},
+        )
         prompt = {
             "version": "unified_reasoning_chat.v1",
             "chat_style": "intraday_companion",
             "symbol": symbol,
             "question": question,
+            "chat_context": chat_context,
             "full_reasoning_excerpt": _clip_text(full_text, 3200),
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
             "intraday_observation": intraday_observation or {},
@@ -538,23 +551,16 @@ def _build_ai_answer_from_full_reasoning(
             "chart_focus": chart_focus,
             "answer_contract": {
                 "mode": "detailed" if wants_detail else "concise",
-                "first_priority": "先直接回应用户这句话，不要先复述完整推演。",
-                "default_length": "3-6句" if not wants_detail else "可分段解释，但只展开和问题有关的证据。",
-                "format": "默认自然对话；除非用户要求详细、展开、列表，否则不要标题、编号、固定三段式。",
-                "use_context": "完整推演只是背景锚点；盘中观察、用户补充和连续性上下文可以修正当前判断。",
-                "when_user_corrects": "如果用户指出MACD、量能、价格等新事实，先判断这个事实是否改变推演，再给修正后的看法。",
-                "price_levels": "只提和当前问题有关的关键位，不要把所有压力支撑都列出来。",
+                "preference": "像盘中搭档一样回答当前这句话；默认短，用户要求详细再展开。",
+                "context_priority": "chat_context 是当前事实摘要；完整推演只是背景锚点。",
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
         system_prompt = (
-            "你是用户的盘中盯盘搭档，不是报告生成器。"
-            "先接住用户这句话，再结合完整推演摘要、连续性上下文、盘中观察和持仓给判断。"
-            "默认像正常对话一样短答，不要固定标题、编号或三段式；用户要求详细解释时再展开。"
-            "如果用户补充或纠正盘中事实，先判断它是否影响原推演，成立就直接修正观点。"
-            "intraday_observation 是盘中预览事实，FORMING bar 可能漂移；请自行权衡 source、as_of、coverage。"
-            "reasoning_continuity_context 是上一轮推演、触发状态、近期问答和历史结果的事实集合，不是规则。"
-            "动作表达使用“观察、考虑、关注、防守思路”等口径，不写成交易命令。"
+            "你是用户的盘中盯盘搭档。像正常对话一样，先回答用户此刻问的事。"
+            "chat_context、盘中观察、连续性上下文和完整推演都是事实材料，不是固定模板。"
+            "如果盘中新价、MACD或触发状态改变了上一轮看法，直接说变化在哪里。"
+            "默认短答；用户要求详细时再解释逻辑。"
             f"{RISK_DISCLAIMER}。"
         )
     else:
@@ -940,6 +946,111 @@ def _chat_intraday_observation(symbol: str) -> dict[str, Any]:
         return asyncio.run(get_intraday_observation(symbol))
     except Exception:
         return {}
+
+
+def _chat_current_price(runtime_context: dict[str, Any], intraday_observation: dict[str, Any]) -> float:
+    quote_price = _num((intraday_observation.get("quote") or {}).get("price"))
+    if quote_price > 0:
+        return quote_price
+    for key in ("chat_current_price", "current_price"):
+        value = _num(runtime_context.get(key))
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _build_chat_context_pack(
+    *,
+    question: str,
+    intent_type: str,
+    intraday_observation: dict[str, Any],
+    reasoning_continuity_context: dict[str, Any],
+    conversation_context: dict[str, Any],
+    runtime_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Compact facts for the short-answer LLM, shaped for conversation."""
+    triggers = reasoning_continuity_context.get("trigger_status_since_last_run") or []
+    return {
+        "version": "ai_structure_chat_context.v1",
+        "question": {
+            "text": question,
+            "intent_type": intent_type,
+            "wants_detail": _wants_detailed_chat_answer(question),
+        },
+        "live_tape": _chat_live_tape(intraday_observation, runtime_context),
+        "trigger_state": _chat_trigger_state(triggers),
+        "recent_dialogue": _chat_recent_dialogue(conversation_context),
+    }
+
+
+def _chat_live_tape(intraday_observation: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    quote = intraday_observation.get("quote") or {}
+    levels = intraday_observation.get("levels") or {}
+    return {
+        "as_of": intraday_observation.get("as_of") or "",
+        "source": intraday_observation.get("source") or "",
+        "usage": intraday_observation.get("usage") or "",
+        "coverage": intraday_observation.get("coverage") or {},
+        "price": _chat_current_price(runtime_context, intraday_observation),
+        "price_source": "intraday_quote" if _num(quote.get("price")) > 0 else runtime_context.get("price_source") or "",
+        "change_pct": quote.get("change_pct"),
+        "levels": {
+            key: _chat_level_tape(value)
+            for key, value in levels.items()
+            if key in {"1m", "5m", "30m"} and isinstance(value, dict)
+        },
+    }
+
+
+def _chat_level_tape(level: dict[str, Any]) -> dict[str, Any]:
+    closed = level.get("macd_closed_only") or {}
+    forming = level.get("macd_with_forming") or {}
+    return {
+        "last_bar_at": level.get("last_bar_at") or "",
+        "last_bar_status": level.get("last_bar_status") or "",
+        "last_close": _num(level.get("last_close")),
+        "intraday_bar_count": int(_num(level.get("intraday_bar_count"))),
+        "closed_only": {
+            "basis": closed.get("basis") or "closed_only",
+            "macd_state": closed.get("macd_state") or "unknown",
+            "macd_momentum": closed.get("macd_momentum") or "unknown",
+            "volume_state": closed.get("volume_state") or "unknown",
+            "ma_posture": closed.get("ma_posture") or "unknown",
+        },
+        "with_forming": {
+            "basis": forming.get("basis") or "with_forming",
+            "macd_state": forming.get("macd_state") or "unknown",
+            "macd_momentum": forming.get("macd_momentum") or "unknown",
+            "volume_state": forming.get("volume_state") or "unknown",
+            "ma_posture": forming.get("ma_posture") or "unknown",
+        },
+    }
+
+
+def _chat_trigger_state(triggers: list[dict[str, Any]]) -> dict[str, Any]:
+    items = [item for item in triggers if isinstance(item, dict)]
+    crossed = [item for item in items if item.get("status") == "crossed"]
+    nearest = sorted(
+        items,
+        key=lambda item: abs(_num(item.get("distance_pct"))) if item.get("distance_pct") is not None else 9999,
+    )
+    return {
+        "crossed": crossed[:3],
+        "nearest": nearest[:4],
+    }
+
+
+def _chat_recent_dialogue(conversation_context: dict[str, Any]) -> list[dict[str, Any]]:
+    turns = conversation_context.get("recent_turns") or []
+    return [
+        {
+            "question_text": item.get("question_text") or "",
+            "intent_type": item.get("intent_type") or "",
+            "answer_excerpt": item.get("answer_excerpt") or "",
+        }
+        for item in turns[-3:]
+        if item.get("question_text")
+    ]
 
 
 def _freshness_note(data_status: dict[str, Any] | None) -> str:
