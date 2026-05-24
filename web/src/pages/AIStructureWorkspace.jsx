@@ -20,6 +20,7 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
   const watchlistRef = useRef(null)
   const symbol = activeSymbol ?? localSymbol
   const symbolName = activeSymbolName ?? localName
+  const hasSymbol = Boolean(symbol)
   const workspaceBySymbol = useMemo(() => {
     const map = new Map()
     ;(workspace?.symbols || []).forEach((item) => {
@@ -103,8 +104,8 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
             <StockSearch onSelect={handleSelect} />
           </div>
           <div className="ai-workspace-symbol">
-            <strong>{symbolName}</strong>
-            <span>{symbol}</span>
+            <strong>{hasSymbol ? symbolName : '请选择标的'}</strong>
+            <span>{hasSymbol ? symbol : '从左侧列表或搜索框选择'}</span>
           </div>
           <div className="ai-workspace-bootstrap">
             <span>{workspaceLoading ? 'AI池刷新中' : `AI池 ${workspace?.universe?.length || 0} 只`}</span>
@@ -115,24 +116,31 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
           </div>
         </div>
 
-        <div className="ai-workspace-body">
-          <PriceEvidenceView
-            symbol={symbol}
-            symbolName={symbolName}
-            chartContext={aiEvidenceContext}
-            onAddToWatchlist={handleAddCurrentToWatchlist}
-          />
-          <aside className="ai-workspace-coach">
-            <AIStructureCoachPanel
+        {hasSymbol ? (
+          <div className="ai-workspace-body">
+            <PriceEvidenceView
               symbol={symbol}
               symbolName={symbolName}
-              workspaceSymbolState={activeWorkspaceState}
-              workspaceLoading={workspaceLoading}
-              onWorkspaceRefresh={loadWorkspace}
-              onEvidenceContext={setAiEvidenceContext}
+              chartContext={aiEvidenceContext}
+              onAddToWatchlist={handleAddCurrentToWatchlist}
             />
-          </aside>
-        </div>
+            <aside className="ai-workspace-coach">
+              <AIStructureCoachPanel
+                symbol={symbol}
+                symbolName={symbolName}
+                workspaceSymbolState={activeWorkspaceState}
+                workspaceLoading={workspaceLoading}
+                onWorkspaceRefresh={loadWorkspace}
+                onEvidenceContext={setAiEvidenceContext}
+              />
+            </aside>
+          </div>
+        ) : (
+          <div className="ai-workspace-empty-state">
+            <strong>还没有选中股票</strong>
+            <span>系统会优先从你的持仓、重仓、观察和自选列表中自动进入第一只标的。</span>
+          </div>
+        )}
       </section>
     </div>
   )

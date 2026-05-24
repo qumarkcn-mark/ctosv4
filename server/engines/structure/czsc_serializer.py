@@ -136,20 +136,21 @@ def _serialize_ubi(czsc_obj: Any) -> dict[str, Any] | None:
     if not start_price or not start_dt:
         return None
 
-    # 终点：未完成，取当前极值
-    high = _num(ubi.get("high", 0))
-    low = _num(ubi.get("low", 0))
+    # 终点：未完成，取 fx_a 之后的当前方向极值。
+    # CZSC ubi.raw_bars 可能包含 fx_a 之前的候选 K 线，ubi.high/low 也会覆盖这段范围；
+    # 若直接使用会把未完成笔画到起点之前。
+    raw_bars = ubi.get("raw_bars") or []
+    directional_bars = _ubi_directional_bars(raw_bars, start_dt)
+    high = _max_bar_value(directional_bars, "high", fallback=_num(ubi.get("high", 0)))
+    low = _min_bar_value(directional_bars, "low", fallback=_num(ubi.get("low", 0)))
     end_price = high if is_up else low
 
     # raw_bars 数量作为 bar_count
-    raw_bars = ubi.get("raw_bars") or []
-    bar_count = len(raw_bars) if isinstance(raw_bars, list) else 0
+    bar_count = len(directional_bars) if directional_bars else (len(raw_bars) if isinstance(raw_bars, list) else 0)
 
-    # 终点时间：取最后一根 bar 的时间
-    end_dt = ""
-    if raw_bars and isinstance(raw_bars, list):
-        last_bar = raw_bars[-1]
-        end_dt = _dt(getattr(last_bar, "dt", "")) if hasattr(last_bar, "dt") else ""
+    # 终点时间：取当前极值所在 K 线，而不是最后一根 K 线。
+    # 未完成笔可以在盘中先打出极值再回拉；若时间落到最后一根，会把虚线画歪。
+    end_dt = _ubi_extreme_dt(raw_bars, end_price, is_up)
 
     if end_price <= 0:
         return None
@@ -170,6 +171,42 @@ def _serialize_ubi(czsc_obj: Any) -> dict[str, Any] | None:
         "source": "czsc_ubi",
         "status": "ongoing",
     }
+
+
+def _ubi_directional_bars(raw_bars: Any, start_dt: str) -> list[Any]:
+    if not raw_bars or not isinstance(raw_bars, list):
+        return []
+    start_key = str(start_dt or "")
+    return [
+        item
+        for item in raw_bars
+        if _dt(getattr(item, "dt", "")) >= start_key
+    ]
+
+
+def _max_bar_value(raw_bars: list[Any], field: str, *, fallback: float) -> float:
+    values = [_num(getattr(item, field, 0)) for item in raw_bars]
+    values = [item for item in values if item > 0]
+    return max(values) if values else fallback
+
+
+def _min_bar_value(raw_bars: list[Any], field: str, *, fallback: float) -> float:
+    values = [_num(getattr(item, field, 0)) for item in raw_bars]
+    values = [item for item in values if item > 0]
+    return min(values) if values else fallback
+
+
+def _ubi_extreme_dt(raw_bars: Any, end_price: float, is_up: bool) -> str:
+    if not raw_bars or not isinstance(raw_bars, list):
+        return ""
+    field = "high" if is_up else "low"
+    candidates = [
+        item
+        for item in raw_bars
+        if abs(_num(getattr(item, field, 0)) - float(end_price or 0)) < 1e-8
+    ]
+    bar = candidates[-1] if candidates else raw_bars[-1]
+    return _dt(getattr(bar, "dt", "")) if hasattr(bar, "dt") else ""
 
 
 def _serialize_segments(czsc_obj: Any, bis: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:

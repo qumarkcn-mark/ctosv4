@@ -11,8 +11,11 @@ from server.api import data as data_api
 from server.services import tdx_minute_service
 from server.services.tdx_minute_service import (
     RECORD_FMT,
+    aggregate_tdx_1m_klines,
     encode_lc1_date,
     read_tdx_1m_klines,
+    read_tdx_5m_klines,
+    read_tdx_derived_minute_klines,
     resolve_tdx_minute_vipdoc,
     tdx_minute_file_path,
     tdx_minute_status,
@@ -44,6 +47,12 @@ def test_tdx_minute_file_path_uses_minline_lc1(tmp_path):
     path = tdx_minute_file_path("sh.600519", vipdoc=str(tmp_path))
 
     assert path.endswith("sh/minline/sh600519.lc1")
+
+
+def test_tdx_minute_file_path_uses_fzline_lc5(tmp_path):
+    path = tdx_minute_file_path("sh.600519", vipdoc=str(tmp_path), freq="5")
+
+    assert path.endswith("sh/fzline/sh600519.lc5")
 
 
 def test_resolve_tdx_minute_vipdoc_accepts_tdx_root_with_nested_vipdoc(tmp_path):
@@ -132,9 +141,93 @@ def test_read_tdx_1m_klines_returns_empty_on_mount_io_error(tmp_path, monkeypatc
     def raise_os_error(*args, **kwargs):
         raise OSError("Input/output error")
 
-    monkeypatch.setattr(tdx_minute_service, "_read_lc1_tail", raise_os_error)
+    monkeypatch.setattr(tdx_minute_service, "_read_minute_tail", raise_os_error)
 
     assert read_tdx_1m_klines("sh600519", vipdoc=str(tmp_path), limit=10) == []
+
+
+def test_read_tdx_5m_klines_parses_lc5_records(tmp_path):
+    file_path = tmp_path / "sh" / "fzline" / "sh600519.lc5"
+    write_lc1(
+        file_path,
+        [
+            lc1_row(2026, 5, 22, 9, 35, 10, 10.2, 9.9, 10.1),
+            lc1_row(2026, 5, 22, 9, 40, 10.1, 10.4, 10.0, 10.3),
+        ],
+    )
+
+    rows = read_tdx_5m_klines("sh600519", vipdoc=str(tmp_path), limit=10)
+
+    assert [row["date"] for row in rows] == ["2026-05-22 09:35:00", "2026-05-22 09:40:00"]
+    assert rows[0]["freq"] == "5"
+    assert rows[0]["source"] == "tdx_local_5m"
+
+
+def test_aggregate_tdx_1m_klines_builds_30m_bar_with_czsc_end_time(tmp_path):
+    file_path = tmp_path / "sz" / "minline" / "sz301078.lc1"
+    write_lc1(
+        file_path,
+        [
+            lc1_row(2026, 5, 22, 9, 31, 10, 10.2, 9.9, 10.1, amount=1000, volume=100),
+            lc1_row(2026, 5, 22, 9, 32, 10.1, 10.4, 10.0, 10.3, amount=2000, volume=200),
+            lc1_row(2026, 5, 22, 9, 33, 10.3, 10.5, 10.2, 10.4, amount=3000, volume=300),
+        ],
+    )
+
+    one_minute_rows = read_tdx_1m_klines("sz301078", vipdoc=str(tmp_path), limit=10)
+    rows = aggregate_tdx_1m_klines(one_minute_rows, "30")
+
+    assert rows == [
+        {
+            "symbol": "sz.301078",
+            "freq": "30",
+            "date": "2026-05-22 10:00:00",
+            "open": 10.0,
+            "high": 10.5,
+            "low": 9.9,
+            "close": 10.4,
+            "volume": 600.0,
+            "amount": 6000.0,
+            "adjustflag": "3",
+            "bar_status": "CLOSED",
+            "source": "tdx_local_1m_aggregation",
+        }
+    ]
+
+
+def test_read_tdx_derived_minute_klines_reads_lc5_for_5m(tmp_path):
+    file_path = tmp_path / "sz" / "fzline" / "sz301078.lc5"
+    write_lc1(
+        file_path,
+        [
+            lc1_row(2026, 5, 22, 9, 35, 10, 10.2, 9.9, 10.1),
+            lc1_row(2026, 5, 22, 9, 40, 10.1, 10.4, 10.0, 10.3),
+        ],
+    )
+
+    rows = read_tdx_derived_minute_klines("sz301078", "5", vipdoc=str(tmp_path), limit=10)
+
+    assert len(rows) == 2
+    assert rows[0]["freq"] == "5"
+    assert rows[0]["date"] == "2026-05-22 09:35:00"
+
+
+def test_read_tdx_derived_minute_klines_derives_30m_from_lc5(tmp_path):
+    file_path = tmp_path / "sz" / "fzline" / "sz301078.lc5"
+    write_lc1(
+        file_path,
+        [
+            lc1_row(2026, 5, 22, 9, 35, 10, 10.2, 9.9, 10.1),
+            lc1_row(2026, 5, 22, 9, 40, 10.1, 10.4, 10.0, 10.3),
+        ],
+    )
+
+    rows = read_tdx_derived_minute_klines("sz301078", "30", vipdoc=str(tmp_path), limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["freq"] == "30"
+    assert rows[0]["date"] == "2026-05-22 10:00:00"
+    assert rows[0]["source"] == "tdx_local_5m_aggregation"
 
 
 def test_tdx_minute_api_uses_display_replay_only_contract(monkeypatch):

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
 import ReviewTrainingPage from './pages/ReviewTrainingPage.jsx'
 import AIStructureWorkspace from './pages/AIStructureWorkspace.jsx'
 import WatchBoard from './pages/WatchBoard.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
+import { apiFetch } from './api/client.js'
 import { normalizeSymbolInput, readLastViewedSymbol } from './utils/symbolStorage.js'
 import './App.css'
 
@@ -19,6 +20,8 @@ const PAGE_PATHS = {
   review: '/review',
 }
 
+const INITIAL_GROUP_PRIORITY = ['持仓', '重仓', '观察', '自选']
+
 function pageFromPath(pathname) {
   const clean = String(pathname || '').replace(/\/+$/, '') || '/'
   if (clean === '/watchboard') return 'watchboard'
@@ -31,6 +34,21 @@ function pageFromPath(pathname) {
 function normalizePage(page) {
   const nextPage = PAGE_ALIASES[page] || page || 'ai'
   return VALID_PAGES.has(nextPage) ? nextPage : 'ai'
+}
+
+function pickInitialWatchSymbol(groups) {
+  const normalizedGroups = Array.isArray(groups) ? groups : []
+  const byName = new Map(normalizedGroups.map((group) => [group.name, group]))
+  const orderedGroups = [
+    ...INITIAL_GROUP_PRIORITY.map((name) => byName.get(name)).filter(Boolean),
+    ...normalizedGroups.filter((group) => !INITIAL_GROUP_PRIORITY.includes(group.name)),
+  ]
+
+  for (const group of orderedGroups) {
+    const stock = (group?.stocks || []).find((item) => item?.symbol)
+    if (stock) return stock
+  }
+  return null
 }
 
 function App() {
@@ -46,14 +64,44 @@ function App() {
   const [activeSymbolName, setActiveSymbolName] = useState(
     () => readLastViewedSymbol().name
   )
+  const activeSymbolRef = useRef(activeSymbol)
 
-  const setGlobalSymbol = (symbol, name) => {
+  useEffect(() => {
+    activeSymbolRef.current = activeSymbol
+  }, [activeSymbol])
+
+  const setGlobalSymbol = useCallback((symbol, name) => {
     const next = normalizeSymbolInput(symbol, name)
+    if (!next.symbol) return
     setActiveSymbol(next.symbol)
     setActiveSymbolName(next.name)
     localStorage.setItem('lastViewedSymbol', next.symbol)
     localStorage.setItem('lastViewedSymbolName', next.name)
-  }
+  }, [])
+
+  useEffect(() => {
+    if (activeSymbolRef.current) return
+    let cancelled = false
+
+    async function bootstrapInitialSymbol() {
+      try {
+        const response = await apiFetch('/api/watchlist')
+        if (!response.ok) return
+        const groups = await response.json()
+        const stock = pickInitialWatchSymbol(groups)
+        if (!cancelled && stock?.symbol && !activeSymbolRef.current) {
+          setGlobalSymbol(stock.symbol, stock.name || stock.symbol)
+        }
+      } catch (err) {
+        console.warn('初始化股票选择失败:', err)
+      }
+    }
+
+    void bootstrapInitialSymbol()
+    return () => {
+      cancelled = true
+    }
+  }, [setGlobalSymbol])
 
   // ─── 跨板块「去看盘」跳转 ───────────────────────────────
   const handleViewInAI = (symbol, name) => {

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS klines (
     volume   REAL    DEFAULT 0,
     amount   REAL    DEFAULT 0,
     adjustflag TEXT  DEFAULT '3', -- 1=后复权 2=前复权 3=不复权
-    UNIQUE(symbol, freq, date)
+    UNIQUE(symbol, freq, date, adjustflag)
 );
 
 -- 同步元信息表：记录每只股票每个级别最后一次同步的时间
@@ -180,6 +180,7 @@ def init_lake():
         conn = get_lake_write_connection(source)
         try:
             conn.executescript(LAKE_SCHEMA)
+            _ensure_adjustflag_unique_key(conn)
             conn.commit()
         finally:
             conn.close()
@@ -258,6 +259,50 @@ def _maybe_migrate_legacy_lake() -> None:
     finally:
         tdx_conn.close()
         bao_conn.close()
+
+
+def _ensure_adjustflag_unique_key(conn: sqlite3.Connection) -> None:
+    """Migrate old lake schema so raw and qfq rows can coexist."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='klines'"
+    ).fetchone()
+    table_sql = str(row[0] if row else "")
+    normalized = table_sql.replace(" ", "").lower()
+    if "unique(symbol,freq,date,adjustflag)" in normalized:
+        return
+    if "unique(symbol,freq,date)" not in normalized:
+        return
+
+    logger.warning("K线数据湖 schema 升级：klines 唯一键加入 adjustflag")
+    conn.execute("ALTER TABLE klines RENAME TO klines_old")
+    conn.execute(
+        """
+        CREATE TABLE klines (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol   TEXT    NOT NULL,
+            freq     TEXT    NOT NULL,
+            date     TEXT    NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    DEFAULT 0,
+            amount   REAL    DEFAULT 0,
+            adjustflag TEXT  DEFAULT '3',
+            UNIQUE(symbol, freq, date, adjustflag)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO klines
+            (id, symbol, freq, date, open, high, low, close, volume, amount, adjustflag)
+        SELECT id, symbol, freq, date, open, high, low, close, volume, amount, adjustflag
+          FROM klines_old
+        """
+    )
+    conn.execute("DROP TABLE klines_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_klines_symbol_freq_date ON klines(symbol, freq, date)")
 
 
 def _lake_row_count(source: LakeSource) -> int:

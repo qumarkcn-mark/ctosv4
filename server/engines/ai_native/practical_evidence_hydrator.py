@@ -137,6 +137,14 @@ def _divergence_evidence(
         "macd_area_ratio": area_ratio,
         "volume_ratio": volume_ratio,
         "hint": hint,
+        "impulse_exhaustion_context": _impulse_exhaustion_context(
+            direction=direction,
+            hint=hint,
+            area_ratio=area_ratio,
+            volume_ratio=volume_ratio,
+            current_volume=current_volume,
+            previous_volume=previous_volume,
+        ),
     }
 
 
@@ -201,6 +209,50 @@ def _interaction_item(current_price: float, cluster: dict[str, Any] | None, expe
         "source_levels": cluster.get("source_levels") or [],
         "status": cluster.get("status") or "",
         "semantic": cluster.get("semantic") or "",
+    }
+
+
+def _impulse_exhaustion_context(
+    *,
+    direction: str,
+    hint: str,
+    area_ratio: float | None,
+    volume_ratio: float | None,
+    current_volume: float,
+    previous_volume: float,
+) -> dict[str, Any]:
+    if direction == "down":
+        prior_impulse = "high_volume_selloff" if previous_volume > 0 and current_volume / previous_volume >= 1.2 else "moderate"
+        current_relief = "low_volume" if volume_ratio is not None and volume_ratio < 0.9 else "increasing" if volume_ratio and volume_ratio > 1.1 else "unknown"
+        if hint == "bullish_divergence_risk":
+            exhaustion_reading = "post_flush_relief" if prior_impulse == "high_volume_selloff" else "downside_force_weakening"
+        elif hint == "force_confirmed":
+            exhaustion_reading = "mid_impulse"
+        else:
+            exhaustion_reading = "unknown"
+    elif direction == "up":
+        prior_impulse = "upside_extension"
+        current_relief = "low_volume_or_weakening" if (area_ratio is not None and area_ratio < 0.85) or (volume_ratio is not None and volume_ratio < 0.9) else "force_confirming"
+        if hint in {"bearish_divergence_risk", "no_new_extreme"} or current_relief == "low_volume_or_weakening":
+            exhaustion_reading = "upside_fatigue_or_high_level_digesting"
+        else:
+            exhaustion_reading = "upside_force_confirming"
+    else:
+        prior_impulse = "unknown"
+        current_relief = "unknown"
+        exhaustion_reading = "unknown"
+    return {
+        "prior_impulse": prior_impulse,
+        "current_relief": current_relief,
+        "exhaustion_reading": exhaustion_reading,
+        "evidence": [
+            f"direction={direction}",
+            f"macd_area_ratio={area_ratio}",
+            f"volume_ratio={volume_ratio}",
+            f"current_volume={round(current_volume, 2) if current_volume else 0}",
+            f"previous_volume={round(previous_volume, 2) if previous_volume else 0}",
+        ],
+        "note": "描述当前同向笔的动能释放上下文，不作为交易结论。",
     }
 
 

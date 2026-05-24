@@ -1,7 +1,7 @@
 """Public CZSC structure view for Kline overlays.
 
-This service is read-only. It consumes persisted V5 CZSC snapshots and never
-invokes the structure engine inline.
+This service is read-only. Snapshot views consume persisted V5 CZSC snapshots;
+preview views can pass a live CZSC payload without persisting it.
 """
 
 from __future__ import annotations
@@ -36,14 +36,55 @@ def get_structure_view(
         return None
 
     snapshot = snapshot_row.get("snapshot") or {}
+    return build_structure_view_from_snapshot_payload(
+        symbol=canonical,
+        level=normalized_level,
+        snapshot=snapshot,
+        count=count,
+        mode="snapshot",
+        persisted=True,
+        snapshot_id=snapshot_row["snapshot_id"],
+        engine=snapshot_row.get("engine") or "czsc",
+        engine_version=snapshot_row.get("engine_version") or "",
+        adapter_version=snapshot_row.get("adapter_version") or "",
+        compute_profile=snapshot_row.get("compute_profile") or compute_profile,
+        data_signature=snapshot_row.get("data_signature") or "",
+        data_as_of=snapshot_row.get("data_as_of") or "",
+        updated_at=snapshot_row.get("updated_at") or "",
+        status=snapshot_row.get("status") or "fresh",
+    )
+
+
+def build_structure_view_from_snapshot_payload(
+    *,
+    symbol: str,
+    level: str,
+    snapshot: dict[str, Any],
+    count: int = 1200,
+    mode: str = "snapshot",
+    persisted: bool = True,
+    snapshot_id: str = "",
+    engine: str = "czsc",
+    engine_version: str = "",
+    adapter_version: str = "",
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE,
+    data_signature: str = "",
+    data_as_of: str = "",
+    updated_at: str = "",
+    status: str = "fresh",
+) -> dict[str, Any] | None:
+    """Return chart-ready structure geometry from a CZSC snapshot-like payload."""
+    canonical = normalize_symbol(symbol)
+    normalized_level = normalize_freq(level)
     klines = list(snapshot.get("klines") or [])
     if count > 0:
         klines = klines[-count:]
     time_axis = _build_time_axis(klines)
+    view_id = snapshot_id or f"{canonical}:{normalized_level}:{mode}:{data_signature or data_as_of or 'live'}"
 
     raw_bis, raw_unfinished_bi = _split_confirmed_and_unfinished_bis(snapshot)
     bis = [
-        _normalize_bi(item, index=index, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
+        _normalize_bi(item, index=index, time_axis=time_axis, snapshot_id=view_id)
         for index, item in enumerate(raw_bis)
         if isinstance(item, dict)
     ]
@@ -53,7 +94,7 @@ def get_structure_view(
             raw_unfinished_bi,
             index=len(raw_bis),
             time_axis=time_axis,
-            snapshot_id=snapshot_row["snapshot_id"],
+            snapshot_id=view_id,
         )
     centers = [
         _normalize_center(
@@ -62,7 +103,7 @@ def get_structure_view(
             time_axis=time_axis,
             klines=klines,
             bis=bis,
-            snapshot_id=snapshot_row["snapshot_id"],
+            snapshot_id=view_id,
             active=False,
         )
         for index, item in enumerate(snapshot.get("bi_zhongshus") or [])
@@ -76,29 +117,33 @@ def get_structure_view(
             time_axis=time_axis,
             klines=klines,
             bis=bis,
-            snapshot_id=snapshot_row["snapshot_id"],
+            snapshot_id=view_id,
             active=True,
         )
         if candidate_active_center and candidate_active_center.get("exit_status") == "open":
             active_center = candidate_active_center
             centers = _mark_active_center(centers, active_center)
-    segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=snapshot_row["snapshot_id"])
+    segments = _normalize_segments(snapshot, time_axis=time_axis, snapshot_id=view_id)
     unsupported_fields = _unsupported_fields(snapshot)
     segment_source = _segment_source(snapshot, segments)
 
     return {
         "version": "structure_view.v1",
+        "mode": mode,
+        "persisted": bool(persisted),
+        "usage": "chart_overlay_only" if mode == "preview" else "persisted_snapshot",
         "symbol": canonical,
         "level": normalized_level,
-        "engine": snapshot_row.get("engine") or "czsc",
-        "engine_version": snapshot_row.get("engine_version") or "",
-        "adapter_version": snapshot_row.get("adapter_version") or "",
-        "compute_profile": snapshot_row.get("compute_profile") or compute_profile,
-        "snapshot_id": snapshot_row["snapshot_id"],
-        "data_signature": snapshot_row.get("data_signature") or "",
-        "data_as_of": snapshot_row.get("data_as_of") or "",
-        "updated_at": snapshot_row.get("updated_at") or "",
-        "status": snapshot_row.get("status") or "fresh",
+        "engine": engine,
+        "engine_version": engine_version,
+        "adapter_version": adapter_version,
+        "compute_profile": compute_profile,
+        "snapshot_id": snapshot_id,
+        "data_signature": data_signature,
+        "data_as_of": data_as_of,
+        "updated_at": updated_at,
+        "status": status,
+        "source": snapshot.get("source") or {},
         "price": _num(snapshot.get("price")),
         "capabilities": {
             "bis": bool([item for item in bis if item]),

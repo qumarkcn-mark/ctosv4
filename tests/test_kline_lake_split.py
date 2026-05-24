@@ -50,6 +50,18 @@ def test_day_adjustflag_3_reads_tdx_lake_by_default(monkeypatch, tmp_path):
     assert rows[0]["close"] == 10.5
 
 
+def test_lake_stores_raw_and_qfq_same_bar_side_by_side(monkeypatch, tmp_path):
+    reset_lake_paths(monkeypatch, tmp_path)
+
+    raw = [{"date": "2026-05-22", "open": 10, "high": 11, "low": 9, "close": 10}]
+    qfq = [{"date": "2026-05-22", "open": 5, "high": 5.5, "low": 4.5, "close": 5}]
+    kline_lake.upsert_klines("sh.600790", "day", raw, adjustflag="3", source="tdx")
+    kline_lake.upsert_klines("sh.600790", "day", qfq, adjustflag="2", source="tdx")
+
+    assert kline_lake.query_klines("sh.600790", "day", adjustflag="3", source="tdx")[0]["close"] == 10
+    assert kline_lake.query_klines("sh.600790", "day", adjustflag="2", source="tdx")[0]["close"] == 5
+
+
 def test_baostock_writes_do_not_pollute_tdx_lake(monkeypatch, tmp_path):
     reset_lake_paths(monkeypatch, tmp_path)
 

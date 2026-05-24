@@ -71,6 +71,49 @@ def test_context_prewarm_enqueues_without_structure_compute(monkeypatch, tmp_pat
     assert result["items"][0]["source_snapshot_ids"] == [snap["snapshot_id"]]
 
 
+def test_context_prewarm_auto_disabled_skips_enqueue(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    snap = save_snapshot()
+    monkeypatch.setattr(context_service.config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", False)
+
+    result = context_service.prewarm_ai_structure_contexts(
+        user_id=1,
+        symbols=["sh600519"],
+        levels=["5"],
+        reason="kline_sync_universe",
+        allow_when_auto_disabled=False,
+    )
+
+    assert result["count"] == 1
+    assert result["items"][0]["status"] == "skipped"
+    assert result["items"][0]["reason"] == "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_DISABLED"
+    assert result["items"][0]["source_snapshot_ids"] == [snap["snapshot_id"]]
+    conn = database.get_connection()
+    try:
+        count = conn.execute("SELECT COUNT(*) AS c FROM ai_structure_context_jobs").fetchone()["c"]
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_context_prewarm_manual_still_enqueues_when_auto_disabled(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    ensure_user()
+    snap = save_snapshot()
+    monkeypatch.setattr(context_service.config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", False)
+
+    result = context_service.prewarm_ai_structure_contexts(
+        user_id=1,
+        symbols=["sh600519"],
+        levels=["5"],
+        reason="manual_context_prewarm",
+    )
+
+    assert result["items"][0]["status"] == "PENDING"
+    assert result["items"][0]["source_snapshot_ids"] == [snap["snapshot_id"]]
+
+
 def test_context_worker_creates_user_context_and_branches(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     snap = save_snapshot()

@@ -32,19 +32,27 @@ def resolve_structure_source_policy(
     freq = normalize_freq(level)
     candidates = []
     tdx_candidate = None
+    tdx_candidates = []
     if prefer_tdx_native and freq in TDX_NATIVE_LEVELS:
         tdx_candidate = _candidate(canonical, freq, limit, source=TDX_NATIVE_SOURCE, adjustflag=TDX_NATIVE_ADJUSTFLAG)
-        candidates.append(tdx_candidate)
+        if freq != "day" and tdx_candidate["usable"] and not _has_tdx_day_factor(canonical):
+            tdx_candidate["usable"] = False
+            tdx_candidate["reject_reason"] = "MISSING_TDX_DAY_FACTOR"
+        if tdx_candidate["usable"] and _has_fresher_tdx_raw(canonical, freq, tdx_candidate["last_bar_at"]):
+            tdx_candidate["usable"] = False
+            tdx_candidate["reject_reason"] = "STALE_VS_TDX_RAW"
+        tdx_candidates = [tdx_candidate]
+        candidates.extend(tdx_candidates)
     fallback_candidate = _candidate(canonical, freq, limit, source=BAOSTOCK_SOURCE, adjustflag=BAOSTOCK_ADJUSTFLAG)
     candidates.append(fallback_candidate)
-    if (
-        tdx_candidate
-        and tdx_candidate["usable"]
-        and fallback_candidate["last_bar_at"]
-        and tdx_candidate["last_bar_at"] < fallback_candidate["last_bar_at"]
-    ):
-        tdx_candidate["usable"] = False
-        tdx_candidate["reject_reason"] = "STALE_VS_FALLBACK"
+    for item in tdx_candidates:
+        if (
+            item["usable"]
+            and fallback_candidate["last_bar_at"]
+            and item["last_bar_at"] < fallback_candidate["last_bar_at"]
+        ):
+            item["usable"] = False
+            item["reject_reason"] = "STALE_VS_FALLBACK"
 
     selected = next((item for item in candidates if item["usable"]), candidates[-1])
     return {
@@ -110,6 +118,26 @@ def _candidate(symbol: str, freq: str, limit: int, *, source: str, adjustflag: s
         "usable": not reason,
         "reject_reason": reason,
     }
+
+
+def _has_tdx_day_factor(symbol: str) -> bool:
+    """TDX non-day qfq data is trusted only when day/2 factor base exists.
+
+    本地 TDX 原始分钟 / 周线可能被历史任务误标为 adjustflag=2。
+    没有 day/2 复权基准时，不允许这些“孤儿 qfq”进入正式 CZSC。
+    """
+    rows = query_klines(symbol, "day", limit=1, adjustflag=TDX_NATIVE_ADJUSTFLAG, source=TDX_NATIVE_SOURCE)
+    return bool(rows)
+
+
+def _has_fresher_tdx_raw(symbol: str, freq: str, qfq_last_bar_at: str) -> bool:
+    if not qfq_last_bar_at:
+        return False
+    rows = query_klines(symbol, freq, limit=1, adjustflag="3", source=TDX_NATIVE_SOURCE)
+    if not rows:
+        return False
+    raw_last = str(rows[-1].get("date") or "")
+    return bool(raw_last and raw_last > qfq_last_bar_at)
 
 
 def _reject_reason(freq: str, rows: list[dict[str, Any]]) -> str:

@@ -75,6 +75,7 @@ chan_signal_digest 是 CZSC 原生辅助证据，不是最终裁决；若它与�
 intraday_observation 是盘中观察层，不是正式结构确认；数据里的 source、as_of、coverage、bar_status 表示事实来源和新鲜度，请自行权衡。
 reasoning_continuity_context 是上一轮推演、触发状态、用户近期观察和历史结果的事实集合，不是规则；请结合当前结构与盘中观察自行判断原推演是延续、触发、增强、减弱还是失效。
 market_task_context 是走势任务、压力语义、量能阶段和小转大观察事实，不是规则；请用它理解当前走势正在完成什么任务，但不要被它替代你的综合判断。
+market_task_context.macro_phase 是大级别阶段背景；practical_evidence.divergence_evidence.impulse_exhaustion_context 是当前同向笔的动能释放上下文。二者都是事实参考，不是结论规则。
 
 仅供参考，不构成投资建议。"""
 

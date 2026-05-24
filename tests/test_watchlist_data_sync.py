@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from datetime import date, datetime
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -87,7 +88,7 @@ def test_watchlist_stock_init_status_reports_tdx_and_snapshot_readiness(monkeypa
     def fake_query_lake(symbol, freq, **kwargs):
         assert symbol == "sh.600118"
         assert kwargs["source"] == "tdx"
-        assert kwargs["adjustflag"] == "2"
+        assert kwargs["adjustflag"] in {"2", "3"}
         if freq in {"week", "day", "30", "5"}:
             return [{"date": "2026-05-22", "close": 10}]
         return []
@@ -120,6 +121,59 @@ def test_watchlist_stock_init_status_reports_tdx_and_snapshot_readiness(monkeypa
     assert payload["ready_for_reasoning"] is True
     assert payload["kline"]["ready"] is True
     assert payload["snapshots"]["ready"] is True
+
+
+def test_watchlist_stock_init_status_falls_back_to_tdx_raw_lake(monkeypatch):
+    calls = []
+
+    def fake_query_lake(symbol, freq, **kwargs):
+        calls.append((freq, kwargs["adjustflag"], kwargs["source"]))
+        if kwargs["adjustflag"] == "2":
+            return []
+        if freq in {"week", "day", "30", "5"}:
+            return [{"date": "2026-04-30", "close": 10}]
+        return []
+
+    monkeypatch.setattr(watchlist_api, "query_lake_klines", fake_query_lake)
+    monkeypatch.setattr(watchlist_api, "get_snapshot_status_batch", lambda **_kwargs: {"sh.600036": {}})
+
+    app = FastAPI()
+    app.include_router(watchlist_api.router, prefix="/watchlist")
+    client = TestClient(app)
+
+    response = client.get("/watchlist/stocks/sh600036/init-status")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["kline"]["ready"] is True
+    day_item = next(item for item in payload["kline"]["items"] if item["freq"] == "day")
+    assert day_item["adjustflag"] == "3"
+    assert ("day", "2", "tdx") in calls
+    assert ("day", "3", "tdx") in calls
+
+
+def test_watchlist_stock_init_status_marks_raw_when_qfq_is_stale(monkeypatch):
+    def fake_query_lake(symbol, freq, **kwargs):
+        if freq != "day":
+            return [{"date": "2026-05-22", "close": 10}]
+        if kwargs["adjustflag"] == "2":
+            return [{"date": "2026-05-21", "close": 9}]
+        return [{"date": "2026-05-22", "close": 10}]
+
+    monkeypatch.setattr(watchlist_api, "query_lake_klines", fake_query_lake)
+    monkeypatch.setattr(watchlist_api, "get_snapshot_status_batch", lambda **_kwargs: {"sh.600036": {}})
+
+    app = FastAPI()
+    app.include_router(watchlist_api.router, prefix="/watchlist")
+    client = TestClient(app)
+
+    response = client.get("/watchlist/stocks/sh600036/init-status")
+    payload = response.json()
+
+    assert response.status_code == 200
+    day_item = next(item for item in payload["kline"]["items"] if item["freq"] == "day")
+    assert day_item["latest"] == "2026-05-22"
+    assert day_item["adjustflag"] == "3"
 
 
 def test_get_all_tracked_symbols_includes_watchlist(monkeypatch):
@@ -193,6 +247,148 @@ def test_daily_sync_does_not_block_later_minute_sync():
     assert worker._has_synced_scope_today("full", today) is True
 
 
+def test_kline_sync_loop_skips_startup_sync_by_default(monkeypatch):
+    calls = []
+    worker = kline_sync_worker.KlineSyncWorker()
+    worker._running = True
+
+    async def fake_do_sync(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(kline_sync_worker, "STARTUP_DELAY", 0)
+    monkeypatch.setattr(kline_sync_worker, "CHECK_INTERVAL", 3600)
+    monkeypatch.setattr(kline_sync_worker.config, "TDX_LOCAL_HISTORY_SYNC_ON_STARTUP_ENABLED", False, raising=False)
+    monkeypatch.setattr(worker, "_do_sync", fake_do_sync)
+
+    async def run_once():
+        task = asyncio.create_task(worker._sync_loop())
+        await asyncio.sleep(0.01)
+        worker._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run_once())
+
+    assert calls == []
+
+
+def test_kline_sync_loop_can_run_startup_sync_when_enabled(monkeypatch):
+    calls = []
+    worker = kline_sync_worker.KlineSyncWorker()
+    worker._running = True
+
+    async def fake_do_sync(*args, **kwargs):
+        calls.append((args, kwargs))
+        worker._running = False
+
+    monkeypatch.setattr(kline_sync_worker, "STARTUP_DELAY", 0)
+    monkeypatch.setattr(kline_sync_worker, "CHECK_INTERVAL", 3600)
+    monkeypatch.setattr(kline_sync_worker.config, "TDX_LOCAL_HISTORY_SYNC_ON_STARTUP_ENABLED", True, raising=False)
+    monkeypatch.setattr(kline_sync_worker, "_scheduled_sync_scope", lambda _now: None)
+    monkeypatch.setattr(worker, "_do_sync", fake_do_sync)
+
+    asyncio.run(worker._sync_loop())
+
+    assert len(calls) == 1
+    assert calls[0][0] == ("启动同步",)
+    assert calls[0][1]["scope"] == "daily"
+    assert calls[0][1]["mark_schedule"] is False
+
+
+def test_sync_all_symbols_uses_tdx_local_history_when_baostock_disabled(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
+    monkeypatch.setattr(kline_sync_worker.config, "TDX_LOCAL_HISTORY_SYNC_ENABLED", True)
+    monkeypatch.setattr("server.db.kline_lake.get_last_sync_date", lambda *_args, **_kwargs: None)
+    async def fake_fetch_empty(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("server.services.tdx_bridge_client.fetch_tdx_klines", fake_fetch_empty)
+    monkeypatch.setattr(
+        "server.services.tdx_daily_sync_service.read_tdx_day_klines",
+        lambda symbol, limit=5000: [{"date": "2026-05-22", "open": 9, "high": 10, "low": 8, "close": 9.5}],
+    )
+    monkeypatch.setattr(
+        "server.services.tdx_daily_sync_service.read_tdx_week_klines",
+        lambda symbol, limit=1200: [{"date": "2026-05-22", "open": 8, "high": 10, "low": 7, "close": 9.5}],
+    )
+    monkeypatch.setattr(
+        "server.services.tdx_minute_service.read_tdx_derived_minute_klines",
+        lambda symbol, freq, limit=5000: [
+            {"date": "2026-05-22 15:00:00", "open": 9, "high": 10, "low": 8, "close": 9.5}
+        ],
+    )
+    monkeypatch.setattr(
+        "server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="skipped",
+            reason="test",
+            day_factor_count=0,
+            written={},
+            missing_factor_dates={},
+            total_written=0,
+        ),
+    )
+
+    def fake_upsert(symbol, freq, rows, adjustflag="2", source="baostock"):
+        calls.append((symbol, freq, len(rows), adjustflag, source))
+        return len(rows)
+
+    monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
+
+    result = kline_sync_worker._sync_all_symbols(["sz.301078"], ["week", "day", "30"])
+
+    assert result["total_written"] == 3
+    assert ("sz.301078", "week", 1, "3", "tdx") in calls
+    assert ("sz.301078", "day", 1, "3", "tdx") in calls
+    assert ("sz.301078", "30", 1, "3", "tdx") in calls
+    assert result["changed"] == []
+
+
+def test_sync_all_symbols_imports_tdx_front_day_before_qfq_rebuild(monkeypatch):
+    from types import SimpleNamespace
+
+    upserts = []
+
+    async def fake_fetch(symbol, period="1m", count=5000, dividend_type="front", refresh=False):
+        assert period == "1d"
+        assert dividend_type == "front"
+        assert refresh is True
+        return [{"date": "2026-05-22", "open": 9, "high": 10, "low": 8, "close": 9.5}]
+
+    def fake_upsert(symbol, freq, rows, adjustflag="2", source="baostock"):
+        upserts.append((symbol, freq, len(rows), adjustflag, source))
+        return len(rows)
+
+    def fake_qfq(symbol, target_freqs=None):
+        assert symbol == "sz.301078"
+        assert target_freqs == ["30"]
+        return SimpleNamespace(
+            total_written=1,
+            written={"30": 1},
+            status="ok",
+            reason="",
+            day_factor_count=1,
+            missing_factor_dates={},
+        )
+
+    monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
+    monkeypatch.setattr("server.db.kline_lake.get_last_sync_date", lambda *_args, **_kwargs: "2026-05-22")
+    monkeypatch.setattr("server.services.tdx_bridge_client.fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
+    monkeypatch.setattr("server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors", fake_qfq)
+
+    result = kline_sync_worker._sync_all_symbols(["sz.301078"], ["day", "30"])
+
+    assert ("sz.301078", "day", 1, "2", "tdx") in upserts
+    assert {"symbol": "sz.301078", "freq": "day", "written": 1, "source": "tdx_bridge_front"} in result["changed"]
+    assert {"symbol": "sz.301078", "freq": "30", "written": 1, "source": "tdx_qfq"} in result["changed"]
+
+
 def test_sync_new_watchlist_symbol_runs_quick_then_full(monkeypatch):
     calls = []
 
@@ -226,13 +422,15 @@ def test_sync_new_watchlist_symbol_runs_quick_then_full(monkeypatch):
 
 
 def test_sync_new_watchlist_symbol_runs_tdx_init_when_baostock_disabled(monkeypatch):
+    from types import SimpleNamespace
+
     fetched = []
     upserts = []
     enqueued_changes = []
 
     async def fake_fetch(symbol, period, count=5000, refresh=True):
         fetched.append((symbol, period, count, refresh))
-        if period == "60m":
+        if period == "1h":
             return []
         return [
             {
@@ -259,7 +457,19 @@ def test_sync_new_watchlist_symbol_runs_tdx_init_when_baostock_disabled(monkeypa
 
     monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
     monkeypatch.setattr("server.services.tdx_bridge_client.fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr("server.services.tdx_minute_service.read_tdx_derived_minute_klines", lambda *_args, **_kwargs: [])
     monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
+    monkeypatch.setattr(
+        "server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="skipped",
+            reason="test",
+            day_factor_count=0,
+            written={},
+            missing_factor_dates={},
+            total_written=0,
+        ),
+    )
     monkeypatch.setattr(kline_sync_worker, "enqueue_structure_jobs_for_changes", fake_enqueue)
     monkeypatch.setattr(
         "server.engines.ai_native.czsc_snapshot_service.prewarm_structure_snapshots",
@@ -272,7 +482,7 @@ def test_sync_new_watchlist_symbol_runs_tdx_init_when_baostock_disabled(monkeypa
     assert result["errors"] == []
     assert ("sh.600118", "1d", 5000, True) in fetched
     assert ("sh.600118", "day", 1, "2", "tdx") in upserts
-    assert any(item["freq"] == "60" and item["status"] == "no_data" for item in result["full"])
+    assert any(item["freq"] == "60" and item["period"] == "1h" and item["status"] == "no_data" for item in result["full"])
     assert all(change["freq"] != "60" for change in enqueued_changes)
     assert result["snapshot_prewarm"]["count"] == 4
 
@@ -432,6 +642,7 @@ def test_prewarm_ai_structure_universe_groups_jobs_by_symbol_priority(monkeypatc
     assert [call["symbols"] for call in snapshot_calls] == [["sh.600519"], ["sz.000001"], ["sh.600000"]]
     assert [call["priority"] for call in context_calls] == [90, 70]
     assert [call["symbols"] for call in context_calls] == [["sh.600519"], ["sz.000001"]]
+    assert [call["allow_when_auto_disabled"] for call in context_calls] == [False, False]
     assert result["count"] == 5
     assert result["users"][0]["snapshot_symbols"] == 3
     assert result["users"][0]["context_symbols"] == 2
@@ -442,28 +653,30 @@ def test_prewarm_ai_structure_universe_groups_jobs_by_symbol_priority(monkeypatc
     ]
 
 
-def test_refresh_unified_reasoning_after_kline_sync_uses_positions_and_watchlist(monkeypatch):
+def test_refresh_unified_reasoning_after_kline_sync_uses_watchboard_universe(monkeypatch):
     calls = []
 
     monkeypatch.setattr(kline_sync_worker.config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", True)
-    monkeypatch.setattr(kline_sync_worker, "list_ai_native_user_ids", lambda limit=None: [1])
     monkeypatch.setattr(
-        kline_sync_worker,
-        "resolve_ai_native_universe",
-        lambda user_id, sources: [
+        "server.engines.ai_native.universe_resolver.list_watchboard_user_ids",
+        lambda limit=None: [1],
+    )
+    monkeypatch.setattr(
+        "server.engines.ai_native.universe_resolver.resolve_watchboard_universe",
+        lambda user_id: [
             {"symbol": "sh.600519", "priority": 100, "sources": ["positions"]},
-            {"symbol": "sz.000001", "priority": 60, "sources": ["watchlist"]},
-            {"symbol": "sh.600000", "priority": 60, "sources": ["watchlist"]},
+            {"symbol": "sz.000001", "priority": 60, "sources": ["watchboard"]},
+            {"symbol": "sh.600000", "priority": 60, "sources": ["watchboard"]},
         ],
     )
 
-    async def fake_trigger_unified_reasoning(**kwargs):
+    async def fake_request_ai_reasoning(**kwargs):
         calls.append(kwargs)
-        return {"symbol": kwargs["symbol"]}
+        return {"symbol": kwargs["symbol"], "trigger": {"decision": "generated"}}
 
     monkeypatch.setattr(
-        "server.engines.ai_native.unified_reasoning_service.trigger_unified_reasoning",
-        fake_trigger_unified_reasoning,
+        "server.engines.ai_native.ai_trigger_service.request_ai_reasoning",
+        fake_request_ai_reasoning,
     )
 
     result = asyncio.run(kline_sync_worker.refresh_unified_reasoning_for_tracked_users(max_symbols_per_user=2))
@@ -472,6 +685,7 @@ def test_refresh_unified_reasoning_after_kline_sync_uses_positions_and_watchlist
     assert result["errors"] == []
     assert [call["symbol"] for call in calls] == ["sh.600519", "sz.000001"]
     assert all(call["user_id"] == 1 for call in calls)
+    assert {call["trigger_reason"] for call in calls} == {"post_tdx_refresh"}
 
 
 def test_refresh_unified_reasoning_after_kline_sync_can_be_disabled(monkeypatch):

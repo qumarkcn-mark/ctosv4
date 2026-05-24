@@ -144,6 +144,9 @@ def test_watchboard_merges_positions_watchlist_reasoning_and_prices(monkeypatch,
     assert position["reasoning_summary"]["key_level_down"] == 4.37
     assert position["reasoning_summary"]["key_level_up"] == 4.5
     assert position["monitor_conditions"]["triggers"][0]["level"] == 4.37
+    assert position["intraday_event_state"]["primary"]["type"] == "near_support"
+    assert position["intraday_event_state"]["primary"]["level"] == 4.37
+    assert "接近4.37支撑" in position["intraday_event_state"]["primary"]["message"]
     assert groups[1]["items"][0]["symbol"] == "sh.600519"
 
 

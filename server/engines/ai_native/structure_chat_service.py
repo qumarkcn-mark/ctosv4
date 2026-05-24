@@ -23,6 +23,11 @@ from server.engines.ai_native.structure_context_service import (
     reasoning_availability,
 )
 from server.engines.ai_native.unified_reasoning_service import ALL_UNIFIED_FULL_TEXT_VERSIONS
+from server.engines.ai_native.ai_trigger_service import (
+    MODE_SHORT_ANSWER,
+    TRIGGER_USER_QUESTION,
+    insert_ai_trigger_log,
+)
 from server.engines.ai_native.reasoning_continuity_service import build_reasoning_continuity_context
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
@@ -508,12 +513,21 @@ def _build_ai_answer_from_full_reasoning(
     if not full_text:
         return None
     is_unified = str((run or {}).get("prompt_version") or "") in ALL_UNIFIED_FULL_TEXT_VERSIONS
+    trigger_started_at = now_text()
+    trigger_metadata = {
+        "intent_type": intent_type,
+        "context_id": context.get("context_id") or "",
+        "question_chars": len(question or ""),
+        "answer_source": "unified" if is_unified else "legacy_context",
+    }
     if is_unified:
+        wants_detail = _wants_detailed_chat_answer(question)
         prompt = {
             "version": "unified_reasoning_chat.v1",
+            "chat_style": "intraday_companion",
             "symbol": symbol,
             "question": question,
-            "full_reasoning_text": full_text,
+            "full_reasoning_excerpt": _clip_text(full_text, 3200),
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
             "intraday_observation": intraday_observation or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
@@ -522,11 +536,22 @@ def _build_ai_answer_from_full_reasoning(
             "memory_context": memory_context or {},
             "conversation_context": conversation_context or {},
             "chart_focus": chart_focus,
+            "answer_contract": {
+                "mode": "detailed" if wants_detail else "concise",
+                "first_priority": "先直接回应用户这句话，不要先复述完整推演。",
+                "default_length": "3-6句" if not wants_detail else "可分段解释，但只展开和问题有关的证据。",
+                "format": "默认自然对话；除非用户要求详细、展开、列表，否则不要标题、编号、固定三段式。",
+                "use_context": "完整推演只是背景锚点；盘中观察、用户补充和连续性上下文可以修正当前判断。",
+                "when_user_corrects": "如果用户指出MACD、量能、价格等新事实，先判断这个事实是否改变推演，再给修正后的看法。",
+                "price_levels": "只提和当前问题有关的关键位，不要把所有压力支撑都列出来。",
+                "risk_disclaimer": RISK_DISCLAIMER,
+            },
         }
         system_prompt = (
-            "你是缠中说禅，用户的盯盘搭档。"
-            "根据完整推演、连续性上下文、盘中观察、持仓和用户问题，聚焦这一次问题。"
-            "盘中问题优先简明给出方向、动作和失效点；用户要求详细解释时再展开。"
+            "你是用户的盘中盯盘搭档，不是报告生成器。"
+            "先接住用户这句话，再结合完整推演摘要、连续性上下文、盘中观察和持仓给判断。"
+            "默认像正常对话一样短答，不要固定标题、编号或三段式；用户要求详细解释时再展开。"
+            "如果用户补充或纠正盘中事实，先判断它是否影响原推演，成立就直接修正观点。"
             "intraday_observation 是盘中预览事实，FORMING bar 可能漂移；请自行权衡 source、as_of、coverage。"
             "reasoning_continuity_context 是上一轮推演、触发状态、近期问答和历史结果的事实集合，不是规则。"
             "动作表达使用“观察、考虑、关注、防守思路”等口径，不写成交易命令。"
@@ -587,16 +612,47 @@ def _build_ai_answer_from_full_reasoning(
                 ),
             )
         )
-    except Exception:
+    except Exception as exc:
+        insert_ai_trigger_log(
+            user_id=user_id,
+            symbol=symbol,
+            mode=MODE_SHORT_ANSWER,
+            trigger_reason=TRIGGER_USER_QUESTION,
+            decision="error",
+            error_message=str(exc)[:500],
+            metadata=trigger_metadata,
+            started_at=trigger_started_at,
+        )
         return None
     answer_text = str(answer_text or "").strip()
     if not answer_text:
+        insert_ai_trigger_log(
+            user_id=user_id,
+            symbol=symbol,
+            mode=MODE_SHORT_ANSWER,
+            trigger_reason=TRIGGER_USER_QUESTION,
+            decision="skipped",
+            skip_reason="EMPTY_ANSWER",
+            metadata=trigger_metadata,
+            started_at=trigger_started_at,
+        )
         return None
     if RISK_DISCLAIMER not in answer_text:
         answer_text = f"{answer_text.rstrip('。')}。{RISK_DISCLAIMER}"
     answer_text = _apply_memory_warning(answer_text, memory_context)
+    trigger_log = insert_ai_trigger_log(
+        user_id=user_id,
+        symbol=symbol,
+        mode=MODE_SHORT_ANSWER,
+        trigger_reason=TRIGGER_USER_QUESTION,
+        decision="generated",
+        context_id=str(context.get("context_id") or ""),
+        metadata=trigger_metadata,
+        started_at=trigger_started_at,
+    )
     return {
         "coach_answer": answer_text,
+        "ai_trigger": trigger_log,
         "referenced_boundaries": _referenced_boundaries(
             chart_focus.get("level") or "",
             _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zg")),
@@ -912,6 +968,26 @@ def _is_out_of_scope_question(text: str) -> bool:
     return False
 
 
+def _wants_detailed_chat_answer(question: str) -> bool:
+    text = (question or "").strip().lower()
+    if not text:
+        return False
+    detail_tokens = (
+        "详细",
+        "展开",
+        "完整",
+        "仔细",
+        "讲清楚",
+        "解释下",
+        "为什么",
+        "逻辑",
+        "推演过程",
+        "分级别",
+        "step by step",
+    )
+    return any(token in text for token in detail_tokens)
+
+
 def _review_item_text(item: dict[str, Any]) -> str:
     outcome = item.get("outcome") or "pending"
     branch_type = ((item.get("branch") or {}).get("branch_type") or "结构分支")
@@ -1035,6 +1111,13 @@ def _new_session_id(*, user_id: int, symbol: str) -> str:
 
 def _json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _clip_text(text: str, limit: int) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit].rstrip()}\n...[已截断，完整推演仅作背景锚点]"
 
 
 def _num(value) -> float:

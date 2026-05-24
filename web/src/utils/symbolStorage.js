@@ -1,15 +1,12 @@
-const DEFAULT_SYMBOL = 'sh600519'
-const DEFAULT_SYMBOL_NAME = '贵州茅台'
-
 function parseStoredSymbol(rawSymbol, rawName) {
   if (!rawSymbol) {
-    return { symbol: DEFAULT_SYMBOL, name: rawName || DEFAULT_SYMBOL_NAME }
+    return { symbol: '', name: '' }
   }
 
   try {
     const parsed = JSON.parse(rawSymbol)
     if (parsed && typeof parsed === 'object') {
-      const symbol = parsed.symbol || parsed.code || DEFAULT_SYMBOL
+      const symbol = parsed.symbol || parsed.code || ''
       const name = rawName || parsed.name || symbol
       return { symbol, name }
     }
@@ -25,7 +22,7 @@ export function readLastViewedSymbol() {
   const rawName = localStorage.getItem('lastViewedSymbolName')
   const record = parseStoredSymbol(rawSymbol, rawName)
 
-  if (rawSymbol !== record.symbol || rawName !== record.name) {
+  if (record.symbol && (rawSymbol !== record.symbol || rawName !== record.name)) {
     localStorage.setItem('lastViewedSymbol', record.symbol)
     localStorage.setItem('lastViewedSymbolName', record.name)
   }
@@ -35,13 +32,13 @@ export function readLastViewedSymbol() {
 
 export function normalizeSymbolInput(symbol, name) {
   if (symbol && typeof symbol === 'object') {
-    const nextSymbol = symbol.symbol || symbol.code || DEFAULT_SYMBOL
+    const nextSymbol = symbol.symbol || symbol.code || ''
     return {
       symbol: nextSymbol,
       name: name || symbol.name || nextSymbol,
     }
   }
-  const nextSymbol = symbol || DEFAULT_SYMBOL
+  const nextSymbol = symbol || ''
   return {
     symbol: nextSymbol,
     name: name || nextSymbol,

@@ -198,6 +198,19 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
 
     from server.db.kline_lake import upsert_klines
     from server.services.tdx_bridge_client import fetch_tdx_klines
+    from server.services.tdx_daily_sync_service import read_tdx_day_klines, read_tdx_week_klines
+    from server.services.tdx_minute_service import read_tdx_derived_minute_klines
+
+    def _sync_local_history(freq: str) -> tuple[int, list[dict]]:
+        if freq == "week":
+            rows = read_tdx_week_klines(symbol, limit=1200)
+        elif freq == "day":
+            rows = read_tdx_day_klines(symbol, limit=5000)
+        elif freq in {"5", "15", "30", "60"}:
+            rows = read_tdx_derived_minute_klines(symbol, freq, limit=5000)
+        else:
+            rows = []
+        return upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx"), rows
 
     async def _run() -> dict:
         changed = []
@@ -207,7 +220,7 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
             period = {
                 "week": "1w",
                 "day": "1d",
-                "60": "60m",
+                "60": "1h",
                 "30": "30m",
                 "15": "15m",
                 "5": "5m",
@@ -216,24 +229,40 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
                 continue
             try:
                 rows = await fetch_tdx_klines(symbol, period=period, count=5000, refresh=True)
-                written = await run_in_threadpool(
-                    partial(upsert_klines, symbol, freq, rows, adjustflag="2", source="tdx")
-                )
+                source = "tdx_bridge"
+                adjustflag = "2"
+                if not rows:
+                    written, rows = await run_in_threadpool(_sync_local_history, freq)
+                    source = "tdx_local_history"
+                    adjustflag = "3"
+                else:
+                    written = await run_in_threadpool(
+                        partial(upsert_klines, symbol, freq, rows, adjustflag="2", source="tdx")
+                    )
                 item = {
                     "freq": freq,
                     "period": period,
                     "written": written,
                     "status": "ok" if rows else "no_data",
-                    "source": "tdx",
+                    "source": source,
+                    "adjustflag": adjustflag,
                     "first": rows[0]["date"] if rows else "",
                     "last": rows[-1]["date"] if rows else "",
                 }
                 full.append(item)
-                if written > 0:
+                if written > 0 and adjustflag == "2":
                     changed.append({"symbol": symbol, "freq": freq, "written": written})
             except Exception as exc:
                 errors.append({"stage": "tdx", "freq": freq, "error": str(exc)})
                 full.append({"freq": freq, "period": period, "written": 0, "status": "error", "source": "tdx"})
+
+        from server.services.tdx_qfq_normalizer import rebuild_tdx_qfq_from_existing_factors
+
+        qfq_result = await run_in_threadpool(rebuild_tdx_qfq_from_existing_factors, symbol)
+        if qfq_result.total_written > 0:
+            for freq, written in qfq_result.written.items():
+                if written > 0:
+                    changed.append({"symbol": symbol, "freq": freq, "written": written, "adjustflag": "2"})
 
         structure_jobs = enqueue_structure_jobs_for_changes(
             changed,
@@ -253,6 +282,13 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
             "skipped": False,
             "source": "tdx",
             "full": full,
+            "qfq_rebuild": {
+                "status": qfq_result.status,
+                "reason": qfq_result.reason,
+                "day_factor_count": qfq_result.day_factor_count,
+                "written": qfq_result.written,
+                "missing_factor_dates": qfq_result.missing_factor_dates,
+            },
             "errors": errors,
             "structure_jobs": structure_jobs,
             "snapshot_prewarm": snapshot_prewarm,
@@ -292,8 +328,12 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
     Returns:
         {"total_symbols": int, "updated_symbols": int, "total_written": int, "errors": int}
     """
-    from server.services.baostock_service import refresh_symbol_qfq
     from server.db.kline_lake import get_last_sync_date
+
+    if not getattr(config, "BAOSTOCK_AUTO_SYNC_ENABLED", False):
+        return _sync_all_symbols_from_tdx_local(symbols, freqs)
+
+    from server.services.baostock_service import refresh_symbol_qfq
 
     today = datetime.today().strftime("%Y-%m-%d")
     total_written = 0
@@ -317,6 +357,98 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
                     changed.append({"symbol": symbol, "freq": freq, "written": written})
             except Exception as e:
                 logger.error("同步失败 %s/%s: %s", symbol, freq, e)
+                errors += 1
+
+        if symbol_updated:
+            updated_symbols += 1
+
+    return {
+        "total_symbols": len(symbols),
+        "updated_symbols": updated_symbols,
+        "total_written": total_written,
+        "errors": errors,
+        "changed": changed,
+    }
+
+
+def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> dict:
+    """Sync tracked symbols from local TDX after-hours history files."""
+    from server.db.kline_lake import get_last_sync_date, upsert_klines
+    from server.services.tdx_bridge_client import fetch_tdx_klines
+    from server.services.tdx_daily_sync_service import read_tdx_day_klines, read_tdx_week_klines
+    from server.services.tdx_minute_service import read_tdx_derived_minute_klines
+
+    def _fetch_front_day_rows(symbol: str) -> list[dict]:
+        try:
+            return asyncio.run(
+                fetch_tdx_klines(
+                    symbol,
+                    period="1d",
+                    count=5000,
+                    dividend_type="front",
+                    refresh=True,
+                )
+            )
+        except Exception as exc:
+            logger.debug("TDX bridge 前复权日线刷新失败 %s: %s", symbol, exc)
+            return []
+
+    today = datetime.today().strftime("%Y-%m-%d")
+    total_written = 0
+    updated_symbols = 0
+    errors = 0
+    changed: list[dict] = []
+
+    for symbol in symbols:
+        symbol_updated = False
+        qfq_written: dict[str, int] = {}
+        if "day" in freqs:
+            try:
+                front_day_rows = _fetch_front_day_rows(symbol)
+                written = upsert_klines(symbol, "day", front_day_rows, adjustflag="2", source="tdx")
+                total_written += written
+                if written > 0:
+                    symbol_updated = True
+                    changed.append({"symbol": symbol, "freq": "day", "written": written, "source": "tdx_bridge_front"})
+            except Exception as e:
+                logger.error("TDX 前复权日线同步失败 %s: %s", symbol, e)
+                errors += 1
+
+        for freq in freqs:
+            try:
+                last_date = get_last_sync_date(symbol, freq, source="tdx")
+                if last_date and last_date[:10] >= today:
+                    continue
+                if freq == "week":
+                    rows = read_tdx_week_klines(symbol, limit=1200)
+                elif freq == "day":
+                    rows = read_tdx_day_klines(symbol, limit=5000)
+                elif freq in {"5", "15", "30", "60"}:
+                    rows = read_tdx_derived_minute_klines(symbol, freq, limit=5000)
+                else:
+                    rows = []
+                written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
+                total_written += written
+                if written > 0:
+                    symbol_updated = True
+            except Exception as e:
+                logger.error("TDX 本地历史同步失败 %s/%s: %s", symbol, freq, e)
+                errors += 1
+
+        if symbol_updated:
+            try:
+                from server.services.tdx_qfq_normalizer import rebuild_tdx_qfq_from_existing_factors
+
+                qfq_result = rebuild_tdx_qfq_from_existing_factors(
+                    symbol,
+                    target_freqs=[freq for freq in freqs if freq != "day"],
+                )
+                qfq_written = qfq_result.written
+                for freq, written in qfq_written.items():
+                    if written > 0:
+                        changed.append({"symbol": symbol, "freq": freq, "written": written, "source": "tdx_qfq"})
+            except Exception as e:
+                logger.error("TDX 前复权重建失败 %s: %s", symbol, e)
                 errors += 1
 
         if symbol_updated:
@@ -440,6 +572,7 @@ def prewarm_ai_structure_universe_for_tracked_users(
                     levels=list(DEFAULT_LEVELS),
                     priority=max(1, item_priority - 10),
                     reason=reason,
+                    allow_when_auto_disabled=False,
                 )
                 context_result["items"].extend(batch_context.get("items", []))
         total_snapshot_items += _active_item_count(snapshot_result.get("items", []))
@@ -479,7 +612,7 @@ async def refresh_unified_reasoning_for_tracked_users(
     K 线同步后改为走 V5 snapshot → context 管线（prewarm_ai_structure_universe_for_tracked_users）。
     此函数保留供手动 API 调用。
     """
-    from server.engines.ai_native.unified_reasoning_service import trigger_unified_reasoning
+    from server.engines.ai_native.ai_trigger_service import TRIGGER_POST_TDX_REFRESH, request_ai_reasoning
 
     if not getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_ENABLED", False):
         return {"generated": 0, "errors": [], "skipped": True, "reason": "DISABLED"}
@@ -489,19 +622,26 @@ async def refresh_unified_reasoning_for_tracked_users(
         symbol_limit = int(getattr(config, "AI_UNIFIED_REASONING_AFTER_KLINE_SYNC_SYMBOLS_PER_USER", 30))
     symbol_limit = max(1, symbol_limit)
 
-    users = list_ai_native_user_ids(limit=max_users)
+    from server.engines.ai_native.universe_resolver import list_watchboard_user_ids, resolve_watchboard_universe
+
+    users = list_watchboard_user_ids(limit=max_users)
     generated = 0
     errors: list[dict[str, str | int]] = []
     user_items: list[dict[str, Any]] = []
     for user_id in users:
-        universe = resolve_ai_native_universe(user_id, ["positions", "watchlist"])
+        universe = resolve_watchboard_universe(user_id)
         symbols = [item["symbol"] for item in universe[:symbol_limit]]
         user_generated = 0
         for symbol in symbols:
             try:
-                await trigger_unified_reasoning(user_id=user_id, symbol=symbol)
-                generated += 1
-                user_generated += 1
+                result = await request_ai_reasoning(
+                    user_id=user_id,
+                    symbol=symbol,
+                    trigger_reason=TRIGGER_POST_TDX_REFRESH,
+                )
+                if (result.get("trigger") or {}).get("decision") == "generated":
+                    generated += 1
+                    user_generated += 1
             except Exception as exc:
                 errors.append({"user_id": int(user_id), "symbol": symbol, "error": str(exc)[:160]})
         user_items.append({"user_id": int(user_id), "symbols": len(symbols), "generated": user_generated})
@@ -578,8 +718,11 @@ class KlineSyncWorker:
 
     def start(self):
         """启动后台同步任务"""
-        if not getattr(config, "BAOSTOCK_AUTO_SYNC_ENABLED", False):
-            logger.info("📊 K线自动同步 Worker 未启动：BAOSTOCK_AUTO_SYNC_ENABLED=false")
+        if not (
+            getattr(config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
+            or getattr(config, "TDX_LOCAL_HISTORY_SYNC_ENABLED", True)
+        ):
+            logger.info("📊 K线自动同步 Worker 未启动：BaoStock/TDX 本地历史同步均关闭")
             return
         if not self._running:
             self._running = True
@@ -598,14 +741,17 @@ class KlineSyncWorker:
         # 启动延迟，等待其他服务就绪
         await asyncio.sleep(STARTUP_DELAY)
 
-        # 启动时先补一次缓存；若还没到 BaoStock 收盘入库窗口，不标记当天正式同步完成。
-        startup_now = datetime.now()
-        startup_scope = _scheduled_sync_scope(startup_now) or SYNC_SCOPE_DAILY
-        await self._do_sync(
-            "启动同步",
-            scope=startup_scope,
-            mark_schedule=bool(_scheduled_sync_scope(startup_now)),
-        )
+        if getattr(config, "TDX_LOCAL_HISTORY_SYNC_ON_STARTUP_ENABLED", False):
+            # 启动时补缓存是重活，默认关闭；盘后脚本和手动同步才是 TDX 主链路。
+            startup_now = datetime.now()
+            startup_scope = _scheduled_sync_scope(startup_now) or SYNC_SCOPE_DAILY
+            await self._do_sync(
+                "启动同步",
+                scope=startup_scope,
+                mark_schedule=bool(_scheduled_sync_scope(startup_now)),
+            )
+        else:
+            logger.info("📊 启动同步已关闭：等待盘后脚本、手动刷新或定时窗口触发")
 
         while self._running:
             try:

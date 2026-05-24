@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 
+from server import config
 from server.config import AI_NATIVE_LLM_TIMEOUT, AI_NATIVE_MAX_TOKENS, STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol, symbol_aliases
@@ -127,6 +128,7 @@ def prewarm_ai_structure_contexts(
     priority: int = 70,
     reason: str = "manual_context_prewarm",
     force_rebuild: bool = False,
+    allow_when_auto_disabled: bool = True,
 ) -> dict[str, Any]:
     items = []
     for raw_symbol in symbols:
@@ -137,6 +139,18 @@ def prewarm_ai_structure_contexts(
                 "symbol": symbol,
                 "status": "skipped",
                 "reason": "NO_SNAPSHOT",
+                "missing_levels": snapshot_set["missing_levels"],
+            })
+            continue
+        if (
+            not allow_when_auto_disabled
+            and not getattr(config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", False)
+        ):
+            items.append({
+                "symbol": symbol,
+                "status": "skipped",
+                "reason": "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_DISABLED",
+                "source_snapshot_ids": snapshot_set["snapshot_ids"],
                 "missing_levels": snapshot_set["missing_levels"],
             })
             continue

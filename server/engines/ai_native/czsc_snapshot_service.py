@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 
+from server import config
 from server.config import STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
@@ -279,8 +280,10 @@ def get_snapshot_status(
              WHERE symbol = ? AND level = ? AND engine = 'czsc' AND compute_profile = ?
              ORDER BY
                CASE
-                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 0
-                 ELSE 1
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx'
+                  AND json_extract(snapshot_json, '$.source.adjustflag') = '2' THEN 0
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 1
+                 ELSE 2
                END,
                updated_at DESC,
                id DESC
@@ -326,28 +329,36 @@ def get_snapshot_status_batch(
     jobs_by_key: dict[str, Any] = {}
     conn = get_connection()
     try:
-        if signed_pairs:
-            symbol_placeholders = ",".join("?" for _ in canonical_symbols)
-            level_placeholders = ",".join("?" for _ in normalized_levels)
-            snapshot_rows = conn.execute(
-                f"""
-                SELECT *
-                  FROM structure_snapshots
-                 WHERE symbol IN ({symbol_placeholders})
-                   AND level IN ({level_placeholders})
-                   AND engine = 'czsc'
-                   AND compute_profile = ?
-                 ORDER BY updated_at DESC, id DESC
-                """,
-                (*canonical_symbols, *normalized_levels, compute_profile),
-            ).fetchall()
-            for row in snapshot_rows:
-                key = (row["symbol"], row["level"])
-                latest_snapshots.setdefault(key, row)
-                signature = signatures.get(key) or {}
-                if row["data_signature"] == signature.get("signature"):
-                    fresh_snapshots.setdefault(key, row)
+        symbol_placeholders = ",".join("?" for _ in canonical_symbols)
+        level_placeholders = ",".join("?" for _ in normalized_levels)
+        snapshot_rows = conn.execute(
+            f"""
+            SELECT *
+              FROM structure_snapshots
+             WHERE symbol IN ({symbol_placeholders})
+               AND level IN ({level_placeholders})
+               AND engine = 'czsc'
+               AND compute_profile = ?
+             ORDER BY
+               CASE
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx'
+                  AND json_extract(snapshot_json, '$.source.adjustflag') = '2' THEN 0
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 1
+                 ELSE 2
+               END,
+               updated_at DESC,
+               id DESC
+            """,
+            (*canonical_symbols, *normalized_levels, compute_profile),
+        ).fetchall()
+        for row in snapshot_rows:
+            key = (row["symbol"], row["level"])
+            latest_snapshots.setdefault(key, row)
+            signature = signatures.get(key) or {}
+            if signature.get("signature") and row["data_signature"] == signature.get("signature"):
+                fresh_snapshots.setdefault(key, row)
 
+        if signed_pairs:
             job_keys = [
                 snapshot_job_key(
                     symbol=symbol,
@@ -396,14 +407,37 @@ def get_latest_snapshot(
 ) -> dict[str, Any] | None:
     canonical = normalize_symbol(symbol)
     normalized_level = normalize_freq(level)
+    signature = _signature_for_level(symbol=canonical, level=normalized_level, compute_profile=compute_profile)
     conn = get_connection()
     try:
+        if signature.get("signature"):
+            fresh = conn.execute(
+                """
+                SELECT *
+                  FROM structure_snapshots
+                 WHERE symbol = ? AND level = ? AND engine = 'czsc'
+                   AND compute_profile = ? AND data_signature = ?
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (canonical, normalized_level, compute_profile, signature["signature"]),
+            ).fetchone()
+            if fresh:
+                return _snapshot_row(fresh)
         row = conn.execute(
             """
             SELECT *
               FROM structure_snapshots
              WHERE symbol = ? AND level = ? AND engine = 'czsc' AND compute_profile = ?
-             ORDER BY updated_at DESC, id DESC
+             ORDER BY
+               CASE
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx'
+                  AND json_extract(snapshot_json, '$.source.adjustflag') = '2' THEN 0
+                 WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 1
+                 ELSE 2
+               END,
+               updated_at DESC,
+               id DESC
              LIMIT 1
             """,
             (canonical, normalized_level, compute_profile),
@@ -789,6 +823,13 @@ def _snapshot_status_from_preloaded(
 ) -> dict[str, Any]:
     freshness = _freshness_from_signature(signature)
     if not signature.get("signature"):
+        if job and job["status"] in JOB_ACTIVE_STATUSES:
+            status = "stale" if latest else "pending"
+            return _status_payload(status, symbol, level, compute_profile, freshness, snapshot=latest, job=job)
+        if job and job["status"] == "FAILED_FINAL":
+            return _status_payload("failed", symbol, level, compute_profile, freshness, snapshot=latest, job=job)
+        if latest:
+            return _status_payload("stale", symbol, level, compute_profile, freshness, snapshot=latest, job=job)
         return {
             "symbol": symbol,
             "level": level,
@@ -900,6 +941,15 @@ def _update_job(job_id: str, **fields) -> None:
 
 
 def _enqueue_followup_context_job(job: dict[str, Any]) -> dict[str, Any] | None:
+    if not getattr(config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", False):
+        return {
+            "status": "skipped",
+            "reason": "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_DISABLED",
+            "source_snapshot_ids": _latest_snapshot_ids_for_context(
+                symbol=job["symbol"],
+                compute_profile=job["compute_profile"],
+            ),
+        }
     try:
         from server.engines.ai_native.structure_context_service import enqueue_context_job
         from server.engines.ai_native.universe_resolver import list_interested_user_ids_for_symbol

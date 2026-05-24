@@ -70,6 +70,7 @@ async def ensure_ai_structure_pipeline(
         compute_profile=compute_profile,
         priority=max(1, priority - 10),
         reason=reason,
+        allow_when_auto_disabled=False,
     )
     if config.BAOSTOCK_AUTO_SYNC_ENABLED:
         _schedule_backfill_rewarm(
@@ -213,6 +214,7 @@ async def _backfill_and_rewarm(
             compute_profile=compute_profile,
             priority=max(1, priority - 10),
             reason=reason,
+            allow_when_auto_disabled=False,
         )
 
 

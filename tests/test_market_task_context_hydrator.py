@@ -56,6 +56,7 @@ def test_market_task_context_builds_human_like_observation_facts():
     )
 
     assert payload["version"] == "market_task_context.v1"
+    assert payload["macro_phase"]["phase"] == "mixed_transition"
     assert payload["task_candidates"][0]["task"] == "中枢内震荡后的方向选择"
     assert payload["small_to_large_turn"]["status"] == "forming_upward_chain"
     assert payload["small_to_large_turn"]["chain"][0]["state"] == "turning_up"
@@ -63,3 +64,27 @@ def test_market_task_context_builds_human_like_observation_facts():
     assert "站上" in payload["pressure_semantics"][0]["after_break"]
     assert payload["volume_phase"]["state"] == "shrinking"
     assert "上一轮关键触发尚未发生" in payload["continuity_read"]["read"]
+
+
+def test_market_task_context_marks_strong_trend_short_range_digesting():
+    payload = hydrate_market_task_context(
+        current_price=271.83,
+        structure_geometry={
+            "周线": {"center": {"relevance": "distant_context"}, "price_position": {"position": "above_zg"}},
+            "日线": {"center": {"relevance": "distant_context"}, "price_position": {"position": "above_zg"}},
+            "30分钟": {
+                "center": {"zg": 252.32, "zd": 242.63, "maturity": "late_extension", "relevance": "active_boundary"},
+                "price_position": {"position": "above_zg"},
+            },
+            "5分钟": {
+                "center": {"zg": 278.88, "zd": 270.6, "maturity": "normal_extension", "relevance": "active_boundary"},
+                "price_position": {"position": "in_center"},
+            },
+        },
+        momentum_dynamics={},
+    )
+
+    macro = payload["macro_phase"]
+    assert macro["phase"] == "strong_trend_short_range_digesting"
+    assert "大级别强势离开" in macro["read"]
+    assert "短级别" in macro["implication"]

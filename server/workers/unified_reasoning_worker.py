@@ -6,8 +6,8 @@ import asyncio
 import logging
 
 from server import config
-from server.engines.ai_native.unified_reasoning_service import trigger_unified_reasoning
-from server.engines.ai_native.universe_resolver import list_ai_native_user_ids, resolve_ai_native_universe
+from server.engines.ai_native.ai_trigger_service import TRIGGER_WATCHBOARD_WORKER, request_ai_reasoning
+from server.engines.ai_native.universe_resolver import list_watchboard_user_ids, resolve_watchboard_universe
 
 
 logger = logging.getLogger(__name__)
@@ -45,17 +45,22 @@ class UnifiedReasoningWorker:
             await asyncio.sleep(self.interval_seconds)
 
     async def tick(self) -> dict:
-        users = list_ai_native_user_ids(limit=20)
+        users = list_watchboard_user_ids(limit=20)
         generated = 0
         errors = []
         max_symbols = max(1, int(getattr(config, "AI_UNIFIED_REASONING_SYMBOLS_PER_USER", 3)))
         for user_id in users:
-            universe = resolve_ai_native_universe(user_id, ["positions", "watchlist"])
+            universe = resolve_watchboard_universe(user_id)
             for item in universe[:max_symbols]:
                 symbol = item["symbol"]
                 try:
-                    await trigger_unified_reasoning(user_id=user_id, symbol=symbol)
-                    generated += 1
+                    result = await request_ai_reasoning(
+                        user_id=user_id,
+                        symbol=symbol,
+                        trigger_reason=TRIGGER_WATCHBOARD_WORKER,
+                    )
+                    if (result.get("trigger") or {}).get("decision") == "generated":
+                        generated += 1
                 except Exception as exc:
                     errors.append({"user_id": user_id, "symbol": symbol, "error": str(exc)[:160]})
         return {"generated": generated, "errors": errors}

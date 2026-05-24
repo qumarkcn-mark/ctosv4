@@ -8,3 +8,4 @@ openai>=1.0.0
 pandas>=2.0.0
 baostock>=0.8.9
 czsc==0.10.12
+pytdx>=1.72

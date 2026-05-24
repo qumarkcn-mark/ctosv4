@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from server.config import BAOSTOCK_AUTO_SYNC_ENABLED, DEBUG
+from server.config import BAOSTOCK_AUTO_SYNC_ENABLED, DEBUG, TDX_LOCAL_HISTORY_SYNC_ENABLED
 from server.db.database import init_db, ensure_default_user
 from server.db.kline_lake import init_lake
 from server.workers.price_monitor import monitor
@@ -38,10 +38,10 @@ async def lifespan(app: FastAPI):
         logger.warning(f"孤儿清理失败: {e}")
 
     monitor.start()
-    if BAOSTOCK_AUTO_SYNC_ENABLED:
+    if BAOSTOCK_AUTO_SYNC_ENABLED or TDX_LOCAL_HISTORY_SYNC_ENABLED:
         kline_sync.start()
     else:
-        logger.info("📊 BaoStock 自动同步已关闭，正式结构由 TDX/source policy 驱动")
+        logger.info("📊 K线自动同步已关闭：BaoStock/TDX 本地历史同步均未启用")
     ai_structure_snapshot_worker.start()
     ai_structure_context_worker.start()
     ai_structure_outcome_worker.start()
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
-    if BAOSTOCK_AUTO_SYNC_ENABLED:
+    if BAOSTOCK_AUTO_SYNC_ENABLED or TDX_LOCAL_HISTORY_SYNC_ENABLED:
         kline_sync.stop()
     ai_structure_snapshot_worker.stop()
     ai_structure_context_worker.stop()

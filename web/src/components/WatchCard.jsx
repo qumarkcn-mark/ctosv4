@@ -89,7 +89,9 @@ export default function WatchCard({ item, currentPrice, onClick }) {
   const rawAction = summary.action || tactical.actionLabel || '观望'
   const action = normalizeCurrentAction(rawAction)
   const trigger = nearestTrigger(item, price, rawAction)
+  const intradayEvent = item.intraday_event_state?.primary || null
   const triggerLine = triggerText(trigger, price)
+  const eventLine = intradayEvent?.message || ''
   const position = item.position
   const hasRangeLevels = Boolean(Number(summary.key_level_down || 0) && Number(summary.key_level_up || 0))
   const hasAnyKeyLevel = Boolean(Number(summary.key_level_down || 0) || Number(summary.key_level_up || 0))
@@ -134,10 +136,10 @@ export default function WatchCard({ item, currentPrice, onClick }) {
       )}
 
       <p className="watch-card-summary">{message}</p>
-      {triggerLine && (
+      {(eventLine || triggerLine) && (
         <div className="watch-card-trigger">
-          <span>触发</span>
-          <strong>{triggerLine}</strong>
+          <span>{eventLine ? '盘中' : '触发'}</span>
+          <strong>{eventLine || triggerLine}</strong>
         </div>
       )}
 

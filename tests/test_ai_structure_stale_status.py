@@ -41,6 +41,46 @@ def test_status_reports_stale_when_data_signature_changes(monkeypatch, tmp_path)
     assert status["freshness"]["data_signature"] == "sig-new"
 
 
+def test_status_stale_snapshot_prefers_qfq_over_newer_raw(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    qfq = service.save_snapshot(
+        symbol="sz301076",
+        level="day",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-qfq-old",
+        data_as_of="2026-05-22",
+        snapshot_payload={"level": "day", "price": 32.77, "source": {"provider": "tdx", "adjustflag": "2"}},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    raw = service.save_snapshot(
+        symbol="sz301076",
+        level="day",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-raw-old",
+        data_as_of="2026-05-22",
+        snapshot_payload={"level": "day", "price": 32.77, "source": {"provider": "tdx", "adjustflag": "3"}},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    conn = database.get_connection()
+    try:
+        conn.execute("UPDATE structure_snapshots SET updated_at = '2026-05-22T21:00:00+08:00' WHERE snapshot_id = ?", (qfq["snapshot_id"],))
+        conn.execute("UPDATE structure_snapshots SET updated_at = '2026-05-23T09:00:00+08:00' WHERE snapshot_id = ?", (raw["snapshot_id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: {**signature("sig-qfq-new"), "source": "tdx"})
+
+    status = service.get_snapshot_status(symbol="sz301076", level="day")
+
+    assert status["status"] == "stale"
+    assert status["snapshot"]["snapshot_id"] == qfq["snapshot_id"]
+    assert status["snapshot"]["snapshot"]["source"]["adjustflag"] == "2"
+
+
 def test_status_reports_pending_for_current_job_without_snapshot(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: signature("sig-pending"))
