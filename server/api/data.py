@@ -23,11 +23,13 @@ from server.services.qmt_bridge_client import (
     qmt_log_quotes,
     qmt_stream_probe,
 )
-from server.services.tdx_minute_service import read_tdx_1m_klines, tdx_minute_status
+from server.services.tdx_minute_service import read_tdx_1m_klines, read_tdx_derived_minute_klines, tdx_minute_status
 from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines, fetch_tdx_quote
 from server.services.tdx_daily_sync_service import (
     get_sync_job,
     latest_sync_job,
+    read_tdx_day_klines,
+    read_tdx_week_klines,
     start_daily_sync,
     vipdoc_status,
 )
@@ -39,7 +41,7 @@ TDX_PERIOD_BY_FREQ = {
     "5": "5m",
     "15": "15m",
     "30": "30m",
-    "60": "60m",
+    "60": "1h",
     "day": "1d",
     "week": "1w",
 }
@@ -111,6 +113,29 @@ def _interval_to_freq(interval: str) -> str:
         "m5": "5",
         "m1": "1",
     }[interval]
+
+
+def _query_tdx_display_klines(symbol: str, freq: str, count: int) -> list[dict]:
+    """Read TDX display K lines, preferring front-adjusted rows when present."""
+    qfq_rows = query_lake_klines(symbol, freq, limit=count, adjustflag="2", source="tdx")
+    raw_rows = query_lake_klines(symbol, freq, limit=count, adjustflag="3", source="tdx")
+    if qfq_rows and raw_rows and str(raw_rows[-1].get("date") or "") > str(qfq_rows[-1].get("date") or ""):
+        return raw_rows
+    return qfq_rows or raw_rows
+
+
+def _sync_local_tdx_history_to_lake(symbol: str, freq: str, count: int = 5000) -> tuple[int, list[dict]]:
+    """Import local TDX .day/.lc1 derived history bars when bridge has no rows."""
+    if freq == "week":
+        rows = read_tdx_week_klines(symbol, limit=min(count, 1200))
+    elif freq == "day":
+        rows = read_tdx_day_klines(symbol, limit=count)
+    elif freq in {"1", "5", "15", "30", "60"}:
+        rows = read_tdx_derived_minute_klines(symbol, freq, limit=count)
+    else:
+        rows = []
+    written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
+    return written, rows
 
 
 # ── CSV 导入 ──
@@ -195,22 +220,15 @@ async def query_klines(
                 ),
             )
     else:
-        klines = await run_in_threadpool(
-            partial(
-                query_lake_klines,
-                canonical_symbol,
-                freq,
-                limit=count,
-                adjustflag="2",
-                source="tdx",
-            )
-        )
+        klines = await run_in_threadpool(_query_tdx_display_klines, canonical_symbol, freq, count)
         if not klines:
             klines = await fetch_tdx_klines(canonical_symbol, period=TDX_PERIOD_BY_FREQ[freq], count=count)
         if not klines:
+            _, klines = await run_in_threadpool(_sync_local_tdx_history_to_lake, canonical_symbol, freq, count)
+        if not klines:
             raise HTTPException(
                 404,
-                f"无法获取 {symbol} 的 {normalized_interval} K线：TDX 本地/bridge 未返回数据，请先同步 TDX。",
+                f"无法获取 {symbol} 的 {normalized_interval} K线：TDX bridge 未返回数据，本地 .lc1 也无法派生该周期。",
             )
         interval = normalized_interval
     if not klines:
@@ -250,6 +268,35 @@ async def sync_symbol_klines(
     total_written = 0
     error_count = 0
     changed = []
+    needs_day_factor = "day" not in freqs and any(freq in {"week", "1", "5", "15", "30", "60"} for freq in freqs)
+    if needs_day_factor:
+        try:
+            factor_rows = await fetch_tdx_klines(canonical_symbol, period="1d", count=5000, refresh=True)
+            factor_written = await run_in_threadpool(
+                partial(upsert_klines, canonical_symbol, "day", factor_rows, adjustflag="2", source="tdx")
+            )
+            total_written += factor_written
+            if factor_written > 0:
+                results.append({
+                    "freq": "day_factor",
+                    "period": "1d",
+                    "written": factor_written,
+                    "status": "ok",
+                    "first": factor_rows[0]["date"] if factor_rows else "",
+                    "last": factor_rows[-1]["date"] if factor_rows else "",
+                    "source": "tdx_bridge",
+                    "adjustflag": "2",
+                })
+        except Exception as exc:
+            error_count += 1
+            results.append({
+                "freq": "day_factor",
+                "period": "1d",
+                "written": 0,
+                "status": "error",
+                "source": "tdx",
+                "error": str(exc),
+            })
 
     for freq in freqs:
         period = TDX_PERIOD_BY_FREQ.get(freq)
@@ -258,16 +305,23 @@ async def sync_symbol_klines(
             continue
         try:
             rows = await fetch_tdx_klines(canonical_symbol, period=period, count=5000, refresh=True)
-            written = await run_in_threadpool(
-                partial(
-                    upsert_klines,
-                    canonical_symbol,
-                    freq,
-                    rows,
-                    adjustflag="2",
-                    source="tdx",
+            source = "tdx_bridge"
+            adjustflag = "2"
+            if not rows:
+                written, rows = await run_in_threadpool(_sync_local_tdx_history_to_lake, canonical_symbol, freq, 5000)
+                source = "tdx_local_history"
+                adjustflag = "3"
+            else:
+                written = await run_in_threadpool(
+                    partial(
+                        upsert_klines,
+                        canonical_symbol,
+                        freq,
+                        rows,
+                        adjustflag=adjustflag,
+                        source="tdx",
+                    )
                 )
-            )
             total_written += written
             results.append({
                 "freq": freq,
@@ -276,9 +330,10 @@ async def sync_symbol_klines(
                 "status": "ok" if rows else "no_data",
                 "first": rows[0]["date"] if rows else "",
                 "last": rows[-1]["date"] if rows else "",
-                "source": "tdx",
+                "source": source,
+                "adjustflag": adjustflag,
             })
-            if written > 0:
+            if written > 0 and adjustflag == "2":
                 changed.append({"symbol": canonical_symbol, "freq": freq, "written": written})
         except Exception as exc:  # 单级别失败不阻断其他级别
             error_count += 1
@@ -290,6 +345,31 @@ async def sync_symbol_klines(
                 "source": "tdx",
                 "error": str(exc),
             })
+
+    qfq_rebuild = {}
+    try:
+        from server.services.tdx_qfq_normalizer import rebuild_tdx_qfq_from_existing_factors
+
+        qfq_result = await run_in_threadpool(
+            rebuild_tdx_qfq_from_existing_factors,
+            canonical_symbol,
+            target_freqs=[freq for freq in freqs if freq != "day"],
+        )
+        qfq_rebuild = {
+            "status": qfq_result.status,
+            "reason": qfq_result.reason,
+            "day_factor_count": qfq_result.day_factor_count,
+            "written": qfq_result.written,
+            "missing_factor_dates": qfq_result.missing_factor_dates,
+        }
+        if qfq_result.total_written > 0:
+            total_written += qfq_result.total_written
+            for freq, written in qfq_result.written.items():
+                if written > 0:
+                    changed.append({"symbol": canonical_symbol, "freq": freq, "written": written})
+    except Exception as exc:
+        error_count += 1
+        qfq_rebuild = {"status": "error", "error": str(exc)}
 
     structure_jobs = enqueue_structure_jobs_for_changes(
         changed,
@@ -304,6 +384,7 @@ async def sync_symbol_klines(
         "total_written": total_written,
         "errors": error_count,
         "results": results,
+        "qfq_rebuild": qfq_rebuild,
         "structure_jobs": structure_jobs,
         "started_at": started_at,
         "finished_at": datetime.now().isoformat(timespec="seconds"),

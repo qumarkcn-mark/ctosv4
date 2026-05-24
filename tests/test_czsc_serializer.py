@@ -170,6 +170,67 @@ def test_serialize_czsc_level_exposes_unfinished_bi_separately():
     assert result["metadata"]["has_unfinished_bi"] is True
 
 
+def test_serialize_unfinished_bi_uses_extreme_bar_time_not_last_bar():
+    fx_a = Obj(dt="2026-01-01 10:00:00", mark="G", high=12.5, low=12.2, fx=12.5)
+    raw_bars = [
+        Obj(dt="2026-01-01 10:30:00", high=12.3, low=11.9),
+        Obj(dt="2026-01-01 11:00:00", high=12.1, low=11.2),
+        Obj(dt="2026-01-01 11:30:00", high=11.8, low=11.6),
+    ]
+    czsc_obj = Obj(
+        fx_list=[fx_a],
+        bi_list=[],
+        zs_list=[],
+        ubi={
+            "direction": "Down",
+            "fx_a": fx_a,
+            "raw_bars": raw_bars,
+            "high": 12.5,
+            "low": 11.2,
+        },
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-01 11:30:00", "open": 11.7, "high": 11.8, "low": 11.6, "close": 11.7, "volume": 100}],
+        level="30",
+    )
+
+    assert result["unfinished_bi"]["x1"] == "2026-01-01 11:00:00"
+    assert result["unfinished_bi"]["end_price"] == 11.2
+
+
+def test_serialize_unfinished_bi_ignores_extremes_before_start_fx():
+    fx_a = Obj(dt="2026-01-01 14:00:00", mark="G", high=32.55, low=32.13, fx=32.55)
+    raw_bars = [
+        Obj(dt="2026-01-01 11:30:00", high=32.23, low=31.81),
+        Obj(dt="2026-01-01 14:00:00", high=32.55, low=32.13),
+        Obj(dt="2026-01-01 14:30:00", high=32.46, low=32.25),
+        Obj(dt="2026-01-01 15:00:00", high=32.36, low=32.23),
+    ]
+    czsc_obj = Obj(
+        fx_list=[fx_a],
+        bi_list=[],
+        zs_list=[],
+        ubi={
+            "direction": "Down",
+            "fx_a": fx_a,
+            "raw_bars": raw_bars,
+            "high": 32.55,
+            "low": 31.81,
+        },
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-01 15:00:00", "open": 32.32, "high": 32.36, "low": 32.23, "close": 32.36, "volume": 100}],
+        level="30",
+    )
+
+    assert result["unfinished_bi"]["x1"] == "2026-01-01 14:00:00"
+    assert result["unfinished_bi"]["end_price"] == 32.13
+
+
 def test_serialize_czsc_level_exposes_existing_native_signals():
     fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
     fx_b = Obj(dt="2026-01-02", mark="G", high=12, low=11, fx=12)

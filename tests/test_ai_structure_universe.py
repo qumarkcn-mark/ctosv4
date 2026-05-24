@@ -3,7 +3,9 @@ from server.engines.ai_native.universe_resolver import (
     has_active_position_for_symbol,
     list_ai_native_user_ids,
     list_interested_user_ids_for_symbol,
+    list_watchboard_user_ids,
     resolve_ai_native_universe,
+    resolve_watchboard_universe,
 )
 
 
@@ -125,3 +127,51 @@ def test_universe_prioritizes_recent_chat_before_watchlist(monkeypatch, tmp_path
     assert "sh.601398" not in [item["symbol"] for item in items]
     assert list_ai_native_user_ids() == [1, 2]
     assert list_interested_user_ids_for_symbol("sh600519") == [1]
+
+
+def test_watchboard_universe_only_uses_positions_and_visible_watchboard_groups(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, openid, nickname) VALUES (1, 'u1', 'U1'), (2, 'u2', 'U2')"
+        )
+        conn.execute(
+            """
+            INSERT INTO positions (user_id, symbol, name, quantity, avg_cost)
+            VALUES (1, 'sh600519', '贵州茅台', 100, 100.0)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO watchlist_groups (id, user_id, name, sort_order)
+            VALUES (10, 1, '自选', 0), (11, 1, '备选', 1), (12, 1, '观察', 2), (20, 2, '观察', 0)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO watchlist_items (group_id, symbol, name, sort_order)
+            VALUES (10, 'sz000988', '华工科技', 0),
+                   (11, 'sh688008', '澜起科技', 0),
+                   (12, 'sh600000', '浦发银行', 0),
+                   (20, 'sz000001', '平安银行', 0)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_structure_chat_sessions (
+                session_id, user_id, symbol, latest_context_id, status, created_at, updated_at
+            )
+            VALUES ('s1', 1, 'sh601398', 'ctx1', 'ACTIVE', '2099-05-12T10:00:00+08:00', '2099-05-12T10:00:00+08:00')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    items = resolve_watchboard_universe(1)
+
+    assert [item["symbol"] for item in items] == ["sh.600519", "sh.688008", "sz.000988"]
+    assert "sh.600000" not in [item["symbol"] for item in items]
+    assert "sh.601398" not in [item["symbol"] for item in items]
+    assert list_watchboard_user_ids() == [1]

@@ -284,6 +284,28 @@ ON ai_structure_reasoning_runs(user_id, symbol, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_context
 ON ai_structure_reasoning_runs(user_id, context_id);
 
+CREATE TABLE IF NOT EXISTS ai_trigger_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    symbol TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    trigger_reason TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    skip_reason TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT '',
+    context_id TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_trigger_logs_user_symbol
+ON ai_trigger_logs(user_id, symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_trigger_logs_reason
+ON ai_trigger_logs(trigger_reason, decision, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS ai_structure_context_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL UNIQUE,
@@ -1063,6 +1085,27 @@ def run_migrations(conn: sqlite3.Connection):
         """,
         "CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_latest ON ai_structure_reasoning_runs(user_id, symbol, updated_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_v5_reasoning_runs_context ON ai_structure_reasoning_runs(user_id, context_id)",
+        """
+        CREATE TABLE IF NOT EXISTS ai_trigger_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger_id TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            symbol TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            trigger_reason TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            skip_reason TEXT NOT NULL DEFAULT '',
+            run_id TEXT NOT NULL DEFAULT '',
+            context_id TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_ai_trigger_logs_user_symbol ON ai_trigger_logs(user_id, symbol, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_trigger_logs_reason ON ai_trigger_logs(trigger_reason, decision, created_at DESC)",
         """
         CREATE TABLE IF NOT EXISTS ai_structure_context_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

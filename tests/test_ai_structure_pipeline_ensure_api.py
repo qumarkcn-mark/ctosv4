@@ -46,6 +46,7 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
             "items": [{"symbol": kwargs["symbols"][0], "status": "PENDING"}],
             "user_id": kwargs["user_id"],
             "reason": kwargs["reason"],
+            "allow_when_auto_disabled": kwargs.get("allow_when_auto_disabled"),
         }
 
     monkeypatch.setattr(service.config, "BAOSTOCK_AUTO_SYNC_ENABLED", True)
@@ -80,6 +81,7 @@ def test_pipeline_ensure_fetches_kline_then_enqueues_snapshot_and_context(monkey
     assert data["snapshots"]["count"] == 2
     assert data["contexts"]["count"] == 1
     assert data["contexts"]["user_id"] == 1
+    assert data["contexts"].get("allow_when_auto_disabled") is False
 
 
 def test_pipeline_ensure_skips_baostock_fetch_when_auto_sync_disabled(monkeypatch, tmp_path):
@@ -98,7 +100,11 @@ def test_pipeline_ensure_skips_baostock_fetch_when_auto_sync_disabled(monkeypatc
     monkeypatch.setattr(
         service,
         "prewarm_ai_structure_contexts",
-        lambda **kwargs: {"count": len(kwargs["symbols"]), "items": []},
+        lambda **kwargs: {
+            "count": len(kwargs["symbols"]),
+            "items": [],
+            "allow_when_auto_disabled": kwargs.get("allow_when_auto_disabled"),
+        },
     )
 
     response = make_client().post(
@@ -111,6 +117,7 @@ def test_pipeline_ensure_skips_baostock_fetch_when_auto_sync_disabled(monkeypatc
     assert data["kline"]["ready"] is True
     assert data["kline"]["items"][0]["status"] == "skipped"
     assert data["kline"]["items"][0]["reason"] == "BAOSTOCK_AUTO_SYNC_DISABLED"
+    assert data["contexts"]["allow_when_auto_disabled"] is False
     assert quick_calls == []
     assert backfill_calls == []
 
@@ -157,3 +164,4 @@ def test_backfill_rewarms_changed_symbol(monkeypatch, tmp_path):
     assert snapshot_calls[0]["requested_by_user_id"] == 7
     assert context_calls[0]["user_id"] == 7
     assert context_calls[0]["levels"] == ["day"]
+    assert context_calls[0]["allow_when_auto_disabled"] is False

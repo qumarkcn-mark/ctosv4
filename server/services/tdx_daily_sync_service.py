@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,7 @@ TAIL_RECORDS = 120
 
 DEFAULT_VIPDOC_CANDIDATES = (
     TDX_VIPDOC,
+    "/Users/markqu/Desktop/tdx_vipdoc_mount/vipdoc",
     "/Users/markqu/Desktop/tdx_vipdoc_mount",
     "/Volumes/tdx_vipdoc",
 )
@@ -37,8 +39,14 @@ def resolve_vipdoc(vipdoc: Optional[str] = None) -> str:
     """Resolve the first usable vipdoc path."""
     candidates = [vipdoc] if vipdoc else list(DEFAULT_VIPDOC_CANDIDATES)
     for item in candidates:
-        if item and _has_vipdoc_shape(Path(item)):
-            return str(Path(item))
+        if not item:
+            continue
+        root = Path(item)
+        if _has_vipdoc_shape(root):
+            return str(root)
+        nested = root / "vipdoc"
+        if _has_vipdoc_shape(nested):
+            return str(nested)
     return str(Path(candidates[0] or TDX_VIPDOC))
 
 
@@ -196,6 +204,83 @@ def sync_daily_files(root: Path, mode: str, reset: bool, job_id: Optional[str] =
 
 def _has_vipdoc_shape(root: Path) -> bool:
     return (root / "sh" / "lday").is_dir() and (root / "sz" / "lday").is_dir()
+
+
+def tdx_day_file_path(symbol: str, vipdoc: Optional[str] = None) -> str:
+    from server.domain.symbols import parse_symbol
+
+    parsed = parse_symbol(symbol)
+    return str(Path(resolve_vipdoc(vipdoc)) / parsed.market / "lday" / f"{parsed.market}{parsed.code}.day")
+
+
+def read_tdx_day_klines(
+    symbol: str,
+    limit: int = 5000,
+    vipdoc: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> list[dict]:
+    """Read local TDX .day rows for one A-share symbol."""
+    path = tdx_day_file_path(symbol, vipdoc)
+    if not os.path.isfile(path):
+        return []
+    try:
+        rows = _parse_day_file(path, None)
+    except OSError:
+        return []
+    if start_date:
+        rows = [row for row in rows if row["date"] >= start_date[:10]]
+    if end_date:
+        rows = [row for row in rows if row["date"] <= end_date[:10]]
+    return rows[-max(1, min(int(limit), 20000)):]
+
+
+def aggregate_tdx_week_klines(day_rows: list[dict]) -> list[dict]:
+    """Aggregate local TDX daily rows into week bars using the week's last trading day."""
+    buckets: dict[tuple[int, int], list[dict]] = {}
+    for row in day_rows:
+        try:
+            date_value = datetime.strptime(str(row.get("date") or "")[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        iso_year, iso_week, _ = date_value.isocalendar()
+        buckets.setdefault((iso_year, iso_week), []).append(row)
+
+    weeks = []
+    for key in sorted(buckets):
+        rows = sorted(buckets[key], key=lambda item: item["date"])
+        first = rows[0]
+        last = rows[-1]
+        weeks.append(
+            {
+                "date": str(last["date"])[:10],
+                "open": float(first["open"]),
+                "high": max(float(row["high"]) for row in rows),
+                "low": min(float(row["low"]) for row in rows),
+                "close": float(last["close"]),
+                "volume": sum(float(row.get("volume", 0) or 0) for row in rows),
+                "amount": sum(float(row.get("amount", 0) or 0) for row in rows),
+            }
+        )
+    return weeks
+
+
+def read_tdx_week_klines(
+    symbol: str,
+    limit: int = 1200,
+    vipdoc: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> list[dict]:
+    """Read local TDX .day rows and aggregate them into week bars."""
+    day_rows = read_tdx_day_klines(
+        symbol,
+        limit=20000,
+        vipdoc=vipdoc,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return aggregate_tdx_week_klines(day_rows)[-max(1, min(int(limit), 5000)):]
 
 
 def _collect_day_files(root: Path) -> list[tuple[str, str]]:

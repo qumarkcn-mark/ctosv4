@@ -35,7 +35,7 @@ else
     fi
 fi
 
-# ── 2. 运行增量更新 ────────────────────────────────────────────────────────────
-log "开始增量更新..."
-"$PYTHON" "$PROJECT_DIR/scripts/update_tdx_daily.py" 2>&1 | tee -a "$LOG"
+# ── 2. 运行盘后完整链路 ────────────────────────────────────────────────────────
+log "开始盘后 TDX 数据链路..."
+"$PYTHON" -m server.scripts.run_tdx_postmarket_sync --vipdoc "$MOUNT_POINT" 2>&1 | tee -a "$LOG"
 log "更新完成"

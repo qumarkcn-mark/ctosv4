@@ -57,6 +57,26 @@ export async function fetchStructureView(symbol, periodValue, count = 1200) {
   ).then((json) => json.data)
 }
 
+export async function fetchStructurePreview(symbol, periodValue, count = 1200) {
+  const period = getKlinePeriod(periodValue)
+  return apiJson(
+    `${API_BASE}/ai-structure/structure-preview/${encodeURIComponent(symbol)}?level=${period.apiInterval}&count=${count}`
+  ).then((json) => json.data)
+}
+
+export async function fetchStructureOverlay(symbol, periodValue, count = 1200) {
+  try {
+    return await fetchStructurePreview(symbol, periodValue, count)
+  } catch (previewError) {
+    const snapshot = await fetchStructureView(symbol, periodValue, count)
+    return {
+      ...snapshot,
+      mode: snapshot?.mode || 'snapshot',
+      fallback_reason: previewError?.message || 'preview_failed',
+    }
+  }
+}
+
 export async function fetchMomentumContext(symbol, periodValue, count = 1200) {
   const period = getKlinePeriod(periodValue)
   return apiJson(

@@ -76,6 +76,7 @@ def test_snapshot_force_rebuild_requeues_existing_skipped(monkeypatch, tmp_path)
 
 def test_snapshot_worker_creates_czsc_snapshot(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(service.config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", False)
     monkeypatch.setattr(service, "get_kline_window_signature", lambda *args, **kwargs: fake_signature())
 
     def fake_analyze(symbol, levels, count, compute_profile):
@@ -107,8 +108,15 @@ def test_snapshot_worker_creates_czsc_snapshot(monkeypatch, tmp_path):
     result = service.run_snapshot_job_sync(job)
 
     assert result["status"] == "success"
-    assert result["context_job"]["status"] == "PENDING"
+    assert result["context_job"]["status"] == "skipped"
+    assert result["context_job"]["reason"] == "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_DISABLED"
     assert result["context_job"]["source_snapshot_ids"] == [result["snapshot_id"]]
+    conn = database.get_connection()
+    try:
+        count = conn.execute("SELECT COUNT(*) AS c FROM ai_structure_context_jobs").fetchone()["c"]
+    finally:
+        conn.close()
+    assert count == 0
     latest = service.get_latest_snapshot(symbol="sh.600519", level="day")
     assert latest["engine"] == "czsc"
     assert latest["engine_version"] == "test-czsc"
@@ -118,8 +126,48 @@ def test_snapshot_worker_creates_czsc_snapshot(monkeypatch, tmp_path):
     assert status["snapshot"]["snapshot_id"] == latest["snapshot_id"]
 
 
+def test_get_latest_snapshot_prefers_current_qfq_snapshot_over_newer_raw(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+    qfq = service.save_snapshot(
+        symbol="sz301076",
+        level="day",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-qfq",
+        data_as_of="2026-05-22",
+        snapshot_payload={"level": "day", "price": 32.77, "source": {"provider": "tdx", "adjustflag": "2"}},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    raw = service.save_snapshot(
+        symbol="sz301076",
+        level="day",
+        compute_profile=service.DEFAULT_COMPUTE_PROFILE,
+        data_signature="sig-raw",
+        data_as_of="2026-05-22",
+        snapshot_payload={"level": "day", "price": 32.77, "source": {"provider": "tdx", "adjustflag": "3"}},
+        raw_bi_context={"levels": {}},
+        engine_version="test",
+        adapter_version="test-adapter",
+    )
+    conn = database.get_connection()
+    try:
+        conn.execute("UPDATE structure_snapshots SET updated_at = '2026-05-22T21:00:00+08:00' WHERE snapshot_id = ?", (qfq["snapshot_id"],))
+        conn.execute("UPDATE structure_snapshots SET updated_at = '2026-05-23T09:00:00+08:00' WHERE snapshot_id = ?", (raw["snapshot_id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(service, "_signature_for_level", lambda *args, **kwargs: {**fake_signature("sig-qfq"), "source": "tdx"})
+
+    latest = service.get_latest_snapshot(symbol="sz301076", level="day")
+
+    assert latest["snapshot_id"] == qfq["snapshot_id"]
+    assert latest["snapshot"]["source"]["adjustflag"] == "2"
+
+
 def test_snapshot_followup_context_uses_latest_snapshot_set(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(service.config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", True)
     signatures = {
         "day": fake_signature(signature="sig-day"),
         "5": fake_signature(signature="sig-5"),
@@ -172,6 +220,7 @@ def test_snapshot_followup_context_uses_latest_snapshot_set(monkeypatch, tmp_pat
 
 def test_snapshot_followup_context_enqueues_all_interested_users(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(service.config, "AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", True)
     conn = database.get_connection()
     try:
         conn.execute("INSERT INTO users (id, openid, nickname) VALUES (2, 'u2', 'U2')")

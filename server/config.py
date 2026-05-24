@@ -61,7 +61,12 @@ STRUCTURE_WORKER_ENABLED = os.getenv("STRUCTURE_WORKER_ENABLED", "true").lower()
 STRUCTURE_SYNC_IF_MISSING = os.getenv("STRUCTURE_SYNC_IF_MISSING", "false").lower() == "true"
 STRUCTURE_WORKER_INTERVAL = float(os.getenv("STRUCTURE_WORKER_INTERVAL", "2"))
 STRUCTURE_JOB_TIMEOUT_SECONDS = int(os.getenv("STRUCTURE_JOB_TIMEOUT_SECONDS", "600"))
+AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED = os.getenv("AI_STRUCTURE_CONTEXT_AUTO_ENQUEUE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 AI_STRUCTURE_OUTCOME_WORKER_INTERVAL = float(os.getenv("AI_STRUCTURE_OUTCOME_WORKER_INTERVAL", "60"))
+AI_TRIGGER_ENABLED = os.getenv("AI_TRIGGER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+AI_AUTO_FULL_REASONING_ENABLED = os.getenv("AI_AUTO_FULL_REASONING_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+AI_MANUAL_FULL_REASONING_ENABLED = os.getenv("AI_MANUAL_FULL_REASONING_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+AI_TRIGGER_COOLDOWN_SECONDS = int(os.getenv("AI_TRIGGER_COOLDOWN_SECONDS", "1800"))
 AI_UNIFIED_REASONING_WORKER_ENABLED = os.getenv("AI_UNIFIED_REASONING_WORKER_ENABLED", "false").lower() == "true"
 AI_UNIFIED_REASONING_WORKER_INTERVAL = float(os.getenv("AI_UNIFIED_REASONING_WORKER_INTERVAL", "900"))
 AI_UNIFIED_REASONING_SYMBOLS_PER_USER = int(os.getenv("AI_UNIFIED_REASONING_SYMBOLS_PER_USER", "3"))
@@ -91,7 +96,10 @@ QMT_BRIDGE_TIMEOUT = float(os.getenv("QMT_BRIDGE_TIMEOUT", "2"))
 QMT_LOG_BRIDGE_URL = os.getenv("QMT_LOG_BRIDGE_URL", "http://127.0.0.1:8766").rstrip("/")
 
 # TDX 本地数据目录。当前只读 1 分钟展示/回放，不作为实时确认源。
+TDX_ROOT = os.getenv("TDX_ROOT", "")
 TDX_VIPDOC = os.getenv("TDX_VIPDOC", "/Volumes/tdx_vipdoc")
+TDX_LOCAL_HISTORY_SYNC_ENABLED = os.getenv("TDX_LOCAL_HISTORY_SYNC_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+TDX_LOCAL_HISTORY_SYNC_ON_STARTUP_ENABLED = os.getenv("TDX_LOCAL_HISTORY_SYNC_ON_STARTUP_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
 # 推送
 DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")

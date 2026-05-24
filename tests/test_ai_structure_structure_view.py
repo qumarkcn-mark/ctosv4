@@ -436,6 +436,79 @@ def test_structure_view_api_returns_public_snapshot_view(monkeypatch, tmp_path):
     assert data["active_center"]["zd"] == 10.2
 
 
+def test_structure_preview_api_returns_live_view_without_snapshot_job(monkeypatch, tmp_path):
+    reset_db(monkeypatch, tmp_path)
+
+    def fake_analyze(symbol, levels, count, compute_profile):
+        return {
+            "engine": "czsc",
+            "levels": {
+                "day": {
+                    "level": "day",
+                    "price": 10.8,
+                    "source": {"provider": "tdx", "adjustflag": "2"},
+                    "klines": [
+                        {"time": "2026-05-10", "open": 10, "high": 11, "low": 9, "close": 10.5},
+                        {"time": "2026-05-11", "open": 10.5, "high": 12, "low": 10, "close": 11.5},
+                        {"time": "2026-05-12", "open": 11.5, "high": 12, "low": 10.6, "close": 10.8},
+                    ],
+                    "bis": [
+                        {
+                            "direction": "up",
+                            "is_up": True,
+                            "is_sure": True,
+                            "x0": "2026-05-10",
+                            "x1": "2026-05-11",
+                            "y0": 10.0,
+                            "y1": 11.5,
+                        }
+                    ],
+                    "unfinished_bi": {
+                        "direction": "down",
+                        "is_up": False,
+                        "is_sure": False,
+                        "x0": "2026-05-11",
+                        "x1": "2026-05-12",
+                        "y0": 11.5,
+                        "y1": 10.6,
+                        "source": "czsc_ubi",
+                        "status": "ongoing",
+                    },
+                    "bi_zhongshus": [],
+                    "active_zhongshu": {},
+                }
+            },
+        }
+
+    monkeypatch.setattr("server.engines.ai_native.structure_preview_service.czsc_adapter.analyze_czsc_structure_sync", fake_analyze)
+    monkeypatch.setattr("server.engines.ai_native.structure_preview_service.czsc_adapter.get_czsc_engine_version", lambda: "test-czsc")
+    monkeypatch.setattr(
+        "server.engines.ai_native.structure_preview_service.structure_signature_for_policy",
+        lambda **_kwargs: {"signature": "sig-preview", "last_date": "2026-05-12"},
+    )
+
+    response = make_client().get("/api/ai-structure/structure-preview/sh600519?level=day")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["mode"] == "preview"
+    assert data["persisted"] is False
+    assert data["usage"] == "chart_overlay_only"
+    assert data["snapshot_id"] == ""
+    assert data["data_signature"] == "sig-preview"
+    assert len(data["bis"]) == 1
+    assert data["unfinished_bi"]["is_sure"] is False
+
+    conn = database.get_connection()
+    try:
+        snapshot_count = conn.execute("SELECT COUNT(*) AS c FROM structure_snapshots").fetchone()["c"]
+        job_count = conn.execute("SELECT COUNT(*) AS c FROM structure_snapshot_jobs").fetchone()["c"]
+    finally:
+        conn.close()
+    assert snapshot_count == 0
+    assert job_count == 0
+
+
 def test_structure_view_marks_segments_unavailable_without_fallback(monkeypatch, tmp_path):
     reset_db(monkeypatch, tmp_path)
     snapshot_service.save_snapshot(

@@ -35,6 +35,49 @@ def test_vipdoc_status_counts_a_share_day_files(tmp_path, monkeypatch):
     assert status["records_estimate"] == 2
 
 
+def test_resolve_vipdoc_accepts_root_with_nested_vipdoc(tmp_path):
+    root = tmp_path / "tdx_mount"
+    (root / "vipdoc" / "sh" / "lday").mkdir(parents=True)
+    (root / "vipdoc" / "sz" / "lday").mkdir(parents=True)
+
+    assert svc.resolve_vipdoc(str(root)) == str(root / "vipdoc")
+
+
+def test_read_tdx_day_klines_reads_one_symbol_from_local_file(tmp_path):
+    root = tmp_path / "vipdoc"
+    _write_day(
+        root / "sz" / "lday" / "sz301078.day",
+        [(20260521, 9.51), (20260522, 9.54)],
+    )
+    (root / "sh" / "lday").mkdir(parents=True)
+
+    rows = svc.read_tdx_day_klines("sz301078", vipdoc=str(root), limit=10)
+
+    assert [row["date"] for row in rows] == ["2026-05-21", "2026-05-22"]
+    assert rows[-1]["close"] == 9.53
+
+
+def test_read_tdx_week_klines_aggregates_local_day_rows(tmp_path):
+    root = tmp_path / "vipdoc"
+    _write_day(
+        root / "sz" / "lday" / "sz301078.day",
+        [
+            (20260518, 9.1),
+            (20260519, 9.3),
+            (20260522, 9.5),
+            (20260525, 9.7),
+        ],
+    )
+    (root / "sh" / "lday").mkdir(parents=True)
+
+    rows = svc.read_tdx_week_klines("sz301078", vipdoc=str(root), limit=10)
+
+    assert [row["date"] for row in rows] == ["2026-05-22", "2026-05-25"]
+    assert rows[0]["open"] == 9.0
+    assert rows[0]["close"] == 9.5
+    assert rows[0]["volume"] == 3000
+
+
 def test_sync_daily_files_writes_tdx_lake(tmp_path, monkeypatch):
     root = tmp_path / "vipdoc"
     db_path = tmp_path / "tdx_lake.db"

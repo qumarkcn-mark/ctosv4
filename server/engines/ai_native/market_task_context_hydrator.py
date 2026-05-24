@@ -22,6 +22,7 @@ def hydrate_market_task_context(
     """Build a factual observation layer for the second-stage LLM."""
     return {
         "version": "market_task_context.v1",
+        "macro_phase": _macro_phase(structure_geometry),
         "task_candidates": _task_candidates(
             current_price=current_price,
             structure_geometry=structure_geometry,
@@ -34,6 +35,60 @@ def hydrate_market_task_context(
         ),
         "volume_phase": _volume_phase(momentum_dynamics),
         "continuity_read": _continuity_read(reasoning_continuity_context or {}),
+    }
+
+
+def _macro_phase(structure_geometry: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    positions = {
+        level: ((structure_geometry.get(level) or {}).get("price_position") or {}).get("position") or "unknown"
+        for level in ("周线", "日线", "30分钟", "5分钟")
+    }
+    evidence = [f"{level}={position}" for level, position in positions.items()]
+    weekly = positions["周线"]
+    daily = positions["日线"]
+    m30 = positions["30分钟"]
+    m5 = positions["5分钟"]
+
+    if weekly == "above_zg" and daily == "above_zg" and m30 == "above_zg" and m5 == "in_center":
+        return {
+            "phase": "strong_trend_short_range_digesting",
+            "read": "周线/日线/30分钟均在中枢上方，属于大级别强势离开后的短级别震荡消化",
+            "evidence": evidence,
+            "implication": "不要把短级别中枢内震荡直接判成趋势结束，重点看短级别能否向上离开并回踩确认，或跌破下沿把高位消化转成调整。",
+        }
+    if weekly == "above_zg" and daily in {"in_center", "below_zd"}:
+        return {
+            "phase": "weekly_breakout_daily_pullback",
+            "read": "周线离开中枢后的日线回踩修复",
+            "evidence": evidence,
+            "implication": "缩量修复不直接判弱，重点看低级别是否形成承接确认。",
+        }
+    if weekly == "above_zg" and daily == "above_zg":
+        return {
+            "phase": "strong_trend",
+            "read": "周线和日线均在中枢上方，处于大级别强趋势延续背景",
+            "evidence": evidence,
+            "implication": "大背景偏强，但短线是否延续仍要看当前活跃级别的中枢边界和动能确认。",
+        }
+    if weekly == "in_center" and daily == "in_center":
+        return {
+            "phase": "dual_range_selection",
+            "read": "周线和日线双中枢震荡选择",
+            "evidence": evidence,
+            "implication": "方向未定时，压力/支撑只作为触发边界，不应提前给出单边结论。",
+        }
+    if weekly == "below_zd":
+        return {
+            "phase": "bearish_bounce",
+            "read": "周线跌破中枢后的反抽或弱修复",
+            "evidence": evidence,
+            "implication": "反弹需要更强的小级别确认，否则容易按下跌中继处理。",
+        }
+    return {
+        "phase": "mixed_transition",
+        "read": "多级别状态不完全一致，处于过渡判断区",
+        "evidence": evidence,
+        "implication": "优先看当前活跃级别中枢边界、小级别转折链和压力支撑互动。",
     }
 
 

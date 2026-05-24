@@ -32,12 +32,24 @@ def test_czsc_adapter_runs_with_fake_czsc(monkeypatch):
     ]
     calls = {}
 
-    def fake_query(symbol, freq, limit, adjustflag, source):
-        calls.update({"symbol": symbol, "freq": freq, "limit": limit, "adjustflag": adjustflag, "source": source})
+    def fake_query_structure_klines(symbol, level, limit, policy):
+        selected = policy["selected"]
+        calls.update({
+            "symbol": symbol,
+            "freq": level,
+            "limit": limit,
+            "adjustflag": selected["adjustflag"],
+            "source": selected["source"],
+        })
         return rows
 
     monkeypatch.setattr(czsc_adapter, "_load_czsc", lambda: FakeCzscApi)
-    monkeypatch.setattr(czsc_adapter, "query_klines", fake_query)
+    monkeypatch.setattr(czsc_adapter, "query_structure_klines", fake_query_structure_klines)
+    monkeypatch.setattr(
+        czsc_adapter,
+        "resolve_structure_source_policy",
+        lambda **_kwargs: {"selected": {"source": "baostock", "adjustflag": "2"}},
+    )
 
     result = czsc_adapter.analyze_czsc_structure_sync("sh600519", levels=["day"], count=50)
 

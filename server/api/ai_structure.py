@@ -42,12 +42,14 @@ from server.engines.ai_native.structure_context_service import (
 )
 from server.engines.ai_native.structure_evidence_service import get_chart_context
 from server.engines.ai_native.momentum_context_service import get_momentum_context
+from server.engines.ai_native.structure_preview_service import get_structure_preview
 from server.engines.ai_native.structure_view_service import get_structure_view
 from server.engines.ai_native.structure_reminder_service import (
     ack_structure_reminder,
     create_reminder_from_chat_evidence,
     list_structure_reminders,
 )
+from server.engines.ai_native.intraday_event_service import build_intraday_event_state
 from server.engines.ai_native.unified_reasoning_service import (
     ALL_UNIFIED_FULL_TEXT_VERSIONS,
     ALL_UNIFIED_REASONING_VERSIONS,
@@ -55,8 +57,8 @@ from server.engines.ai_native.unified_reasoning_service import (
     UNIFIED_REASONING_VERSION,
     get_latest_unified_reasoning,
     normalize_monitor_conditions,
-    trigger_unified_reasoning,
 )
+from server.engines.ai_native.ai_trigger_service import TRIGGER_MANUAL_FULL_REASONING, request_ai_reasoning
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
@@ -115,6 +117,8 @@ class UnifiedReasoningRequest(BaseModel):
     symbols: list[str] = Field(default_factory=list, min_length=1, max_length=10)
     levels: list[str] = Field(default_factory=lambda: list(DEFAULT_LEVELS), max_length=6)
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
+    trigger_reason: str = TRIGGER_MANUAL_FULL_REASONING
+    force: bool = True
 
 
 class ReminderCreateRequest(BaseModel):
@@ -170,6 +174,7 @@ async def watchboard(current_user_id: int = Depends(get_current_user_id)):
                 if cost > 0:
                     item["position"]["pnl_pct"] = round((_num(item["price"]) - cost) / cost * 100, 2)
             _apply_nearest_watch_levels(item)
+            item["intraday_event_state"] = build_intraday_event_state(item)
     return {
         "status": "success",
         "data": {
@@ -361,14 +366,16 @@ async def unified_reasoning_trigger(
     items = []
     for raw_symbol in request.symbols:
         try:
-            items.append(await trigger_unified_reasoning(
+            items.append(await request_ai_reasoning(
                 user_id=current_user_id,
                 symbol=normalize_symbol(raw_symbol),
+                trigger_reason=request.trigger_reason or TRIGGER_MANUAL_FULL_REASONING,
+                force=request.force,
                 levels=levels,
                 compute_profile=request.compute_profile,
             ))
         except ValueError as exc:
-            items.append({"symbol": normalize_symbol(raw_symbol), "status": "skipped", "error": str(exc)})
+            items.append({"symbol": str(raw_symbol), "status": "skipped", "error": str(exc)})
     return {"status": "success", "data": {"count": len(items), "items": items}}
 
 
@@ -502,6 +509,26 @@ def structure_view(
     )
     if not result:
         raise HTTPException(status_code=404, detail="structure view not found")
+    return {"status": "success", "data": result}
+
+
+@router.get("/structure-preview/{symbol}")
+def structure_preview(
+    symbol: str,
+    level: str = Query(default="day"),
+    compute_profile: str = Query(default=DEFAULT_COMPUTE_PROFILE),
+    count: int = Query(default=1200, ge=10, le=2000),
+):
+    _validate_compute_profile(compute_profile)
+    normalized_level = _validate_level(level)
+    result = get_structure_preview(
+        symbol=normalize_symbol(symbol),
+        level=normalized_level,
+        compute_profile=compute_profile,
+        count=count,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="structure preview not found")
     return {"status": "success", "data": result}
 
 
@@ -963,8 +990,10 @@ def _latest_snapshot_as_of_by_level(conn, symbol: str) -> dict[str, str]:
            AND level IN ('week', 'day', '30', '5')
          ORDER BY
            CASE
-             WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 0
-             ELSE 1
+             WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx'
+              AND json_extract(snapshot_json, '$.source.adjustflag') = '2' THEN 0
+             WHEN json_extract(snapshot_json, '$.source.provider') = 'tdx' THEN 1
+             ELSE 2
            END,
            updated_at DESC,
            id DESC

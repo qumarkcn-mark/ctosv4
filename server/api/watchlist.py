@@ -189,14 +189,23 @@ def get_stock_init_status(symbol: str, current_user_id: int = Depends(get_curren
     canonical_symbol = normalize_symbol(symbol)
     kline_items = []
     for freq in ALL_FREQS:
-        rows = query_lake_klines(canonical_symbol, freq, limit=1, adjustflag="2", source="tdx")
+        qfq_rows = query_lake_klines(canonical_symbol, freq, limit=1, adjustflag="2", source="tdx")
+        raw_rows = query_lake_klines(canonical_symbol, freq, limit=1, adjustflag="3", source="tdx")
+        rows = qfq_rows
+        adjustflag = "2"
+        if qfq_rows and raw_rows and str(raw_rows[-1].get("date") or "") > str(qfq_rows[-1].get("date") or ""):
+            rows = raw_rows
+            adjustflag = "3"
+        elif not rows:
+            rows = raw_rows
+            adjustflag = "3" if rows else "2"
         latest = rows[-1]["date"] if rows else ""
         kline_items.append({
             "freq": freq,
             "ready": bool(rows),
             "latest": latest,
             "source": "tdx",
-            "adjustflag": "2",
+            "adjustflag": adjustflag,
         })
 
     snapshots = get_snapshot_status_batch(

@@ -298,6 +298,19 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
     assert "不适合加仓" in answer["coach_answer"]
     assert "253.49" in answer["coach_answer"]
     assert answer["coach_answer"].endswith("仅供参考，不构成投资建议")
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT mode, trigger_reason, decision, context_id FROM ai_trigger_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert dict(row) == {
+        "mode": "short_answer",
+        "trigger_reason": "user_question",
+        "decision": "generated",
+        "context_id": context["context_id"],
+    }
 
 
 def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_path):
@@ -369,6 +382,11 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
         payload = json.loads(context_json)
         continuity = payload["reasoning_continuity_context"]
         assert payload["version"] == "unified_reasoning_chat.v1"
+        assert payload["chat_style"] == "intraday_companion"
+        assert "full_reasoning_text" not in payload
+        assert payload["full_reasoning_excerpt"].startswith("统一推演全文")
+        assert payload["answer_contract"]["mode"] == "concise"
+        assert "不是报告生成器" in system_prompt
         assert "连续性上下文" in system_prompt
         assert continuity["previous_reasoning"]["card_summary"] == "测试4.09压力"
         assert continuity["trigger_status_since_last_run"][0]["status"] == "not_touched"

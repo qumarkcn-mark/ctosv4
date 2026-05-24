@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -44,6 +45,17 @@ def test_sync_symbol_klines_only_syncs_requested_symbol(monkeypatch):
     monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
     monkeypatch.setattr(data_api, "upsert_klines", fake_upsert)
     monkeypatch.setattr(kline_sync_worker, "enqueue_structure_jobs_for_changes", fake_enqueue_structure_jobs)
+    monkeypatch.setattr(
+        "server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="skipped",
+            reason="test",
+            day_factor_count=0,
+            written={},
+            missing_factor_dates={},
+            total_written=0,
+        ),
+    )
 
     app = FastAPI()
     app.include_router(data_api.router)
@@ -109,8 +121,12 @@ def test_sync_symbol_klines_can_refresh_only_requested_interval(monkeypatch):
 
     assert response.status_code == 200
     assert payload["freqs"] == ["30"]
-    assert payload["total_written"] == 2
-    assert fetch_calls == [("sh.600549", "30m", 5000, True)]
+    assert payload["total_written"] == 4
+    assert fetch_calls == [
+        ("sh.600549", "1d", 5000, True),
+        ("sh.600549", "30m", 5000, True),
+    ]
+    assert payload["results"][0]["freq"] == "day_factor"
 
 
 def test_sync_all_klines_disables_legacy_baostock_force_sync():
@@ -169,8 +185,78 @@ def test_query_klines_reads_tdx_front_adjusted_lake(monkeypatch):
             "limit": 120,
             "adjustflag": "2",
             "source": "tdx",
-        }
+        },
+        {
+            "symbol": "sh.600790",
+            "freq": "30",
+            "start_date": None,
+            "end_date": None,
+            "limit": 120,
+            "adjustflag": "3",
+            "source": "tdx",
+        },
     ]
+
+
+def test_query_klines_falls_back_to_tdx_raw_lake(monkeypatch):
+    query_calls = []
+
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def fake_query(symbol, freq, start_date=None, end_date=None, limit=2000, adjustflag="2", source=None):
+        query_calls.append({"adjustflag": adjustflag, "source": source})
+        if adjustflag == "2":
+            return []
+        return [{"date": "2026-04-30", "open": 1, "high": 2, "low": 1, "close": 2}]
+
+    async def fake_fetch(*_args, **_kwargs):
+        raise AssertionError("raw TDX lake rows should avoid bridge fallback")
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "query_lake_klines", fake_query)
+    monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/klines/sh600036?interval=day&count=120")
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert query_calls == [
+        {"adjustflag": "2", "source": "tdx"},
+        {"adjustflag": "3", "source": "tdx"},
+    ]
+
+
+def test_query_klines_uses_raw_when_qfq_lake_is_stale(monkeypatch):
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def fake_query(symbol, freq, start_date=None, end_date=None, limit=2000, adjustflag="2", source=None):
+        if adjustflag == "2":
+            return [{"date": "2026-05-21 15:00:00", "open": 1, "high": 2, "low": 1, "close": 2}]
+        return [{"date": "2026-05-22 15:00:00", "open": 3, "high": 4, "low": 3, "close": 4}]
+
+    async def fake_fetch(*_args, **_kwargs):
+        raise AssertionError("fresher raw TDX lake rows should avoid bridge fallback")
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "query_lake_klines", fake_query)
+    monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/klines/sh600790?interval=m30&count=120")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["klines"][0]["date"] == "2026-05-22 15:00:00"
 
 
 def test_lake_status_api_is_readonly_contract(monkeypatch):

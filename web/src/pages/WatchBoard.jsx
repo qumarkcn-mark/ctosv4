@@ -355,7 +355,7 @@ export default function WatchBoard() {
         await apiJson('/api/ai-structure/unified-reasoning/trigger', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols: [stock.symbol] }),
+          body: JSON.stringify({ symbols: [stock.symbol], trigger_reason: 'new_watchboard_symbol', force: true }),
         })
       } catch (err) {
         console.warn('新增股票后触发统一推演失败:', err)

@@ -15,6 +15,7 @@ from server.domain.symbols import normalize_symbol
 DEFAULT_SOURCES = ("positions", "recent_chat", "watchlist")
 RECENT_CHAT_LOOKBACK_DAYS = 30
 MAX_RECENT_CHAT_SYMBOLS_PER_USER = 20
+WATCHBOARD_GROUP_NAMES = ("自选", "备选")
 
 SOURCE_PRIORITIES = {
     "pin": 120,
@@ -70,6 +71,39 @@ def resolve_ai_native_universe(user_id: int, sources: Iterable[str] | None = Non
     return sorted(items.values(), key=lambda item: (-int(item["priority"]), item["symbol"]))
 
 
+def resolve_watchboard_universe(user_id: int) -> list[dict]:
+    """Resolve symbols visible on the V5 watchboard.
+
+    Auto full reasoning should stay inside this universe: active positions plus
+    explicit watchboard groups. Other watchlist groups and recent chats are
+    user-initiated only.
+    """
+    items: dict[str, dict] = {}
+    for row in _position_rows(user_id):
+        _merge_item(
+            items,
+            symbol=row["symbol"],
+            name=row.get("name"),
+            source="positions",
+            priority=SOURCE_PRIORITIES["positions"],
+            has_position=True,
+        )
+    for row in _watchboard_group_rows(user_id):
+        canonical = normalize_symbol(row["symbol"])
+        existing = items.get(canonical)
+        priority = SOURCE_PRIORITIES["position_watchlist"] if existing and existing["has_position"] else SOURCE_PRIORITIES["watchlist"]
+        _merge_item(
+            items,
+            symbol=canonical,
+            name=row.get("name"),
+            source="watchboard",
+            priority=priority,
+            has_position=bool(existing and existing["has_position"]),
+            watchlist_group=row.get("group_name"),
+        )
+    return sorted(items.values(), key=lambda item: (-int(item["priority"]), item["symbol"]))
+
+
 def list_ai_native_user_ids(limit: int | None = None) -> list[int]:
     """List users whose watchlist or active positions can drive V5 background jobs."""
     conn = get_connection()
@@ -90,6 +124,30 @@ def list_ai_native_user_ids(limit: int | None = None) -> list[int]:
              ORDER BY user_id
             """,
             (_recent_chat_cutoff(),),
+        ).fetchall()
+    finally:
+        conn.close()
+    user_ids = [int(row["user_id"]) for row in rows if row["user_id"] is not None]
+    return user_ids[: int(limit)] if limit is not None else user_ids
+
+
+def list_watchboard_user_ids(limit: int | None = None) -> list[int]:
+    """List users with visible watchboard symbols."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT user_id
+              FROM positions
+             WHERE quantity > 0
+            UNION
+            SELECT DISTINCT wg.user_id
+              FROM watchlist_groups wg
+              JOIN watchlist_items wi ON wi.group_id = wg.id
+             WHERE wg.name IN ({",".join("?" for _ in WATCHBOARD_GROUP_NAMES)})
+             ORDER BY user_id
+            """,
+            WATCHBOARD_GROUP_NAMES,
         ).fetchall()
     finally:
         conn.close()
@@ -191,6 +249,25 @@ def _watchlist_rows(user_id: int) -> list[dict]:
              ORDER BY wg.sort_order, wi.sort_order, wi.id
             """,
             (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _watchboard_group_rows(user_id: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT wi.symbol, wi.name, wg.name AS group_name
+              FROM watchlist_items wi
+              JOIN watchlist_groups wg ON wg.id = wi.group_id
+             WHERE wg.user_id = ?
+               AND wg.name IN ({",".join("?" for _ in WATCHBOARD_GROUP_NAMES)})
+             ORDER BY wg.sort_order, wi.sort_order, wi.id
+            """,
+            (int(user_id), *WATCHBOARD_GROUP_NAMES),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:

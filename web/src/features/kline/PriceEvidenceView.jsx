@@ -5,7 +5,7 @@ import {
   fetchCurrentPrice,
   fetchKlines,
   fetchMomentumContext,
-  fetchStructureView,
+  fetchStructureOverlay,
   getKlinePeriod,
   normalizeKlinePeriod,
   syncKlines,
@@ -50,6 +50,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const aiEvidenceContextRef = useRef(null)
   const paneHeightRef = useRef(0)
   const requestRef = useRef(0)
+  const structureRequestRef = useRef(0)
   const mountedRef = useRef(false)
   const initialPrefs = useMemo(() => readKlinePreferences(), [])
   const [period, setPeriod] = useState(() => normalizeKlinePeriod(initialPrefs.period))
@@ -330,6 +331,31 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     }
   }, [period, symbol])
 
+  const loadStructureOverlay = useCallback(async () => {
+    const requestId = structureRequestRef.current + 1
+    structureRequestRef.current = requestId
+    structureViewRef.current = null
+    setStructureView(null)
+    setStructureOverlay(null)
+    if (!symbol || !structureLayer || !supportsStructureLayers) {
+      setStructureStatus('idle')
+      return
+    }
+    setStructureStatus('loading')
+    try {
+      const view = await fetchStructureOverlay(symbol, period, KLINE_COUNT)
+      if (structureRequestRef.current !== requestId || !mountedRef.current) return
+      structureViewRef.current = view
+      setStructureView(view)
+      setStructureStatus('ready')
+      requestAnimationFrame(updateStructureOverlay)
+    } catch {
+      if (structureRequestRef.current !== requestId || !mountedRef.current) return
+      structureViewRef.current = null
+      setStructureStatus('missing')
+    }
+  }, [period, structureLayer, supportsStructureLayers, symbol, updateStructureOverlay])
+
   useEffect(() => {
     mountedRef.current = true
     return () => {
@@ -416,34 +442,11 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   }, [activePeriod, handleChartViewportChange, loadBars, loadQuote, symbol, symbolName])
 
   useEffect(() => {
-    let cancelled = false
-    structureViewRef.current = null
-    setStructureView(null)
-    setStructureOverlay(null)
-    if (!symbol || !structureLayer || !supportsStructureLayers) {
-      setStructureStatus('idle')
-      return () => {
-        cancelled = true
-      }
-    }
-    setStructureStatus('loading')
-    fetchStructureView(symbol, period, KLINE_COUNT)
-      .then((view) => {
-        if (cancelled) return
-        structureViewRef.current = view
-        setStructureView(view)
-        setStructureStatus('ready')
-        requestAnimationFrame(updateStructureOverlay)
-      })
-      .catch(() => {
-        if (cancelled) return
-        structureViewRef.current = null
-        setStructureStatus('missing')
-      })
+    loadStructureOverlay()
     return () => {
-      cancelled = true
+      structureRequestRef.current += 1
     }
-  }, [period, structureLayer, supportsStructureLayers, symbol, updateStructureOverlay])
+  }, [loadStructureOverlay])
 
   useEffect(() => {
     let cancelled = false
@@ -551,6 +554,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     try {
       await syncKlines(symbol, period)
       chartRef.current?.resetData()
+      await loadStructureOverlay()
       await loadQuote()
     } catch (err) {
       setError(err?.message || '同步失败')
@@ -1026,9 +1030,10 @@ function structureStatusLabel(status, view) {
   if (status === 'ready') {
     const biCount = view?.bis?.length || 0
     const segmentCount = view?.segments?.length || 0
-    if (segmentCount > 0) return `${biCount} 笔 · ${segmentCount} 线段`
-    if (view?.capabilities?.segment_status === 'unavailable') return `${biCount} 笔 · 线段待接入`
-    return `${biCount} 笔`
+    const sourceLabel = view?.mode === 'preview' ? '实时结构' : '快照结构'
+    if (segmentCount > 0) return `${sourceLabel} · ${biCount} 笔 · ${segmentCount} 线段`
+    if (view?.capabilities?.segment_status === 'unavailable') return `${sourceLabel} · ${biCount} 笔 · 线段待接入`
+    return `${sourceLabel} · ${biCount} 笔`
   }
   if (status === 'loading') return '结构加载'
   if (status === 'missing') return '无结构'
