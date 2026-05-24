@@ -408,6 +408,12 @@ export default function AIStructureCoachPanel({
         context={reasoningContext}
       />
 
+      <DataLineageStrip
+        status={status}
+        context={reasoningContext}
+        messages={messages}
+      />
+
       <StatusNotice
         status={status}
         pollingActive={pollingActive}
@@ -509,7 +515,6 @@ function ReasoningBrief({ context, status }) {
         <strong>当前推演</strong>
         <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
       </div>
-      <DataFreshnessStrip status={status} context={context} />
       {summary && <p className={isUnified ? 'is-one-line' : ''}>{summary}</p>}
       {growthText && (
         <div className="ai-reasoning-growth">
@@ -692,18 +697,77 @@ function formatPlanPrice(value) {
   return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
 }
 
-function DataFreshnessStrip({ status, context }) {
-  const rows = buildFreshnessRows(status, context)
-  if (!rows.length) return null
+function DataLineageStrip({ status, context, messages }) {
+  const items = buildDataLineageItems(status, context, messages)
+  if (!items.length) return null
   return (
-    <div className="ai-data-freshness" aria-label="推演数据截止时间">
-      {rows.map((item) => (
-        <span key={item.level} className={item.stale ? 'is-stale' : ''}>
-          {formatLevel(item.level)} {formatAsOf(item.data_as_of)}
+    <div className="ai-data-lineage" aria-label="推演、结构图和盘中观察的数据状态">
+      {items.map((item) => (
+        <span key={item.key} className={`ai-data-lineage-pill ai-data-lineage-pill--${item.tone}`}>
+          <em>{item.label}</em>
+          <strong>{item.value}</strong>
         </span>
       ))}
     </div>
   )
+}
+
+function buildDataLineageItems(status, context, messages = []) {
+  const items = []
+  const freshness = primaryFreshness(status, context)
+  const ai = aiReasoning(status)
+  if (!context) {
+    items.push({ key: 'reasoning', label: '推演', value: '待生成', tone: 'muted' })
+  } else if (!ai.ready) {
+    items.push({ key: 'reasoning', label: '推演', value: ai.status === 'failed' ? '失败' : '生成中', tone: ai.status === 'failed' ? 'error' : 'warn' })
+  } else {
+    items.push({
+      key: 'reasoning',
+      label: '推演',
+      value: freshness.label === '待生成' ? formatAsOf(context.updated_at) || '已生成' : freshness.label,
+      tone: freshness.stale || status?.status === 'stale' ? 'warn' : 'ready',
+    })
+  }
+
+  const latestRows = status?.level_freshness || []
+  const latestPrimary = primaryFreshness(
+    { ...status, stale_levels: [], status: latestRows.length ? 'fresh' : status?.status },
+    { snapshots: latestRows },
+  )
+  const snapshotValue = latestPrimary.label && latestPrimary.label !== '待生成'
+    ? latestPrimary.label
+    : status?.missing_levels?.length
+      ? `缺${formatLevels(status.missing_levels)}`
+      : '待生成'
+  items.push({
+    key: 'snapshot',
+    label: '快照',
+    value: snapshotValue,
+    tone: status?.missing_levels?.length ? 'warn' : 'muted',
+  })
+  items.push({
+    key: 'preview',
+    label: '图',
+    value: 'preview',
+    tone: 'muted',
+  })
+
+  const coverage = latestIntradayCoverage(messages)
+  if (coverage) {
+    items.push({
+      key: 'intraday',
+      label: '盘中',
+      value: coverage,
+      tone: coverage === 'full' ? 'ready' : coverage === 'none' ? 'muted' : 'warn',
+    })
+  }
+  return items
+}
+
+function latestIntradayCoverage(messages = []) {
+  const assistant = [...messages].reverse().find((item) => item?.role === 'assistant' && item.answer)
+  const quality = assistant?.answer?.intraday_observation?.coverage?.quality
+  return quality ? String(quality) : ''
 }
 
 function buildFreshnessRows(status, context) {
