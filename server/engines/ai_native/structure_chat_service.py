@@ -842,13 +842,7 @@ def _chat_llm_prompt_material(
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
-    system_prompt = (
-        "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
-        "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
-        "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
-        "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
-        f"{RISK_DISCLAIMER}。"
-    )
+    system_prompt = _chat_system_prompt()
     return {
         "system_prompt": system_prompt,
         "prompt": prompt,
@@ -930,13 +924,7 @@ def _build_ai_answer_from_full_reasoning(
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
-        system_prompt = (
-            "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
-            "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
-            "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
-            "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
-            f"{RISK_DISCLAIMER}。"
-        )
+        system_prompt = _chat_system_prompt()
     else:
         prompt = {
             "version": "ai_structure_chat_from_saved_reasoning.v2",
@@ -968,13 +956,7 @@ def _build_ai_answer_from_full_reasoning(
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
-        system_prompt = (
-            "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
-            "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
-            "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
-            "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
-            f"{RISK_DISCLAIMER}。"
-        )
+        system_prompt = _chat_system_prompt()
     try:
         from server.services.llm_service import AIModelRoute, LLMService
         try:
@@ -1042,6 +1024,15 @@ def _build_ai_answer_from_full_reasoning(
             _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zd")),
         ),
     }
+
+
+def _chat_system_prompt() -> str:
+    """盘中对话只设身份和边界，不规定回答模板。"""
+    return (
+        "你是用户的盘中盯盘搭档，熟悉缠中说缠原文、买卖点转化和实盘节奏。"
+        "你会结合后台预案、持仓、盘中1分钟/5分钟/30分钟事实，像真人一样回答用户当下的问题。"
+        f"{RISK_DISCLAIMER}。"
+    )
 
 
 def _build_answer(

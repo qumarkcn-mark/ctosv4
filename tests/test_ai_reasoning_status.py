@@ -289,6 +289,7 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         assert model_route.thinking_enabled is False
         assert model_route.reasoning_effort == "high"
         assert "盘中盯盘搭档" in system_prompt
+        assert "缠中说缠原文" in system_prompt
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
@@ -444,10 +445,9 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
         assert payload["watch_card_context"]["card_secondary"] == "站稳看5分钟二买，跌回中枢看失败"
         assert payload["watch_card_context"]["watch_state_machine"]["current_state"]["label"] == "压力测试"
         assert payload["answer_contract"]["mode"] == "concise"
-        assert "不是报告生成器" in system_prompt
-        assert "先接住用户当下这句话" in system_prompt
-        assert "不要重写完整推演" in system_prompt
+        assert "缠中说缠原文" in system_prompt
         assert "买卖点转化" in system_prompt
+        assert "像真人一样回答" in system_prompt
         assert continuity["previous_reasoning"]["card_summary"] == "测试4.09压力"
         assert continuity["trigger_status_since_last_run"][0]["status"] == "crossed"
         assert continuity["trigger_status_since_last_run"][0]["current_price"] == 4.12
