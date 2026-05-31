@@ -201,3 +201,35 @@ def test_tdx_qfq_rebuild_generates_day_factor_from_gbbq(tmp_path, monkeypatch):
     minute_rows = kline_lake.query_klines("sz.301076", "5", adjustflag="2", source="tdx")
     assert day_rows[0]["close"] == 15.3846
     assert minute_rows[0]["close"] == 15.3846
+
+
+def test_tdx_qfq_rebuild_respects_empty_target_freqs(tmp_path, monkeypatch):
+    _init_lake(tmp_path, monkeypatch)
+    kline_lake.upsert_klines(
+        "sh.600790",
+        "day",
+        [{"date": "2026-05-22", "open": 20, "high": 22, "low": 18, "close": 20, "volume": 100, "amount": 1000}],
+        adjustflag="3",
+        source="tdx",
+    )
+    kline_lake.upsert_klines(
+        "sh.600790",
+        "day",
+        [{"date": "2026-05-22", "open": 20, "high": 22, "low": 18, "close": 20, "volume": 100, "amount": 1000}],
+        adjustflag="2",
+        source="tdx",
+    )
+    kline_lake.upsert_klines(
+        "sh.600790",
+        "5",
+        [{"date": "2026-05-22 15:00:00", "open": 20, "high": 20, "low": 20, "close": 20, "volume": 10, "amount": 100}],
+        adjustflag="3",
+        source="tdx",
+    )
+
+    result = rebuild_tdx_qfq_from_existing_factors("sh600790", target_freqs=[])
+
+    assert result.status == "ok"
+    assert result.written == {}
+    assert result.total_written == 0
+    assert kline_lake.query_klines("sh.600790", "5", adjustflag="2", source="tdx") == []

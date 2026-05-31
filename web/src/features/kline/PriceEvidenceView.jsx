@@ -63,7 +63,6 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const [error, setError] = useState('')
   const [barCount, setBarCount] = useState(0)
   const [quote, setQuote] = useState(null)
-  const [priceLine, setPriceLine] = useState(null)
   const [structureView, setStructureView] = useState(null)
   const [structureOverlay, setStructureOverlay] = useState(null)
   const [momentumContext, setMomentumContext] = useState(null)
@@ -76,26 +75,6 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const [watchlistMessage, setWatchlistMessage] = useState('')
   const activePeriod = useMemo(() => getKlinePeriod(period), [period])
   const supportsStructureLayers = activePeriod.supportsStructure !== false
-
-  const updatePriceLine = useCallback(() => {
-    const chart = chartRef.current
-    const bars = latestBarsRef.current
-    const currentQuote = quoteRef.current
-    const price = Number(currentQuote?.price)
-    if (!chart || !bars.length || !Number.isFinite(price) || price <= 0) {
-      setPriceLine(null)
-      return
-    }
-    const point = chart.convertToPixel(
-      { dataIndex: bars.length - 1, value: price },
-      { paneId: CANDLE_PANE_ID, absolute: false }
-    )
-    if (!point || typeof point.y !== 'number' || !Number.isFinite(point.y)) {
-      setPriceLine(null)
-      return
-    }
-    setPriceLine({ y: point.y, price, changePct: Number(currentQuote?.change_pct) || 0 })
-  }, [])
 
   const updatePaneHeights = useCallback(() => {
     const chart = chartRef.current
@@ -290,11 +269,10 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
 
   const handleChartViewportChange = useCallback(() => {
     clampScrollBoundaries()
-    updatePriceLine()
     updateStructureOverlay()
     updateMomentumOverlay()
     updateAiEvidenceOverlay()
-  }, [clampScrollBoundaries, updateAiEvidenceOverlay, updateMomentumOverlay, updatePriceLine, updateStructureOverlay])
+  }, [clampScrollBoundaries, updateAiEvidenceOverlay, updateMomentumOverlay, updateStructureOverlay])
 
   const loadQuote = useCallback(async () => {
     if (!symbol) return
@@ -365,8 +343,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
 
   useEffect(() => {
     quoteRef.current = quote
-    updatePriceLine()
-  }, [quote, updatePriceLine])
+  }, [quote])
 
   useEffect(() => {
     if (!chartHostRef.current || chartRef.current) return
@@ -779,14 +756,6 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
             ))}
           </svg>
         )}
-        {priceLine && (
-          <div
-            className={`base-kline__price-line ${priceLine.changePct >= 0 ? 'is-up' : 'is-down'}`}
-            style={{ top: `${priceLine.y}px` }}
-          >
-            <span>{formatPrice(priceLine.price)}</span>
-          </div>
-        )}
         {loading && <div className="base-kline__loading">加载 K 线数据</div>}
         {error && <div className="base-kline__error">{error}</div>}
         {!loading && !error && barCount === 0 && (
@@ -1110,7 +1079,7 @@ function buildChartStyles() {
         },
       },
       priceMark: {
-        show: true,
+        show: false,
         last: {
           show: false,
           upColor: '#f43f5e',

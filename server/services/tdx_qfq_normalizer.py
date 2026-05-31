@@ -69,7 +69,8 @@ def rebuild_tdx_qfq_from_existing_factors(
     - minute `1/5/15/30/60` by applying same-day daily factors to raw TDX bars.
     """
     canonical = normalize_symbol(symbol)
-    requested = tuple(dict.fromkeys(str(freq) for freq in (target_freqs or TDX_QFQ_FREQS)))
+    requested_freqs = TDX_QFQ_FREQS if target_freqs is None else target_freqs
+    requested = tuple(dict.fromkeys(str(freq) for freq in requested_freqs))
     raw_day_rows = query_klines(canonical, "day", limit=limit, adjustflag="3", source="tdx")
     qfq_day_rows = query_klines(canonical, "day", limit=limit, adjustflag="2", source="tdx")
     written: dict[str, int] = {}
