@@ -23,6 +23,7 @@ RECORD_SIZE = 32
 RECORD_FMT = "<HHfffffII"  # date, minute, open/high/low/close, amount, volume, reserved
 DEFAULT_VIPDOC_CANDIDATES = (
     TDX_VIPDOC,
+    "/Users/markqu/Desktop/new_tdx64_mount/vipdoc",
     "/Users/markqu/Desktop/tdx_vipdoc_mount/vipdoc",
     "/Users/markqu/Desktop/tdx_vipdoc_mount",
     "/Volumes/tdx_vipdoc",
@@ -308,6 +309,49 @@ def read_tdx_derived_minute_klines(
         end_date=end_date,
     )
     return aggregate_tdx_minute_klines(rows, freq, base_freq="5")[-int(limit):]
+
+
+def derive_tdx_day_from_minutes(
+    symbol: str,
+    trade_date: str,
+    vipdoc: Optional[str] = None,
+) -> dict:
+    """Build one raw daily bar from local TDX minute bars.
+
+    Some TDX local updates refresh `.lc1/.lc5` after close while `.day` keeps the
+    previous trading day. For tracked symbols we can safely derive the missing
+    raw day row from complete 5m/1m bars and keep the formal snapshot chain moving.
+    """
+    target = str(trade_date or "")[:10]
+    if not target:
+        return {}
+    rows = read_tdx_5m_klines(symbol, limit=400, vipdoc=vipdoc, start_date=target, end_date=f"{target} 15:00:00")
+    if not rows:
+        rows = read_tdx_1m_klines(symbol, limit=360, vipdoc=vipdoc, start_date=target, end_date=f"{target} 15:00:00")
+    rows = [
+        row
+        for row in rows
+        if str(row.get("date") or "")[:10] == target
+        and _is_a_share_trading_minute(str(row.get("date") or ""))
+        and _num(row.get("close")) > 0
+    ]
+    if not rows:
+        return {}
+    rows = sorted(rows, key=lambda item: item.get("date") or "")
+    first = rows[0]
+    last = rows[-1]
+    return {
+        "date": target,
+        "open": round(_num(first.get("open")), 4),
+        "high": round(max(_num(row.get("high")) for row in rows), 4),
+        "low": round(min(_num(row.get("low")) for row in rows), 4),
+        "close": round(_num(last.get("close")), 4),
+        "volume": sum(_num(row.get("volume")) for row in rows),
+        "amount": round(sum(_num(row.get("amount")) for row in rows), 2),
+        "adjustflag": "3",
+        "bar_status": "CLOSED",
+        "source": "tdx_minute_derived_day",
+    }
 
 
 def _read_lc1_tail(path: str, tail_count: int, symbol: str) -> list[dict]:

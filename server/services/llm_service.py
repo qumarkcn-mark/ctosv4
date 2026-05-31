@@ -471,6 +471,49 @@ class LLMService:
         response = await client.chat.completions.create(**request)
         return response.choices[0].message.content or ""
 
+    async def infer_ai_native_markdown_stream(self, system_prompt: str, context_json: str, *, user_id: int = 1, model_route=None):
+        """AI Native Markdown 流式推演。只产出 content delta，调用方负责拼接与落库。"""
+        client_config = self._ai_native_client_config(user_id, model_route=model_route)
+        api_key = client_config["api_key"]
+        model_name = client_config["model_name"]
+        timeout = config.AI_NATIVE_LLM_TIMEOUT
+        max_tokens = config.AI_NATIVE_MAX_TOKENS
+        thinking_enabled = client_config["thinking_enabled"]
+        reasoning_effort = client_config["reasoning_effort"]
+
+        if model_route:
+            timeout = model_route.timeout_seconds
+            max_tokens = model_route.max_tokens
+
+        if not api_key:
+            raise RuntimeError(f"{client_config['provider']} API Key 未配置")
+
+        client = AsyncOpenAI(api_key=api_key, base_url=client_config["base_url"], timeout=timeout)
+        request = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context_json},
+            ],
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if client_config["provider"] == "gemini":
+            request["temperature"] = 0.3
+        elif thinking_enabled:
+            request["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
+            request["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            request["temperature"] = 0.3
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        stream = await client.chat.completions.create(**request)
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            content = getattr(delta, "content", "") if delta else ""
+            if content:
+                yield content
+
     def _get_user_qwen_settings(self, user_id: int = 1) -> dict:
         from server.db.database import get_connection
 

@@ -28,6 +28,7 @@ from server.engines.ai_native.ai_trigger_service import (
     insert_ai_trigger_log,
 )
 from server.engines.ai_native.reasoning_continuity_service import build_reasoning_continuity_context
+from server.engines.ai_native.intraday_snapshot_hydrator import hydrate_intraday_snapshot
 from server.engines.ai_native.structure_evidence_service import (
     chart_focus_for_intent,
     ensure_evidence_ids_belong_to_context,
@@ -45,6 +46,11 @@ def answer_structure_question(
     symbol: str,
     question: str,
     session_id: str | None = None,
+    current_price: float | None = None,
+    quote_time: str | None = None,
+    change_pct: float | None = None,
+    price_source: str | None = None,
+    thinking_enabled: bool = False,
 ) -> dict[str, Any] | None:
     canonical = normalize_symbol(symbol)
     context = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
@@ -81,7 +87,15 @@ def answer_structure_question(
     if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
         raise ValueError("evidence ids do not belong to context")
     runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
-    intraday_observation = _chat_intraday_observation(canonical)
+    _apply_client_quote_context(
+        runtime_context,
+        current_price=current_price,
+        quote_time=quote_time,
+        change_pct=change_pct,
+        price_source=price_source,
+    )
+    client_quote = _client_quote_from_runtime(runtime_context)
+    intraday_observation = _chat_intraday_observation(canonical, quote=client_quote)
     chat_current_price = _chat_current_price(runtime_context, intraday_observation)
     reasoning_continuity_context = build_reasoning_continuity_context(
         user_id=user_id,
@@ -91,8 +105,9 @@ def answer_structure_question(
         prompt_versions=ALL_UNIFIED_FULL_TEXT_VERSIONS,
     )
     runtime_context["chat_current_price"] = chat_current_price
-    runtime_context["chat_current_price_source"] = "intraday_quote" if _num((intraday_observation.get("quote") or {}).get("price")) > 0 else runtime_context.get("price_source")
+    runtime_context["chat_current_price_source"] = _chat_current_price_source(runtime_context, intraday_observation)
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
+    postmarket_snapshot = _chat_postmarket_1m_snapshot(canonical)
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
         if intent_type == "review"
@@ -107,11 +122,13 @@ def answer_structure_question(
         chart_focus=chart_focus,
         runtime_context=runtime_context,
         intraday_observation=intraday_observation,
+        intraday_snapshot=postmarket_snapshot,
         reasoning_continuity_context=reasoning_continuity_context,
         data_status=data_status,
         memory_context=memory_context,
         review_context=review_context,
         conversation_context=conversation_context,
+        thinking_enabled=thinking_enabled,
     ) or _build_answer(
         question=question,
         intent_type=intent_type,
@@ -132,6 +149,9 @@ def answer_structure_question(
         "chart_focus": chart_focus,
         "runtime_context": runtime_context,
         "intraday_observation": intraday_observation,
+        "intraday_live_snapshot": intraday_observation,
+        "postmarket_1m_snapshot": postmarket_snapshot,
+        "intraday_snapshot": postmarket_snapshot,
         "reasoning_continuity_context": reasoning_continuity_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
@@ -153,6 +173,237 @@ def answer_structure_question(
     )
     payload["message_id"] = message["message_id"]
     return payload
+
+
+async def stream_structure_question(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    session_id: str | None = None,
+    current_price: float | None = None,
+    quote_time: str | None = None,
+    change_pct: float | None = None,
+    price_source: str | None = None,
+    thinking_enabled: bool = False,
+):
+    """Stream the LLM chat answer while preserving the existing chat history contract."""
+    canonical = normalize_symbol(symbol)
+    context = get_latest_ai_structure_context(user_id=user_id, symbol=canonical)
+    if not context or not _is_llm_reasoning_ready(context):
+        result = answer_structure_question(
+            user_id=user_id,
+            symbol=canonical,
+            question=question,
+            session_id=session_id,
+            current_price=current_price,
+            quote_time=quote_time,
+            change_pct=change_pct,
+            price_source=price_source,
+            thinking_enabled=thinking_enabled,
+        )
+        if not result:
+            yield {"event": "error", "message": "context not found"}
+            return
+        yield {"event": "delta", "content": result.get("coach_answer") or ""}
+        yield {
+            "event": "done",
+            "session_id": result.get("session_id") or "",
+            "context_id": result.get("context_id") or "",
+            "message_id": result.get("message_id") or "",
+            "created_at": now_text(),
+        }
+        return
+
+    session = upsert_chat_session(
+        user_id=user_id,
+        symbol=canonical,
+        context_id=context["context_id"],
+        session_id=session_id,
+    )
+    if not session:
+        yield {"event": "error", "message": "session not found"}
+        return
+
+    conversation_context = get_recent_conversation_context(user_id=user_id, session_id=session["session_id"])
+    intent_type = classify_intent(question, conversation_context=conversation_context)
+    data_status = _context_data_status(user_id=user_id, symbol=canonical, context=context)
+    chart_focus = chart_focus_for_intent(context, intent_type)
+    if not ensure_evidence_ids_belong_to_context(context, chart_focus["evidence_ids"]):
+        yield {"event": "error", "message": "evidence ids do not belong to context"}
+        return
+
+    runtime_context = _chat_runtime_context(context=context, data_status=data_status, chart_focus=chart_focus)
+    _apply_client_quote_context(
+        runtime_context,
+        current_price=current_price,
+        quote_time=quote_time,
+        change_pct=change_pct,
+        price_source=price_source,
+    )
+    client_quote = _client_quote_from_runtime(runtime_context)
+    intraday_observation = _chat_intraday_observation(canonical, quote=client_quote)
+    chat_current_price = _chat_current_price(runtime_context, intraday_observation)
+    reasoning_continuity_context = build_reasoning_continuity_context(
+        user_id=user_id,
+        symbol=canonical,
+        current_price=chat_current_price,
+        intraday_observation=intraday_observation,
+        prompt_versions=ALL_UNIFIED_FULL_TEXT_VERSIONS,
+    )
+    runtime_context["chat_current_price"] = chat_current_price
+    runtime_context["chat_current_price_source"] = _chat_current_price_source(runtime_context, intraday_observation)
+    memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
+    postmarket_snapshot = _chat_postmarket_1m_snapshot(canonical)
+    review_context = (
+        list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
+        if intent_type == "review"
+        else None
+    )
+    prompt_material = _chat_llm_prompt_material(
+        user_id=user_id,
+        symbol=canonical,
+        question=question,
+        intent_type=intent_type,
+        context=context,
+        chart_focus=chart_focus,
+        runtime_context=runtime_context,
+        intraday_observation=intraday_observation,
+        intraday_snapshot=postmarket_snapshot,
+        reasoning_continuity_context=reasoning_continuity_context,
+        data_status=data_status,
+        memory_context=memory_context,
+        review_context=review_context,
+        conversation_context=conversation_context,
+    )
+    if not prompt_material:
+        result = _build_answer(
+            question=question,
+            intent_type=intent_type,
+            context=context,
+            chart_focus=chart_focus,
+            data_status=data_status,
+            memory_context=memory_context,
+            review_context=review_context,
+        )
+        yield {"event": "delta", "content": result.get("coach_answer") or ""}
+        answer_payload = result
+    else:
+        from server.services.llm_service import AIModelRoute, LLMService
+
+        chunks: list[str] = []
+        try:
+            async for delta in LLMService().infer_ai_native_markdown_stream(
+                prompt_material["system_prompt"],
+                _json(prompt_material["prompt"]),
+                user_id=user_id,
+                model_route=AIModelRoute(
+                    model_name="deepseek-r1" if thinking_enabled else "deepseek-v4-flash",
+                    thinking_enabled=thinking_enabled,
+                    reasoning_effort="high",
+                    timeout_seconds=90 if thinking_enabled else 45,
+                ),
+            ):
+                chunks.append(delta)
+                yield {"event": "delta", "content": delta}
+        except Exception as exc:
+            insert_ai_trigger_log(
+                user_id=user_id,
+                symbol=canonical,
+                mode=MODE_SHORT_ANSWER,
+                trigger_reason=TRIGGER_USER_QUESTION,
+                decision="error",
+                error_message=str(exc)[:500],
+                metadata=prompt_material["trigger_metadata"],
+                started_at=prompt_material["trigger_started_at"],
+            )
+            yield {"event": "error", "message": str(exc)[:240]}
+            return
+
+        answer_text = "".join(chunks).strip()
+        if not answer_text:
+            insert_ai_trigger_log(
+                user_id=user_id,
+                symbol=canonical,
+                mode=MODE_SHORT_ANSWER,
+                trigger_reason=TRIGGER_USER_QUESTION,
+                decision="skipped",
+                skip_reason="EMPTY_ANSWER",
+                metadata=prompt_material["trigger_metadata"],
+                started_at=prompt_material["trigger_started_at"],
+            )
+            yield {"event": "error", "message": "empty answer"}
+            return
+        if RISK_DISCLAIMER not in answer_text:
+            suffix = f"。{RISK_DISCLAIMER}"
+            answer_text = f"{answer_text.rstrip('。.!！?？')}{suffix}"
+            yield {"event": "delta", "content": suffix}
+        warned_text = _apply_memory_warning(answer_text, memory_context)
+        if warned_text != answer_text:
+            warning_suffix = warned_text.replace(answer_text, "", 1)
+            if warning_suffix:
+                yield {"event": "delta", "content": warning_suffix}
+            answer_text = warned_text
+        trigger_log = insert_ai_trigger_log(
+            user_id=user_id,
+            symbol=canonical,
+            mode=MODE_SHORT_ANSWER,
+            trigger_reason=TRIGGER_USER_QUESTION,
+            decision="generated",
+            context_id=str(context.get("context_id") or ""),
+            metadata=prompt_material["trigger_metadata"],
+            started_at=prompt_material["trigger_started_at"],
+        )
+        answer_payload = {
+            "coach_answer": answer_text,
+            "ai_trigger": trigger_log,
+            "referenced_boundaries": _referenced_boundaries(
+                chart_focus.get("level") or "",
+                _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zg")),
+                _num(((((context.get("boundary") or {}).get("levels") or {}).get(chart_focus.get("level") or "") or {}).get("active_center") or {}).get("zd")),
+            ),
+        }
+
+    reminder_candidates = _reminder_candidates(intent_type=intent_type, context=context, chart_focus=chart_focus)
+    payload = {
+        "session_id": session["session_id"],
+        "context_id": context["context_id"],
+        "answer": answer_payload["coach_answer"],
+        "coach_answer": answer_payload["coach_answer"],
+        "intent_type": intent_type,
+        "referenced_boundaries": answer_payload.get("referenced_boundaries") or [],
+        "chart_focus": chart_focus,
+        "runtime_context": runtime_context,
+        "intraday_observation": intraday_observation,
+        "intraday_live_snapshot": intraday_observation,
+        "postmarket_1m_snapshot": postmarket_snapshot,
+        "intraday_snapshot": postmarket_snapshot,
+        "reasoning_continuity_context": reasoning_continuity_context,
+        "suggested_reminders": reminder_candidates,
+        "data_status": data_status,
+        "memory_context": memory_context,
+        "review_context": review_context,
+        "conversation_context": conversation_context,
+        "risk_disclaimer": RISK_DISCLAIMER,
+    }
+    message = save_chat_message(
+        user_id=user_id,
+        symbol=canonical,
+        session_id=session["session_id"],
+        context_id=context["context_id"],
+        question_text=question,
+        intent_type=intent_type,
+        answer_payload=payload,
+        evidence_refs=chart_focus["evidence_ids"],
+        reminder_candidates=reminder_candidates,
+    )
+    yield {
+        "event": "done",
+        "session_id": session["session_id"],
+        "context_id": context["context_id"],
+        "message_id": message["message_id"],
+        "created_at": message.get("created_at") or now_text(),
+    }
 
 
 def _answer_reasoning_unavailable(
@@ -488,7 +739,7 @@ def save_chat_message(
         conn.close()
 
 
-def _build_ai_answer_from_full_reasoning(
+def _chat_llm_prompt_material(
     *,
     user_id: int,
     symbol: str,
@@ -498,6 +749,7 @@ def _build_ai_answer_from_full_reasoning(
     chart_focus: dict[str, Any],
     runtime_context: dict[str, Any] | None = None,
     intraday_observation: dict[str, Any] | None = None,
+    intraday_snapshot: dict[str, Any] | None = None,
     reasoning_continuity_context: dict[str, Any] | None = None,
     data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
@@ -524,10 +776,12 @@ def _build_ai_answer_from_full_reasoning(
         "answer_source": "unified" if is_unified else "legacy_context",
     }
     wants_detail = _wants_detailed_chat_answer(question)
+    reasoning_reference = _chat_reasoning_reference(full_text, run or {})
     chat_context = _build_chat_context_pack(
         question=question,
         intent_type=intent_type,
         intraday_observation=intraday_observation or {},
+        intraday_snapshot=intraday_snapshot or {},
         reasoning_continuity_context=reasoning_continuity_context or {},
         conversation_context=conversation_context or {},
         runtime_context=runtime_context or {},
@@ -539,9 +793,13 @@ def _build_ai_answer_from_full_reasoning(
             "symbol": symbol,
             "question": question,
             "chat_context": chat_context,
-            "full_reasoning_excerpt": _clip_text(full_text, 3200),
+            "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
+            "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
+            "watch_card_context": reasoning_reference["watch_card_context"],
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
             "intraday_observation": intraday_observation or {},
+            "intraday_live_snapshot": intraday_observation or {},
+            "postmarket_1m_snapshot": intraday_snapshot or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "runtime_context": runtime_context or {},
             "data_status": data_status or {},
@@ -550,16 +808,133 @@ def _build_ai_answer_from_full_reasoning(
             "chart_focus": chart_focus,
             "answer_contract": {
                 "mode": "detailed" if wants_detail else "concise",
-                "preference": "像盘中搭档一样回答当前这句话；默认短，用户要求详细再展开。",
-                "context_priority": "chat_context 是当前事实摘要；完整推演只是背景锚点。",
+                "risk_disclaimer": RISK_DISCLAIMER,
+            },
+        }
+    else:
+        prompt = {
+            "version": "ai_structure_chat_from_saved_reasoning.v2",
+            "chat_style": "intraday_companion",
+            "symbol": symbol,
+            "question": question,
+            "intent_type": intent_type,
+            "chat_context": chat_context,
+            "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
+            "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
+            "watch_card_context": reasoning_reference["watch_card_context"],
+            "summary": {
+                "coach_summary": context.get("coach_summary") or "",
+                "reasoning": context.get("reasoning") or {},
+            },
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "intraday_observation": intraday_observation or {},
+            "intraday_live_snapshot": intraday_observation or {},
+            "postmarket_1m_snapshot": intraday_snapshot or {},
+            "reasoning_continuity_context": reasoning_continuity_context or {},
+            "memory_context": memory_context or {},
+            "review_context": review_context or {},
+            "conversation_context": conversation_context or {},
+            "data_status": data_status or {},
+            "runtime_context": runtime_context or {},
+            "chart_focus": chart_focus,
+            "answer_contract": {
+                "mode": "detailed" if wants_detail else "concise",
+                "risk_disclaimer": RISK_DISCLAIMER,
+            },
+        }
+    system_prompt = (
+        "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
+        "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
+        "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
+        "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
+        f"{RISK_DISCLAIMER}。"
+    )
+    return {
+        "system_prompt": system_prompt,
+        "prompt": prompt,
+        "trigger_started_at": trigger_started_at,
+        "trigger_metadata": trigger_metadata,
+    }
+
+
+def _build_ai_answer_from_full_reasoning(
+    *,
+    user_id: int,
+    symbol: str,
+    question: str,
+    intent_type: str,
+    context: dict[str, Any],
+    chart_focus: dict[str, Any],
+    runtime_context: dict[str, Any] | None = None,
+    intraday_observation: dict[str, Any] | None = None,
+    intraday_snapshot: dict[str, Any] | None = None,
+    reasoning_continuity_context: dict[str, Any] | None = None,
+    data_status: dict[str, Any] | None = None,
+    memory_context: dict[str, Any] | None = None,
+    review_context: dict[str, Any] | None = None,
+    thinking_enabled: bool = False,
+    conversation_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not _has_configured_ai_native_key(user_id):
+        return None
+    run = get_reasoning_run_for_context(
+        user_id=user_id,
+        symbol=symbol,
+        context_id=context.get("context_id") or "",
+        source_snapshot_ids=context.get("source_snapshot_ids") or [],
+    )
+    full_text = str((run or {}).get("full_reasoning_text") or "").strip()
+    if not full_text:
+        return None
+    is_unified = str((run or {}).get("prompt_version") or "") in ALL_UNIFIED_FULL_TEXT_VERSIONS
+    trigger_started_at = now_text()
+    trigger_metadata = {
+        "intent_type": intent_type,
+        "context_id": context.get("context_id") or "",
+        "question_chars": len(question or ""),
+        "answer_source": "unified" if is_unified else "legacy_context",
+    }
+    wants_detail = _wants_detailed_chat_answer(question)
+    reasoning_reference = _chat_reasoning_reference(full_text, run or {})
+    chat_context = _build_chat_context_pack(
+        question=question,
+        intent_type=intent_type,
+        intraday_observation=intraday_observation or {},
+        intraday_snapshot=intraday_snapshot or {},
+        reasoning_continuity_context=reasoning_continuity_context or {},
+        conversation_context=conversation_context or {},
+        runtime_context=runtime_context or {},
+    )
+    if is_unified:
+        prompt = {
+            "version": "unified_reasoning_chat.v1",
+            "chat_style": "intraday_companion",
+            "symbol": symbol,
+            "question": question,
+            "chat_context": chat_context,
+            "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
+            "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
+            "watch_card_context": reasoning_reference["watch_card_context"],
+            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "intraday_observation": intraday_observation or {},
+            "intraday_live_snapshot": intraday_observation or {},
+            "postmarket_1m_snapshot": intraday_snapshot or {},
+            "reasoning_continuity_context": reasoning_continuity_context or {},
+            "runtime_context": runtime_context or {},
+            "data_status": data_status or {},
+            "memory_context": memory_context or {},
+            "conversation_context": conversation_context or {},
+            "chart_focus": chart_focus,
+            "answer_contract": {
+                "mode": "detailed" if wants_detail else "concise",
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
         system_prompt = (
-            "你是用户的盘中盯盘搭档。像正常对话一样，先回答用户此刻问的事。"
-            "chat_context、盘中观察、连续性上下文和完整推演都是事实材料，不是固定模板。"
-            "如果盘中新价、MACD或触发状态改变了上一轮看法，直接说变化在哪里。"
-            "默认短答；用户要求详细时再解释逻辑。"
+            "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
+            "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
+            "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
+            "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
             f"{RISK_DISCLAIMER}。"
         )
     else:
@@ -570,13 +945,17 @@ def _build_ai_answer_from_full_reasoning(
             "question": question,
             "intent_type": intent_type,
             "chat_context": chat_context,
-            "full_reasoning_excerpt": _clip_text(full_text, 3200),
+            "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
+            "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
+            "watch_card_context": reasoning_reference["watch_card_context"],
             "summary": {
                 "coach_summary": context.get("coach_summary") or "",
                 "reasoning": context.get("reasoning") or {},
             },
             "position_context": (context.get("raw_context") or {}).get("position_context") or {},
             "intraday_observation": intraday_observation or {},
+            "intraday_live_snapshot": intraday_observation or {},
+            "postmarket_1m_snapshot": intraday_snapshot or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "memory_context": memory_context or {},
             "review_context": review_context or {},
@@ -586,16 +965,14 @@ def _build_ai_answer_from_full_reasoning(
             "chart_focus": chart_focus,
             "answer_contract": {
                 "mode": "detailed" if wants_detail else "concise",
-                "preference": "像盘中搭档一样回答当前这句话；默认短，用户要求详细再展开。",
-                "context_priority": "chat_context 是当前事实摘要；保存推演只是背景锚点。",
                 "risk_disclaimer": RISK_DISCLAIMER,
             },
         }
         system_prompt = (
-            "你是用户的盘中盯盘搭档。像正常对话一样，先回答用户此刻问的事。"
-            "chat_context、盘中观察、连续性上下文和保存推演都是事实材料，不是固定模板。"
-            "如果盘中新价、MACD或触发状态改变了上一轮看法，直接说变化在哪里。"
-            "默认短答；用户要求详细时再解释逻辑。"
+            "你是用户的盘中盯盘搭档，熟悉缠论和实盘节奏，不是报告生成器。"
+            "先接住用户当下这句话，直接回答他真正问的点；不要重写完整推演，不要机械分条。"
+            "后台预案、卡片两行、买卖点转化、盘中1分钟/5分钟/30分钟事实都只是你的背景。"
+            "回答围绕：现在在验证什么，成立会怎样，失败会怎样；用户没要求展开时，用2到5个自然短段。"
             f"{RISK_DISCLAIMER}。"
         )
     try:
@@ -611,11 +988,10 @@ def _build_ai_answer_from_full_reasoning(
                 _json(prompt),
                 user_id=user_id,
                 model_route=AIModelRoute(
-                    model_name="deepseek-v4-flash",
-                    thinking_enabled=False,
+                    model_name="deepseek-r1" if thinking_enabled else "deepseek-v4-flash",
+                    thinking_enabled=thinking_enabled,
                     reasoning_effort="high",
-                    timeout_seconds=45,
-                    max_tokens=700,
+                    timeout_seconds=90 if thinking_enabled else 45,
                 ),
             )
         )
@@ -936,20 +1312,77 @@ def _chat_runtime_context(
     }
 
 
-def _chat_intraday_observation(symbol: str) -> dict[str, Any]:
+def _chat_intraday_observation(symbol: str, *, quote: dict[str, Any] | None = None) -> dict[str, Any]:
     """Best-effort intraday preview for chat; never blocks the fallback answer."""
     try:
         asyncio.get_running_loop()
-        return get_intraday_observation_snapshot(symbol)
+        return get_intraday_observation_snapshot(symbol, quote=quote)
     except RuntimeError:
         pass
     try:
-        return asyncio.run(get_intraday_observation(symbol))
+        return asyncio.run(get_intraday_observation(symbol, quote=quote))
     except Exception:
         return {}
 
 
+def _chat_postmarket_1m_snapshot(symbol: str) -> dict[str, Any]:
+    """Best-effort TDX lake 1m facts for chat; never treat as live tape."""
+    try:
+        return hydrate_intraday_snapshot(symbol, include_recent_bars=True, recent_bar_count=80)
+    except Exception:
+        return {"available": False, "reason": "POSTMARKET_1M_SNAPSHOT_ERROR"}
+
+
+def _apply_client_quote_context(
+    runtime_context: dict[str, Any],
+    *,
+    current_price: float | None = None,
+    quote_time: str | None = None,
+    change_pct: float | None = None,
+    price_source: str | None = None,
+) -> None:
+    """Attach the watchboard's visible quote to chat-only runtime context."""
+    price = _num(current_price)
+    if price > 0:
+        runtime_context["watchboard_current_price"] = price
+        runtime_context["watchboard_price_source"] = str(price_source or "watchboard_quote").strip() or "watchboard_quote"
+    if quote_time:
+        runtime_context["watchboard_quote_time"] = str(quote_time).strip()
+    if change_pct is not None:
+        runtime_context["watchboard_change_pct"] = change_pct
+
+
+def _client_quote_from_runtime(runtime_context: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn the visible frontend quote into a live-observation quote fact."""
+    price = _num(runtime_context.get("watchboard_current_price"))
+    if price <= 0:
+        return None
+    quote_time = str(runtime_context.get("watchboard_quote_time") or "").strip()
+    return {
+        "price": price,
+        "quote_time": quote_time,
+        "trade_datetime": _runtime_trade_datetime(quote_time),
+        "change_pct": runtime_context.get("watchboard_change_pct"),
+        "source": str(runtime_context.get("watchboard_price_source") or "watchboard_quote"),
+    }
+
+
+def _runtime_trade_datetime(quote_time: str) -> str:
+    """Normalize watchboard quote time to a full timestamp when possible."""
+    text = str(quote_time or "").strip().replace("T", " ")
+    if len(text) >= 16 and text[:4].isdigit():
+        return f"{text[:16]}:00"
+    if len(text) >= 5 and text[:2].isdigit() and text[2] == ":":
+        date = now_text()[:10]
+        hm = text[:5]
+        return f"{date} {hm}:00"
+    return ""
+
+
 def _chat_current_price(runtime_context: dict[str, Any], intraday_observation: dict[str, Any]) -> float:
+    watchboard_price = _num(runtime_context.get("watchboard_current_price"))
+    if watchboard_price > 0:
+        return watchboard_price
     quote_price = _num((intraday_observation.get("quote") or {}).get("price"))
     if quote_price > 0:
         return quote_price
@@ -960,18 +1393,27 @@ def _chat_current_price(runtime_context: dict[str, Any], intraday_observation: d
     return 0.0
 
 
+def _chat_current_price_source(runtime_context: dict[str, Any], intraday_observation: dict[str, Any]) -> str:
+    if _num(runtime_context.get("watchboard_current_price")) > 0:
+        return str(runtime_context.get("watchboard_price_source") or "watchboard_quote")
+    if _num((intraday_observation.get("quote") or {}).get("price")) > 0:
+        return "intraday_quote"
+    return str(runtime_context.get("price_source") or "")
+
+
 def _build_chat_context_pack(
     *,
     question: str,
     intent_type: str,
     intraday_observation: dict[str, Any],
+    intraday_snapshot: dict[str, Any],
     reasoning_continuity_context: dict[str, Any],
     conversation_context: dict[str, Any],
     runtime_context: dict[str, Any],
 ) -> dict[str, Any]:
     """Compact facts for the short-answer LLM, shaped for conversation."""
     triggers = reasoning_continuity_context.get("trigger_status_since_last_run") or []
-    return {
+    pack = {
         "version": "ai_structure_chat_context.v1",
         "question": {
             "text": question,
@@ -979,26 +1421,70 @@ def _build_chat_context_pack(
             "wants_detail": _wants_detailed_chat_answer(question),
         },
         "live_tape": _chat_live_tape(intraday_observation, runtime_context),
+        "intraday_live_snapshot": _chat_live_tape(intraday_observation, runtime_context),
+        "postmarket_1m_snapshot": _chat_intraday_snapshot_pack(intraday_snapshot),
         "trigger_state": _chat_trigger_state(triggers),
         "recent_dialogue": _chat_recent_dialogue(conversation_context),
     }
+
+    return pack
 
 
 def _chat_live_tape(intraday_observation: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
     quote = intraday_observation.get("quote") or {}
     levels = intraday_observation.get("levels") or {}
     return {
-        "as_of": intraday_observation.get("as_of") or "",
+        "as_of": runtime_context.get("watchboard_quote_time") or intraday_observation.get("as_of") or "",
         "source": intraday_observation.get("source") or "",
         "usage": intraday_observation.get("usage") or "",
         "coverage": intraday_observation.get("coverage") or {},
         "price": _chat_current_price(runtime_context, intraday_observation),
-        "price_source": "intraday_quote" if _num(quote.get("price")) > 0 else runtime_context.get("price_source") or "",
-        "change_pct": quote.get("change_pct"),
+        "price_source": _chat_current_price_source(runtime_context, intraday_observation),
+        "change_pct": runtime_context.get("watchboard_change_pct") if "watchboard_change_pct" in runtime_context else quote.get("change_pct"),
+        "watchboard_quote_time": runtime_context.get("watchboard_quote_time") or "",
         "levels": {
             key: _chat_level_tape(value)
             for key, value in levels.items()
             if key in {"1m", "5m", "30m"} and isinstance(value, dict)
+        },
+    }
+
+
+def _chat_intraday_snapshot_pack(snapshot: dict[str, Any]) -> dict[str, Any]:
+    if not snapshot:
+        return {"available": False, "reason": "NO_INTRADAY_SNAPSHOT"}
+    return {
+        "available": bool(snapshot.get("available")),
+        "source": snapshot.get("source") or "",
+        "usage": snapshot.get("usage") or "",
+        "date": snapshot.get("date") or "",
+        "coverage": snapshot.get("coverage") or {},
+        "price": snapshot.get("price") or {},
+        "path_facts": snapshot.get("path_facts") or {},
+        "macd_1m": snapshot.get("macd_1m") or {},
+        "relation_to_previous_plan": snapshot.get("relation_to_previous_plan") or {},
+        "recent_1m_bars": (snapshot.get("recent_1m_bars") or [])[-40:],
+    }
+
+
+def _chat_reasoning_reference(full_text: str, run: dict[str, Any]) -> dict[str, Any]:
+    """Keep both the opening thesis and the latest card conversion lines visible to chat."""
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    watch_plan = summary.get("watch_plan") if isinstance(summary.get("watch_plan"), dict) else {}
+    watch_card = watch_plan.get("card") if isinstance(watch_plan.get("card"), dict) else {}
+    machine = summary.get("watch_state_machine")
+    if not isinstance(machine, dict):
+        machine = watch_plan.get("watch_state_machine") if isinstance(watch_plan.get("watch_state_machine"), dict) else {}
+    card_summary = str(summary.get("card_summary") or watch_card.get("summary") or "").strip()
+    card_secondary = str(summary.get("card_secondary") or watch_card.get("secondary") or "").strip()
+    return {
+        "head_excerpt": _clip_text(full_text, 2200),
+        "tail_excerpt": _clip_tail_text(full_text, 2200),
+        "watch_card_context": {
+            "card_summary": card_summary,
+            "card_secondary": card_secondary,
+            "card_action": str(summary.get("card_action") or "").strip(),
+            "watch_state_machine": machine,
         },
     }
 
@@ -1230,6 +1716,13 @@ def _clip_text(text: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[:limit].rstrip()}\n...[已截断，完整推演仅作背景锚点]"
+
+
+def _clip_tail_text(text: str, limit: int) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return f"[前文已截断，以下是推演末尾关键结论]\n{value[-limit:].lstrip()}"
 
 
 def _num(value) -> float:

@@ -288,7 +288,7 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         assert model_route.model_name == "deepseek-v4-flash"
         assert model_route.thinking_enabled is False
         assert model_route.reasoning_effort == "high"
-        assert "像正常对话一样" in system_prompt
+        assert "盘中盯盘搭档" in system_prompt
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
@@ -366,10 +366,19 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
         source_snapshot_ids=["snap-u"],
         prompt_version="unified_reasoning.v2.full_text",
         status="SUCCESS",
-        full_reasoning_text="统一推演全文：轻纺城围绕4.09和3.79观察。仅供参考，不构成投资建议",
+        full_reasoning_text=(
+            "统一推演全文：轻纺城围绕4.09和3.79观察。"
+            + "盘中背景。" * 500
+            + "最后两行卡片：现在验证4.09上方能否站稳；成立看5分钟二买，失败回中枢。仅供参考，不构成投资建议"
+        ),
         summary={
             "card_summary": "测试4.09压力",
+            "card_secondary": "站稳看5分钟二买，跌回中枢看失败",
             "card_action": "持仓观察",
+            "watch_state_machine": {
+                "current_state": {"label": "压力测试"},
+                "transitions": [{"then": "站稳看5分钟二买"}],
+            },
             "monitor_conditions": {
                 "triggers": [
                     {"type": "price_above", "level": 4.09, "message_on_trigger": "站回上沿", "action_on_trigger": "关注"},
@@ -382,7 +391,7 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
 
     monkeypatch.setattr(
         "server.engines.ai_native.structure_chat_service._chat_intraday_observation",
-        lambda symbol: {
+        lambda symbol, quote=None: {
             "as_of": "2026-05-22 14:30:00",
             "source": "tdx_quote_aggregation",
             "usage": "intraday_preview",
@@ -418,14 +427,27 @@ def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_pat
         assert payload["chat_style"] == "intraday_companion"
         assert payload["chat_context"]["version"] == "ai_structure_chat_context.v1"
         assert payload["chat_context"]["live_tape"]["price"] == 4.12
+        assert payload["chat_context"]["intraday_live_snapshot"]["price"] == 4.12
+        assert "postmarket_1m_snapshot" in payload["chat_context"]
+        assert "today_1m_intraday_snapshot" not in payload["chat_context"]
+        assert payload["intraday_live_snapshot"]["quote"]["price"] == 4.12
+        assert "postmarket_1m_snapshot" in payload
+        assert "today_1m_intraday_snapshot" not in payload
         assert payload["chat_context"]["live_tape"]["price_source"] == "intraday_quote"
         assert payload["chat_context"]["live_tape"]["levels"]["5m"]["with_forming"]["macd_momentum"] == "strengthening"
         assert payload["chat_context"]["trigger_state"]["crossed"][0]["level"] == 4.09
         assert "full_reasoning_text" not in payload
         assert payload["full_reasoning_excerpt"].startswith("统一推演全文")
+        assert payload["full_reasoning_tail_excerpt"].startswith("[前文已截断")
+        assert "成立看5分钟二买，失败回中枢" in payload["full_reasoning_tail_excerpt"]
+        assert payload["watch_card_context"]["card_summary"] == "测试4.09压力"
+        assert payload["watch_card_context"]["card_secondary"] == "站稳看5分钟二买，跌回中枢看失败"
+        assert payload["watch_card_context"]["watch_state_machine"]["current_state"]["label"] == "压力测试"
         assert payload["answer_contract"]["mode"] == "concise"
-        assert "像正常对话一样" in system_prompt
-        assert "连续性上下文" in system_prompt
+        assert "不是报告生成器" in system_prompt
+        assert "先接住用户当下这句话" in system_prompt
+        assert "不要重写完整推演" in system_prompt
+        assert "买卖点转化" in system_prompt
         assert continuity["previous_reasoning"]["card_summary"] == "测试4.09压力"
         assert continuity["trigger_status_since_last_run"][0]["status"] == "crossed"
         assert continuity["trigger_status_since_last_run"][0]["current_price"] == 4.12
