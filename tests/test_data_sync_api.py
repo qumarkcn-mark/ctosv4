@@ -354,6 +354,56 @@ def test_query_m1_klines_appends_current_price_quote(monkeypatch):
     assert payload["klines"][-1]["bar_status"] == "FORMING"
 
 
+def test_query_m1_klines_reads_tdx_lake_before_bridge(monkeypatch):
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def fake_fetch(*_args, **_kwargs):
+        raise AssertionError("tdx lake rows should avoid bridge fetch")
+
+    async def fake_current_price(symbol):
+        return None
+
+    def fake_query(symbol, freq, start_date=None, end_date=None, limit=2000, adjustflag="2", source=None):
+        assert symbol == "sh.688008"
+        assert freq == "1"
+        if source == "tdx" and adjustflag == "2":
+            return [
+                {
+                    "symbol": "sh688008",
+                    "freq": "1",
+                    "date": "2026-05-29 15:00:00",
+                    "open": 252.0,
+                    "high": 253.1,
+                    "low": 251.8,
+                    "close": 253.0,
+                    "volume": 1558900,
+                    "amount": 0,
+                    "adjustflag": "2",
+                    "source": "tdx",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr(data_api, "query_lake_klines", fake_query)
+    monkeypatch.setattr(data_api, "get_current_price", fake_current_price)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/klines/sh688008?interval=m1&count=120")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interval"] == "m1"
+    assert payload["klines"][-1]["date"] == "2026-05-29 15:00:00"
+    assert payload["klines"][-1]["close"] == 253.0
+    assert payload["klines"][-1]["source"] == "tdx"
+
+
 def test_query_m1_klines_merges_qmt_preview_rows(monkeypatch):
     async def inline_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
@@ -379,6 +429,8 @@ def test_query_m1_klines_merges_qmt_preview_rows(monkeypatch):
     def fake_query(symbol, freq, start_date=None, end_date=None, limit=2000, adjustflag="2", source=None):
         assert symbol == "sz.002158"
         assert freq == "1"
+        if source == "tdx":
+            return []
         assert adjustflag == "3"
         assert source == "qmt"
         return [

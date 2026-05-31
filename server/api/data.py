@@ -442,7 +442,9 @@ async def query_klines(
     canonical_symbol = normalize_symbol(symbol)
     freq = _interval_to_freq(normalized_interval)
     if normalized_interval == "m1":
-        klines = await fetch_tdx_klines(symbol, period="1m", count=count)
+        klines = await run_in_threadpool(_query_tdx_display_klines, canonical_symbol, freq, count)
+        if not klines:
+            klines = await fetch_tdx_klines(symbol, period="1m", count=count)
         if not klines:
             klines = await run_in_threadpool(read_tdx_1m_klines, symbol, count)
         qmt_preview = await run_in_threadpool(_query_qmt_today_1m_display_klines, canonical_symbol, count)
