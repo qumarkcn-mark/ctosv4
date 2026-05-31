@@ -44,6 +44,7 @@ export default function AIStructureCoachPanel({
   const [reminders, setReminders] = useState([])
   const [activeSessionId, setActiveSessionId] = useState('')
   const [unifiedReasoning, setUnifiedReasoning] = useState(null)
+  const [intradaySnapshot, setIntradaySnapshot] = useState(null)
   const mountedRef = useRef(true)
   const symbolRef = useRef(symbol)
   const messagesRef = useRef(null)
@@ -115,6 +116,23 @@ export default function AIStructureCoachPanel({
       if (mountedRef.current) setReminders(json.data?.items || [])
     } catch {
       if (mountedRef.current) setReminders([])
+    }
+  }, [symbol])
+
+  const loadIntradaySnapshot = useCallback(async () => {
+    if (!symbol) return
+    const requestedSymbol = symbol
+    try {
+      const json = await apiJson(
+        `${API_BASE}/ai-structure/intraday-snapshot/${encodeURIComponent(symbol)}?recent_bar_count=0`,
+      )
+      if (mountedRef.current && sameSymbol(symbolRef.current, requestedSymbol)) {
+        setIntradaySnapshot(json.data || null)
+      }
+    } catch {
+      if (mountedRef.current && sameSymbol(symbolRef.current, requestedSymbol)) {
+        setIntradaySnapshot(null)
+      }
     }
   }, [symbol])
 
@@ -262,6 +280,7 @@ export default function AIStructureCoachPanel({
     setReminders([])
     setActiveSessionId('')
     setUnifiedReasoning(null)
+    setIntradaySnapshot(null)
     onEvidenceContext?.(null)
     if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
       applyWorkspaceSymbolState(workspaceSymbolState)
@@ -269,6 +288,7 @@ export default function AIStructureCoachPanel({
     loadStatus()
     loadUnifiedReasoning()
     loadReminders()
+    loadIntradaySnapshot()
     loadChatHistory()
     return () => {
       mountedRef.current = false
@@ -278,6 +298,7 @@ export default function AIStructureCoachPanel({
     loadStatus,
     loadUnifiedReasoning,
     loadReminders,
+    loadIntradaySnapshot,
     loadChatHistory,
     onEvidenceContext,
   ])
@@ -388,6 +409,7 @@ export default function AIStructureCoachPanel({
       setPendingQuestion('')
       await loadChatHistory()
       await loadStatus()
+      await loadIntradaySnapshot()
     } catch (err) {
       patchStreamingMessage(streamingKey, { isStreaming: false })
       setError(err?.message || 'AI 问答失败')
@@ -395,7 +417,7 @@ export default function AIStructureCoachPanel({
       setLoading(false)
       setActiveQuestion('')
     }
-  }, [input, loading, symbol, canAsk, prewarm, loadStatus, activeSessionId, loadCurrentQuote, streamAnswer, patchStreamingMessage, loadChatHistory])
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, activeSessionId, loadCurrentQuote, streamAnswer, patchStreamingMessage, loadChatHistory, loadIntradaySnapshot])
 
   useEffect(() => {
     if (!pendingQuestion || loading || !canAsk) return
@@ -522,6 +544,7 @@ export default function AIStructureCoachPanel({
         status={status}
         context={detailReasoningContext || reasoningContext}
         messages={messages}
+        intradaySnapshot={intradaySnapshot}
       />
 
       <StatusNotice
@@ -807,8 +830,8 @@ function formatPlanPrice(value) {
   return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
 }
 
-function DataLineageStrip({ status, context, messages }) {
-  const items = buildDataLineageItems(status, context, messages)
+function DataLineageStrip({ status, context, messages, intradaySnapshot }) {
+  const items = buildDataLineageItems(status, context, messages, intradaySnapshot)
   if (!items.length) return null
   return (
     <div className="ai-data-lineage" aria-label="推演、结构图和盘中观察的数据状态">
@@ -822,7 +845,7 @@ function DataLineageStrip({ status, context, messages }) {
   )
 }
 
-function buildDataLineageItems(status, context, messages = []) {
+function buildDataLineageItems(status, context, messages = [], intradaySnapshot = null) {
   const items = []
   const freshness = primaryFreshness(status, context)
   const ai = aiReasoning(status)
@@ -862,22 +885,46 @@ function buildDataLineageItems(status, context, messages = []) {
     tone: 'muted',
   })
 
-  const coverage = latestIntradayCoverage(messages)
-  if (coverage) {
-    items.push({
-      key: 'intraday',
-      label: '盘中',
-      value: coverage,
-      tone: coverage === 'full' ? 'ready' : coverage === 'none' ? 'muted' : 'warn',
-    })
+  const intraday = formatIntradaySnapshotStatus(intradaySnapshot) || latestIntradayCoverageStatus(messages)
+  if (intraday?.value) {
+    items.push({ key: 'intraday', label: '1m', ...intraday })
   }
   return items
 }
 
-function latestIntradayCoverage(messages = []) {
+function formatIntradaySnapshotStatus(snapshot) {
+  if (!snapshot) return null
+  const date = formatAsOf(snapshot.date || '')
+  if (!snapshot.available) {
+    return {
+      value: date ? `${date} 无数据` : '无数据',
+      tone: 'warn',
+    }
+  }
+  const coverage = snapshot.coverage || {}
+  const quality = String(coverage.quality || '')
+  const count = Number(coverage.bar_count || 0)
+  const coverageLabel = quality === 'complete_from_open'
+    ? '完整'
+    : quality === 'partial'
+      ? '部分'
+      : quality || '未知'
+  const countLabel = count > 0 ? ` ${count}根` : ''
+  return {
+    value: `${date || '最新'} ${coverageLabel}${countLabel}`,
+    tone: quality === 'complete_from_open' ? 'ready' : quality === 'partial' ? 'warn' : 'muted',
+  }
+}
+
+function latestIntradayCoverageStatus(messages = []) {
   const assistant = [...messages].reverse().find((item) => item?.role === 'assistant' && item.answer)
   const quality = assistant?.answer?.intraday_observation?.coverage?.quality
-  return quality ? String(quality) : ''
+  if (!quality) return null
+  const text = String(quality)
+  return {
+    value: text,
+    tone: text === 'full' || text === 'complete_from_open' ? 'ready' : text === 'none' ? 'muted' : 'warn',
+  }
 }
 
 function buildFreshnessRows(status, context) {
