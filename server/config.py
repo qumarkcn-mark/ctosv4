@@ -41,6 +41,10 @@ QWEN_ALLOWED_BASE_URLS = tuple(
     ).split(",")
     if url.strip()
 )
+
+# T0 做T教练默认关闭。开启后才会启动独立 1m preview 同步与状态机 worker。
+T0_ENGINE_ENABLED = os.getenv("T0_ENGINE_ENABLED", "false").lower() == "true"
+T0_KLINE_TICKER_ENABLED = os.getenv("T0_KLINE_TICKER_ENABLED", "false").lower() == "true"
 QWEN_DEFAULT_MODEL = os.getenv("QWEN_DEFAULT_MODEL", "qwen-plus")
 QWEN_TRADE_PARSE_MODEL = os.getenv("QWEN_TRADE_PARSE_MODEL", "qwen-flash")
 QWEN_SCREENSHOT_OCR_MODEL = os.getenv("QWEN_SCREENSHOT_OCR_MODEL", "qwen-vl-ocr-latest")

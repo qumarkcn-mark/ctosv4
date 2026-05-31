@@ -1,6 +1,7 @@
 """CT-OS V4.0 数据库初始化 — SQLite + 多用户 Ready"""
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from server.config import DB_PATH
@@ -703,10 +704,16 @@ CREATE INDEX IF NOT EXISTS idx_paper_feature_cache_symbol_time ON paper_feature_
 """
 
 
+def _current_db_path() -> str:
+    """支持测试和本地工具临时切换数据库路径。"""
+    return os.getenv("CT_OS_DB_PATH") or os.getenv("DB_PATH") or DB_PATH
+
+
 def get_connection() -> sqlite3.Connection:
     """获取 SQLite 连接，开启 WAL 模式和外键约束"""
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    db_path = _current_db_path()
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1246,6 +1253,34 @@ def run_migrations(conn: sqlite3.Connection):
             UNIQUE(user_id, symbol)
         )
         """,
+        # 迁移 M021：T+0 做T教练状态缓存 + watchlist 扩展
+        """
+        CREATE TABLE IF NOT EXISTS t0_state_cache (
+            user_id          INTEGER NOT NULL,
+            symbol           TEXT NOT NULL,
+            state            TEXT NOT NULL DEFAULT 'IDLE',
+            pivot_zd         REAL,
+            pivot_zg         REAL,
+            entry_price      REAL,
+            target_price     REAL,
+            stop_structural  REAL,
+            stop_catastrophic REAL,
+            t0_qty           INTEGER DEFAULT 0,
+            friction_per_share REAL,
+            is_grid_viable   INTEGER DEFAULT 0,
+            daily_pnl        REAL DEFAULT 0,
+            daily_trades     INTEGER DEFAULT 0,
+            daily_stop_count INTEGER DEFAULT 0,
+            signal           TEXT,
+            signal_price     REAL,
+            reason           TEXT DEFAULT '',
+            state_json       TEXT DEFAULT '{}',
+            updated_at       TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, symbol)
+        )
+        """,
+        "ALTER TABLE watchlist_items ADD COLUMN t0_enabled INTEGER DEFAULT 0",
+        "ALTER TABLE watchlist_items ADD COLUMN t0_qty INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         try:
