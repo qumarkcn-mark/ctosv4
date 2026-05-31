@@ -1,5 +1,5 @@
 import './WatchCard.css'
-import { computeTacticalState, formatWatchPrice } from '../utils/watchboardState.js'
+import { computeStateMachineState, formatWatchPrice } from '../utils/watchboardState.js'
 
 const formatPrice = (value) => formatWatchPrice(value, { fixed: true })
 const formatLevel = formatWatchPrice
@@ -29,72 +29,26 @@ function actionClass(action) {
   return map[normalized] || 'wait'
 }
 
-function normalizeCurrentAction(action) {
+function normalizeCurrentAction(action, hasPosition = false) {
   const text = String(action || '').trim()
-  if (!text) return '观望'
+  if (!text) return hasPosition ? '持仓观察' : '观望'
+  if (hasPosition && /^(观望|观察|继续观望)$/.test(text)) return '持仓观察'
   if (text.includes('止损') || text.includes('减仓') || text.includes('锁利')) return '持仓观察'
   if (text.includes('加仓') || text.includes('建仓')) return '等待确认'
   return text
 }
 
-function triggerActionLabel(action) {
-  const text = String(action || '').trim()
-  if (!text || text === '关注') return ''
-  return text.replace(/^考虑/, '考虑')
-}
-
-function triggerText(trigger, price) {
-  if (!trigger) return ''
-  const level = Number(trigger.level || 0)
-  if (!level) return ''
-  const direction = trigger.type === 'price_below' ? '破' : '站上'
-  const message = String(trigger.message_on_trigger || '').trim()
-  const action = triggerActionLabel(trigger.action_on_trigger)
-  const suffix = action || message
-  const text = `${direction}${formatLevel(level)}${suffix ? `：${suffix}` : ''}`
-  if (!price) return text
-  const distance = Math.abs((level - price) / price) * 100
-  return distance <= 3 ? text : text
-}
-
-function nearestTrigger(item, price, rawAction = '') {
-  const triggers = item.monitor_conditions?.triggers || []
-  const activeTriggers = triggers
-    .filter((trigger) => {
-      const level = Number(trigger.level || 0)
-      if (!level) return false
-      if (trigger.type === 'price_below') return !price || level < price
-      if (trigger.type === 'price_above') return !price || level > price
-      return false
-    })
-    .sort((a, b) => Math.abs(Number(a.level) - price) - Math.abs(Number(b.level) - price))
-  const actionText = String(rawAction || '')
-  if (actionText.includes('止损') || actionText.includes('减仓') || actionText.includes('防守')) {
-    const downside = activeTriggers.find((trigger) => trigger.type === 'price_below')
-    if (downside) return downside
-  }
-  if (actionText.includes('加仓') || actionText.includes('建仓')) {
-    const upside = activeTriggers.find((trigger) => trigger.type === 'price_above')
-    if (upside) return upside
-  }
-  return activeTriggers[0]
-}
-
-export default function WatchCard({ item, currentPrice, onClick }) {
+export default function WatchCard({ item, currentPrice, previousPrice, onClick }) {
   const price = Number(currentPrice || item.price || 0)
-  const tactical = computeTacticalState(item, price)
-  const state = tactical.state
+  const machine = computeStateMachineState(item, price, previousPrice)
+  const state = machine.available ? machine.state : 'idle'
   const summary = item.reasoning_summary || {}
-  const message = summary.one_liner || tactical.displayLine || '暂无统一推演'
-  const rawAction = summary.action || tactical.actionLabel || '观望'
-  const action = normalizeCurrentAction(rawAction)
-  const trigger = nearestTrigger(item, price, rawAction)
-  const intradayEvent = item.intraday_event_state?.primary || null
-  const triggerLine = triggerText(trigger, price)
-  const eventLine = intradayEvent?.message || ''
+  const message = machine.available ? (machine.displayLine || summary.one_liner || '等待关键位') : '暂无状态机数据'
+  const rawAction = summary.action || machine.actionLabel || '观望'
+  const triggerLine = machine.available ? (summary.card_secondary || machine.nextWatchLine) : ''
+  const triggerLabel = summary.card_secondary ? '转化' : (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '状态') : '后续')
   const position = item.position
-  const hasRangeLevels = Boolean(Number(summary.key_level_down || 0) && Number(summary.key_level_up || 0))
-  const hasAnyKeyLevel = Boolean(Number(summary.key_level_down || 0) || Number(summary.key_level_up || 0))
+  const action = normalizeCurrentAction(rawAction, Boolean(position?.shares))
   const quoteTime = item.price_data?.quote_time || ''
   const pnlPct = Number(position?.pnl_pct ?? 0)
   const cost = Number(position?.cost ?? 0)
@@ -102,8 +56,9 @@ export default function WatchCard({ item, currentPrice, onClick }) {
   const hasNegativeCost = cost < 0
   const pnlLabel = pnlPct >= 0 ? '盈' : '亏'
 
-  const minL = Number(summary.key_level_down || 0)
-  const maxL = Number(summary.key_level_up || 0)
+  const minL = Number(machine.range?.low || 0)
+  const maxL = Number(machine.range?.high || 0)
+  const hasRangeLevels = Boolean(minL && maxL)
   let dotPercentage = 50
   if (minL && maxL && maxL > minL) {
     dotPercentage = Math.max(0, Math.min(100, ((price - minL) / (maxL - minL)) * 100))
@@ -136,10 +91,10 @@ export default function WatchCard({ item, currentPrice, onClick }) {
       )}
 
       <p className="watch-card-summary">{message}</p>
-      {(eventLine || triggerLine) && (
+      {triggerLine && (
         <div className="watch-card-trigger">
-          <span>{eventLine ? '盘中' : '触发'}</span>
-          <strong>{eventLine || triggerLine}</strong>
+          <span>{triggerLabel}</span>
+          <strong>{triggerLine}</strong>
         </div>
       )}
 
@@ -157,9 +112,7 @@ export default function WatchCard({ item, currentPrice, onClick }) {
       <div className="watch-card-bottom">
         {!hasRangeLevels && (
           <div className="watch-card-levels">
-            {minL ? <span>▼ {formatLevel(minL)}</span> : null}
-            {maxL ? <span>▲ {formatLevel(maxL)}</span> : null}
-            {!hasAnyKeyLevel ? <span className="watch-card-no-level">等待关键位</span> : null}
+            <span className="watch-card-no-level">{machine.available ? '无区间数据' : '无状态机'}</span>
           </div>
         )}
         <span className={`watch-action-badge action-${actionClass(action)}`}>当前：{action}</span>

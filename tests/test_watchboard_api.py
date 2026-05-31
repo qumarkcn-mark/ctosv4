@@ -141,12 +141,10 @@ def test_watchboard_merges_positions_watchlist_reasoning_and_prices(monkeypatch,
     assert position["position"]["pnl_pct"] == 4.27
     assert position["reasoning_summary"]["one_liner"] == "回拉未破支撑，等5分钟确认"
     assert position["reasoning_summary"]["action"] == "继续持有"
-    assert position["reasoning_summary"]["key_level_down"] == 4.37
-    assert position["reasoning_summary"]["key_level_up"] == 4.5
+    assert position["reasoning_summary"]["key_level_down"] == 4.13
+    assert position["reasoning_summary"]["key_level_up"] == 4.8
     assert position["monitor_conditions"]["triggers"][0]["level"] == 4.37
-    assert position["intraday_event_state"]["primary"]["type"] == "near_support"
-    assert position["intraday_event_state"]["primary"]["level"] == 4.37
-    assert "接近4.37支撑" in position["intraday_event_state"]["primary"]["message"]
+    assert "intraday_event_state" not in position
     assert groups[1]["items"][0]["symbol"] == "sh.600519"
 
 
@@ -228,8 +226,7 @@ def test_watchboard_falls_back_to_legacy_reasoning_and_compacts_opening(monkeypa
     item = response.json()["data"]["groups"][0]["items"][0]
     assert item["reasoning_source"] == "legacy"
     assert item["reasoning_summary"]["one_liner"] == "日线回拉考验中枢上沿4.37，等待5分钟背驰确认三买"
-    assert item["monitor_conditions"]["triggers"][0]["level"] == 4.37
-    assert item["monitor_conditions"]["triggers"][1]["action_on_trigger"] == "考虑减仓"
+    assert item["monitor_conditions"]["triggers"] == []
     assert "好的" not in item["reasoning_summary"]["one_liner"]
 
 

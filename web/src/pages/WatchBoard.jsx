@@ -3,7 +3,11 @@ import ReactMarkdown from 'react-markdown'
 import { apiFetch, apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchCard from '../components/WatchCard.jsx'
-import { computeTacticalState } from '../utils/watchboardState.js'
+import {
+  buildIntradayReviewQuestion,
+  computeStateMachineState,
+  intradayReviewLabel,
+} from '../utils/watchboardState.js'
 import './WatchBoard.css'
 
 const GROUPS = ['自选', '备选']
@@ -51,23 +55,6 @@ function chatQuestionPayload(item, question, thinkingEnabled = false) {
     price_source: price > 0 ? 'watchboard_quote' : undefined,
     thinking_enabled: thinkingEnabled,
   }
-}
-
-function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
-  const price = Number(currentPrice || 0)
-  if (price <= 0) return ''
-  const prev = Number(previousPrice || 0)
-  const change = prev > 0 ? `，较上一跳${price >= prev ? '上移' : '回落'}到${formatPrice(price)}` : `，当前价${formatPrice(price)}`
-  return `结合上一版推演和今天1分钟盘中走势复核一下${item?.name || item?.symbol || ''}${change}，现在是在验证哪条买卖点转化路径？成立看哪里，失败又会怎样？`
-}
-
-function intradayReviewLabel(item, currentPrice, previousPrice) {
-  const price = Number(currentPrice || 0)
-  if (price <= 0) return '1m区间复核'
-  const prev = Number(previousPrice || 0)
-  if (prev > 0 && price > prev) return '1m上移复核'
-  if (prev > 0 && price < prev) return '1m回落复核'
-  return '1m区间复核'
 }
 
 function formatPrice(value) {
@@ -231,7 +218,7 @@ export default function WatchBoard() {
           items: (group.items || [])
         .map((item, index) => {
           const merged = mergePrice(item, prices, previousPrices)
-          const tactical = computeTacticalState(merged, merged.price)
+          const tactical = computeStateMachineState(merged, merged.price, merged.previous_price)
           return {
             ...merged,
             _watchboardIndex: index,
