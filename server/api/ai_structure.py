@@ -931,6 +931,8 @@ def _attach_watchboard_reasoning(item: dict, reasoning: dict | None, *, conn=Non
 
 def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
     coach_summary = str(summary.get("front_panel_text") or summary.get("coach_summary") or summary.get("one_liner") or "").strip()
+    watch_plan = summary.get("watch_plan") if isinstance(summary.get("watch_plan"), dict) else {}
+    watch_state_machine = summary.get("watch_state_machine") or watch_plan.get("watch_state_machine") or {}
     triggers = (summary.get("monitor_conditions") or {}).get("triggers") or []
     down_levels = [item for item in triggers if item.get("type") == "price_below"]
     up_levels = [item for item in triggers if item.get("type") == "price_above"]
@@ -943,7 +945,10 @@ def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
         "action": summary.get("card_action") or summary.get("action") or "",
         "action_detail": summary.get("action_detail") or "",
         "card_secondary": summary.get("card_secondary") or "",
-        "watch_state_machine": summary.get("watch_state_machine") or (summary.get("watch_plan") or {}).get("watch_state_machine") or {},
+        "extract_status": summary.get("extract_status") or "",
+        "extract_error": summary.get("extract_error") or "",
+        "watch_plan": watch_plan,
+        "watch_state_machine": watch_state_machine,
         "key_level_down": key_down,
         "key_level_down_meaning": summary.get("key_level_down_meaning") or "下方关键位",
         "key_level_up": key_up,
