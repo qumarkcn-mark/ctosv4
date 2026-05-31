@@ -332,7 +332,8 @@ def _format_kline_time(value: object) -> str:
 def _quote_minute(quote: dict) -> str:
     trade_datetime = str(quote.get("trade_datetime") or "").strip()
     if len(trade_datetime) >= 16:
-        return f"{trade_datetime[:16]}:00"
+        minute = f"{trade_datetime[:16]}:00"
+        return minute if _is_a_share_trading_minute(minute) else ""
 
     quote_time = str(quote.get("quote_time") or "").strip()
     if len(quote_time) >= 5:
@@ -340,8 +341,17 @@ def _quote_minute(quote: dict) -> str:
             received = datetime.fromtimestamp(float(quote.get("received_at") or 0))
         except (TypeError, ValueError, OSError):
             received = datetime.now()
-        return f"{received:%Y-%m-%d} {quote_time[:5]}:00"
+        minute = f"{received:%Y-%m-%d} {quote_time[:5]}:00"
+        return minute if _is_a_share_trading_minute(minute) else ""
     return ""
+
+
+def _is_a_share_trading_minute(value: str) -> bool:
+    """Return True only for regular A-share trading minutes."""
+    if len(value) < 16:
+        return False
+    hm = value[11:16]
+    return "09:30" <= hm <= "11:30" or "13:00" <= hm <= "15:00"
 
 
 def _num(value: object) -> float:

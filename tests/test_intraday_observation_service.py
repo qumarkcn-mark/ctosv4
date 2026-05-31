@@ -8,6 +8,7 @@ from server.services import intraday_observation_service as svc
 @pytest.fixture(autouse=True)
 def no_lake_1m(monkeypatch):
     monkeypatch.setattr(svc, "query_klines", lambda *args, **kwargs: [])
+    monkeypatch.setattr(svc, "upsert_klines", lambda *args, **kwargs: 0)
 
 
 def test_intraday_observation_tracks_coverage_and_forming_macd(monkeypatch):
@@ -75,12 +76,46 @@ def test_intraday_observation_without_quote_reports_none(monkeypatch):
         return []
 
     monkeypatch.setattr(svc, "fetch_tdx_quote", fake_fetch_quote)
+    monkeypatch.setattr(svc, "get_current_price", fake_fetch_quote)
     monkeypatch.setattr(svc, "get_minute_klines", fake_history)
 
     payload = asyncio.run(svc.get_intraday_observation("sh.600790"))
 
     assert payload["coverage"]["quality"] == "none"
     assert payload["levels"]["1m"]["bar_count"] == 0
+
+
+def test_intraday_observation_falls_back_to_current_price_quote(monkeypatch):
+    svc.reset_intraday_observation_cache()
+
+    async def fake_fetch_tdx_quote(symbol):
+        return None
+
+    async def fake_current_price(symbol):
+        assert symbol == "sh.688008"
+        return {
+            "symbol": "sh688008",
+            "price": 270.98,
+            "quote_time": "10:27:41",
+            "trade_datetime": "2026-05-25 10:27:41",
+            "source": "tencent_quote",
+        }
+
+    async def fake_history(symbol, interval="m5", count=240, allow_short_fresh_cache=True):
+        return []
+
+    monkeypatch.setattr(svc, "fetch_tdx_quote", fake_fetch_tdx_quote)
+    monkeypatch.setattr(svc, "get_current_price", fake_current_price)
+    monkeypatch.setattr(svc, "get_minute_klines", fake_history)
+
+    payload = asyncio.run(svc.get_intraday_observation("sh.688008"))
+
+    assert payload["as_of"] == "2026-05-25 10:27:41"
+    assert payload["quote"]["source"] == "tencent_quote"
+    assert payload["coverage"]["quality"] == "partial"
+    assert payload["levels"]["1m"]["last_bar_at"] == "2026-05-25 10:27:00"
+    assert payload["levels"]["1m"]["last_close"] == 270.98
+    assert payload["levels"]["5m"]["last_bar_status"] == "FORMING"
 
 
 def test_intraday_observation_ignores_after_hours_quote_for_bar_aggregation(monkeypatch):
@@ -137,7 +172,11 @@ def test_intraday_observation_prefers_today_lake_1m_closed_bars(monkeypatch):
     async def fake_history(symbol, interval="m5", count=240, allow_short_fresh_cache=True):
         return []
 
+    async def fake_current_price(symbol):
+        return None
+
     monkeypatch.setattr(svc, "query_klines", fake_lake)
+    monkeypatch.setattr(svc, "get_current_price", fake_current_price)
     monkeypatch.setattr(svc, "get_minute_klines", fake_history)
 
     payload = asyncio.run(svc.get_intraday_observation("sh.600790", quote=None))
@@ -150,6 +189,7 @@ def test_intraday_observation_prefers_today_lake_1m_closed_bars(monkeypatch):
 
 
 def test_intraday_observation_reads_minute_history_from_tdx(monkeypatch):
+    svc.reset_intraday_observation_cache()
     calls = []
 
     def fake_lake(symbol, freq, **kwargs):
@@ -163,3 +203,76 @@ def test_intraday_observation_reads_minute_history_from_tdx(monkeypatch):
     assert payload["levels"]["5m"]["bar_count"] == 0
     assert any(freq == "5" and kwargs["source"] == "tdx" and kwargs["adjustflag"] == "2" for _, freq, kwargs in calls)
     assert any(freq == "30" and kwargs["source"] == "tdx" and kwargs["adjustflag"] == "2" for _, freq, kwargs in calls)
+
+
+def test_intraday_observation_persists_live_1m_to_qmt_lake(monkeypatch):
+    svc.reset_intraday_observation_cache()
+    writes = []
+
+    monkeypatch.setattr("server.services.intraday_observation_service.upsert_klines", lambda *args, **kwargs: writes.append((args, kwargs)) or 1)
+
+    payload = asyncio.run(
+        svc.get_intraday_observation(
+            "sz.002158",
+            quote={
+                "symbol": "sz002158",
+                "price": 32.6,
+                "quote_time": "10:19:36",
+                "trade_datetime": "2026-05-27 10:19:36",
+                "source": "tencent_quote",
+            },
+        )
+    )
+
+    assert payload["levels"]["1m"]["last_bar_at"] == "2026-05-27 10:19:00"
+    assert writes
+    args, kwargs = writes[-1]
+    assert args[:3] == ("sz.002158", "1", [
+        {
+            "date": "2026-05-27 10:19:00",
+            "open": 32.6,
+            "high": 32.6,
+            "low": 32.6,
+            "close": 32.6,
+            "volume": 0.0,
+            "amount": 0.0,
+        }
+    ])
+    assert kwargs["source"] == "qmt"
+    assert kwargs["adjustflag"] == "3"
+
+
+def test_intraday_observation_restores_today_1m_from_qmt_lake(monkeypatch):
+    svc.reset_intraday_observation_cache()
+
+    def fake_lake(symbol, freq, **kwargs):
+        if freq == "1" and kwargs.get("source") == "qmt":
+            return [
+                {
+                    "date": "2026-05-27 10:18:00",
+                    "open": 32.1,
+                    "high": 32.3,
+                    "low": 32.0,
+                    "close": 32.2,
+                    "volume": 1000,
+                    "amount": 32000,
+                },
+                {
+                    "date": "2026-05-27 10:19:00",
+                    "open": 32.2,
+                    "high": 32.6,
+                    "low": 32.2,
+                    "close": 32.6,
+                    "volume": 1200,
+                    "amount": 39000,
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(svc, "query_klines", fake_lake)
+
+    payload = svc.get_intraday_observation_snapshot("sz.002158", quote=None)
+
+    assert payload["coverage"]["bar_count_1m"] == 2
+    assert payload["levels"]["1m"]["last_bar_at"] == "2026-05-27 10:19:00"
+    assert payload["levels"]["1m"]["last_close"] == 32.6

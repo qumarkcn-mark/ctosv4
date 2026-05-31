@@ -37,8 +37,20 @@ def run_postmarket_sync(*, vipdoc: str | None = None, mode: str = "incremental",
             "vipdoc": status,
         }
 
-    daily = sync_daily_files(root, mode=mode, reset=reset, job_id=None)
     symbols = _get_all_tracked_symbols()
+    if mode == "full" or reset:
+        daily = sync_daily_files(root, mode=mode, reset=reset, job_id=None)
+    else:
+        daily = {
+            "skipped": True,
+            "reason": "TRACKED_SYMBOLS_ONLY",
+            "message": "盘后按钮只同步盯盘/持仓股票；不扫描全市场日线。",
+            "total_files": 0,
+            "processed_files": 0,
+            "synced_symbols": 0,
+            "written_rows": 0,
+            "skipped_files": 0,
+        }
     tracked = _sync_all_symbols_from_tdx_local(symbols, list(ALL_FREQS)) if symbols else {
         "total_symbols": 0,
         "updated_symbols": 0,

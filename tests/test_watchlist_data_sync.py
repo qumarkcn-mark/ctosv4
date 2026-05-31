@@ -80,7 +80,7 @@ def test_add_watchlist_stock_queues_tdx_init_when_baostock_auto_sync_disabled(mo
     assert payload["data_sync"]["source"] == "tdx"
     assert payload["data_sync"]["reason"] == "TDX_SINGLE_SYMBOL_INIT"
     assert payload["data_sync"]["quick_freqs"] == ["day", "5"]
-    assert payload["data_sync"]["full_freqs"] == ["week", "day", "60", "30", "15", "5"]
+    assert payload["data_sync"]["full_freqs"] == ["week", "day", "60", "30", "15", "5", "1"]
     assert queued == ["sh.600118"]
 
 
@@ -229,7 +229,7 @@ def test_scheduled_sync_scope_splits_daily_and_full_windows():
     assert kline_sync_worker._scheduled_sync_scope(datetime(2026, 5, 19, 17, 30)) == "daily"
     assert kline_sync_worker._scheduled_sync_scope(datetime(2026, 5, 19, 20, 30)) == "full"
     assert kline_sync_worker._freqs_for_sync_scope("daily") == ["day"]
-    assert kline_sync_worker._freqs_for_sync_scope("full") == ["week", "day", "60", "30", "15", "5"]
+    assert kline_sync_worker._freqs_for_sync_scope("full") == ["week", "day", "60", "30", "15", "5", "1"]
 
 
 def test_daily_sync_does_not_block_later_minute_sync():
@@ -303,7 +303,7 @@ def test_sync_all_symbols_uses_tdx_local_history_when_baostock_disabled(monkeypa
 
     monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
     monkeypatch.setattr(kline_sync_worker.config, "TDX_LOCAL_HISTORY_SYNC_ENABLED", True)
-    monkeypatch.setattr("server.db.kline_lake.get_last_sync_date", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("server.db.kline_lake.query_klines", lambda *_args, **_kwargs: [])
     async def fake_fetch_empty(*_args, **_kwargs):
         return []
 
@@ -322,6 +322,7 @@ def test_sync_all_symbols_uses_tdx_local_history_when_baostock_disabled(monkeypa
             {"date": "2026-05-22 15:00:00", "open": 9, "high": 10, "low": 8, "close": 9.5}
         ],
     )
+    monkeypatch.setattr("server.services.tdx_minute_service.derive_tdx_day_from_minutes", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         "server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors",
         lambda *_args, **_kwargs: SimpleNamespace(
@@ -340,11 +341,12 @@ def test_sync_all_symbols_uses_tdx_local_history_when_baostock_disabled(monkeypa
 
     monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
 
-    result = kline_sync_worker._sync_all_symbols(["sz.301078"], ["week", "day", "30"])
+    result = kline_sync_worker._sync_all_symbols(["sz.301078"], ["week", "day", "1", "30"])
 
-    assert result["total_written"] == 3
+    assert result["total_written"] == 4
     assert ("sz.301078", "week", 1, "3", "tdx") in calls
     assert ("sz.301078", "day", 1, "3", "tdx") in calls
+    assert ("sz.301078", "1", 1, "3", "tdx") in calls
     assert ("sz.301078", "30", 1, "3", "tdx") in calls
     assert result["changed"] == []
 
@@ -364,7 +366,7 @@ def test_sync_all_symbols_imports_tdx_front_day_before_qfq_rebuild(monkeypatch):
         upserts.append((symbol, freq, len(rows), adjustflag, source))
         return len(rows)
 
-    def fake_qfq(symbol, target_freqs=None):
+    def fake_qfq(symbol, target_freqs=None, **_kwargs):
         assert symbol == "sz.301078"
         assert target_freqs == ["30"]
         return SimpleNamespace(
@@ -377,7 +379,18 @@ def test_sync_all_symbols_imports_tdx_front_day_before_qfq_rebuild(monkeypatch):
         )
 
     monkeypatch.setattr(kline_sync_worker.config, "BAOSTOCK_AUTO_SYNC_ENABLED", False)
-    monkeypatch.setattr("server.db.kline_lake.get_last_sync_date", lambda *_args, **_kwargs: "2026-05-22")
+    def fake_query(symbol, freq, limit=1, adjustflag="2", source="tdx"):
+        if freq == "day" and adjustflag == "2":
+            return [{"date": "2026-05-21"}]
+        if freq == "day" and adjustflag == "3":
+            return [{"date": "2026-05-22"}]
+        if freq == "30" and adjustflag == "3":
+            return [{"date": "2026-05-22 15:00:00"}]
+        if freq == "30" and adjustflag == "2":
+            return [{"date": "2026-05-21 15:00:00"}]
+        return []
+
+    monkeypatch.setattr("server.db.kline_lake.query_klines", fake_query)
     monkeypatch.setattr("server.services.tdx_bridge_client.fetch_tdx_klines", fake_fetch)
     monkeypatch.setattr("server.db.kline_lake.upsert_klines", fake_upsert)
     monkeypatch.setattr("server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors", fake_qfq)

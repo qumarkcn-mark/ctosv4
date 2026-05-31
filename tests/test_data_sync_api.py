@@ -14,7 +14,8 @@ from server.workers import kline_sync_worker
 
 
 def test_formal_sync_freqs_include_week_for_ai_context():
-    assert kline_sync_worker.ALL_FREQS == ["week", "day", "60", "30", "15", "5"]
+    assert kline_sync_worker.ALL_FREQS == ["week", "day", "60", "30", "15", "5", "1"]
+    assert "1" not in kline_sync_worker.FREQ_TO_STRUCTURE_LEVEL
 
 
 def test_sync_symbol_klines_only_syncs_requested_symbol(monkeypatch):
@@ -111,6 +112,17 @@ def test_sync_symbol_klines_can_refresh_only_requested_interval(monkeypatch):
         "enqueue_structure_jobs_for_changes",
         lambda changes, **_kwargs: {"count": len(changes), "items": []},
     )
+    monkeypatch.setattr(
+        "server.services.tdx_qfq_normalizer.rebuild_tdx_qfq_from_existing_factors",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="skipped",
+            reason="test",
+            day_factor_count=0,
+            written={},
+            missing_factor_dates={},
+            total_written=0,
+        ),
+    )
 
     app = FastAPI()
     app.include_router(data_api.router)
@@ -139,6 +151,36 @@ def test_sync_all_klines_disables_legacy_baostock_force_sync():
     assert response.status_code == 200
     assert response.json()["status"] == "disabled"
     assert response.json()["source"] == "tdx"
+
+
+def test_batch_prices_feed_intraday_observation_cache(monkeypatch):
+    async def fake_prices(symbols):
+        assert symbols == ["sz.002158"]
+        return {
+            "sz002158": {
+                "symbol": "sz002158",
+                "price": 32.6,
+                "quote_time": "10:19:36",
+                "trade_datetime": "2026-05-27 10:19:36",
+                "source": "tencent_quote",
+            }
+        }
+
+    ingest_calls = []
+    monkeypatch.setattr(data_api, "get_batch_prices", fake_prices)
+    monkeypatch.setattr(data_api, "ingest_intraday_quote", lambda symbol, quote: ingest_calls.append((symbol, quote)))
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/prices?symbols=sz.002158")
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert len(ingest_calls) == 1
+    assert ingest_calls[0][0] == "sz002158"
+    assert ingest_calls[0][1]["trade_datetime"] == "2026-05-27 10:19:36"
 
 
 def test_query_klines_reads_tdx_front_adjusted_lake(monkeypatch):
@@ -257,6 +299,132 @@ def test_query_klines_uses_raw_when_qfq_lake_is_stale(monkeypatch):
     payload = response.json()
     assert payload["count"] == 1
     assert payload["klines"][0]["date"] == "2026-05-22 15:00:00"
+
+
+def test_query_m1_klines_appends_current_price_quote(monkeypatch):
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def fake_fetch(symbol, period="1m", count=5000, refresh=False, **_kwargs):
+        assert period == "1m"
+        return [
+            {
+                "symbol": "sh688008",
+                "freq": "1",
+                "date": "2026-05-22 15:00:00",
+                "open": 260,
+                "high": 261,
+                "low": 259,
+                "close": 260.5,
+                "volume": 1000,
+                "amount": 260500,
+                "adjustflag": "2",
+                "bar_status": "CLOSED",
+                "source": "tdx_bridge",
+            }
+        ]
+
+    async def fake_current_price(symbol):
+        assert symbol == "sh.688008"
+        return {
+            "symbol": "sh688008",
+            "price": 270.98,
+            "trade_datetime": "2026-05-25 10:27:41",
+            "quote_time": "10:27:41",
+            "source": "tencent_quote",
+        }
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr(data_api, "get_current_price", fake_current_price)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/klines/sh688008?interval=m1&count=120")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interval"] == "m1"
+    assert payload["klines"][-1]["date"] == "2026-05-25 10:27:00"
+    assert payload["klines"][-1]["close"] == 270.98
+    assert payload["klines"][-1]["bar_status"] == "FORMING"
+
+
+def test_postmarket_sync_skips_when_tdx_stale(monkeypatch):
+    data_api._POSTMARKET_SYNC_JOBS.clear()
+
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def fake_readiness(vipdoc=None):
+        return {
+            "status": "stale",
+            "message": "TDX 本地数据还没到 2026-05-25",
+            "latest": {"day": "2026-05-24", "m1": "", "m5": ""},
+        }
+
+    def fake_run(*_args, **_kwargs):
+        raise AssertionError("stale TDX should not run postmarket sync")
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "_tdx_postmarket_readiness", fake_readiness)
+    monkeypatch.setattr(data_api, "_run_tdx_postmarket_sync", fake_run)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.post("/tdx/sync/postmarket")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stale"
+    assert payload["skipped"] is True
+    assert payload["sync_result"] is None
+
+
+def test_postmarket_sync_runs_when_tdx_ready(monkeypatch):
+    data_api._POSTMARKET_SYNC_JOBS.clear()
+
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def fake_readiness(vipdoc=None):
+        return {
+            "status": "ready",
+            "message": "ready",
+            "latest": {"day": "2026-05-25", "m1": "2026-05-25 15:00:00", "m5": "2026-05-25 15:00:00"},
+        }
+
+    def fake_run(vipdoc=None, mode="incremental"):
+        assert mode == "incremental"
+        return {
+            "status": "success",
+            "tracked": {"updated_symbols": 3, "total_symbols": 5, "errors": 0},
+            "snapshot_prewarm": {"count": 12},
+        }
+
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "_tdx_postmarket_readiness", fake_readiness)
+    monkeypatch.setattr(data_api, "_run_tdx_postmarket_sync", fake_run)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.post("/tdx/sync/postmarket")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "running"
+    assert payload["skipped"] is False
+    assert payload["job_id"]
+
+    latest = client.get("/tdx/sync/postmarket/latest").json()
+    assert latest["status"] == "success"
+    assert "更新 3/5 只" in latest["message"]
 
 
 def test_lake_status_api_is_readonly_contract(monkeypatch):
