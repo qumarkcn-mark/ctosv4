@@ -20,6 +20,7 @@ from server.engines.ai_native.structure_chat_service import (
     _build_chat_context_pack,
     _chat_current_price,
     _chat_intraday_observation,
+    _chat_postmarket_1m_snapshot,
     _chat_runtime_context,
     _context_data_status,
     classify_intent,
@@ -82,6 +83,7 @@ def _build_item(*, user_id: int, symbol: str, questions: list[str], mock_price: 
         return {"symbol": canonical, "error": "NO_AI_STRUCTURE_CONTEXT"}
 
     intraday = _mock_intraday_observation(canonical, mock_price) if mock_price else _chat_intraday_observation(canonical)
+    postmarket_snapshot = _chat_postmarket_1m_snapshot(canonical)
     data_status = _context_data_status(user_id=user_id, symbol=canonical, context=context)
     answers = []
     for question in questions:
@@ -111,6 +113,7 @@ def _build_item(*, user_id: int, symbol: str, questions: list[str], mock_price: 
             question=question,
             intent_type=intent,
             intraday_observation=intraday,
+            intraday_snapshot=postmarket_snapshot,
             reasoning_continuity_context=continuity,
             conversation_context=conversation_context,
             runtime_context=runtime_context,
@@ -132,6 +135,7 @@ def _build_item(*, user_id: int, symbol: str, questions: list[str], mock_price: 
         "main_level": context.get("main_level") or "",
         "trigger_level": context.get("trigger_level") or "",
         "intraday_summary": _intraday_summary(intraday),
+        "postmarket_1m_summary": _postmarket_1m_summary(postmarket_snapshot),
         "questions": answers,
     }
 
@@ -166,6 +170,17 @@ def _intraday_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _postmarket_1m_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": bool(payload.get("available")),
+        "source": payload.get("source") or "",
+        "date": payload.get("date") or "",
+        "coverage": payload.get("coverage") or {},
+        "bar_count": len(payload.get("recent_1m_bars") or []),
+        "price": payload.get("price") or {},
+    }
+
+
 def _parse_mock_prices(values: list[str]) -> dict[str, float]:
     result: dict[str, float] = {}
     for item in values:
@@ -195,10 +210,13 @@ def _format_summary(payload: dict[str, Any]) -> str:
             continue
         quote = (item.get("intraday_summary") or {}).get("quote") or {}
         coverage = (item.get("intraday_summary") or {}).get("coverage") or {}
+        postmarket = item.get("postmarket_1m_summary") or {}
+        postmarket_coverage = postmarket.get("coverage") or {}
         lines.append(
             "\n"
             f"{item.get('symbol')} | context={item.get('prompt_version')} | "
-            f"price={quote.get('price')} | coverage={coverage.get('quality')}"
+            f"price={quote.get('price')} | live={coverage.get('quality')} | "
+            f"post1m={postmarket.get('date') or '-'}:{postmarket_coverage.get('quality') or 'none'}"
         )
         for answer in item.get("questions") or []:
             ctx = answer.get("chat_context") or {}
