@@ -15,7 +15,14 @@ from server.workers.ai_structure_context_worker import ai_structure_context_work
 from server.workers.ai_structure_outcome_worker import ai_structure_outcome_worker
 from server.workers.unified_reasoning_worker import unified_reasoning_worker
 from server.workers.intraday_quote_sampler_worker import intraday_quote_sampler_worker
+from server.workers.t0_engine_worker import T0EngineWorker
+from server.workers.t0_sweeper_worker import T0SweeperWorker
+from server.workers.t0_kline_ticker import T0KlineTicker
 from server.services.baostock_service import shutdown_baostock
+
+t0_engine_worker = T0EngineWorker()
+t0_sweeper_worker = T0SweeperWorker()
+t0_kline_ticker = T0KlineTicker()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,6 +54,10 @@ async def lifespan(app: FastAPI):
     ai_structure_outcome_worker.start()
     unified_reasoning_worker.start()
     intraday_quote_sampler_worker.start()
+    # T0 做T教练 Workers（受环境变量门控）
+    t0_engine_worker.start()
+    t0_sweeper_worker.start()
+    t0_kline_ticker.start()
     logger.info("🚀 CT-OS V4.0 交易教练已启动")
     yield
     monitor.stop()
@@ -57,6 +68,9 @@ async def lifespan(app: FastAPI):
     ai_structure_outcome_worker.stop()
     unified_reasoning_worker.stop()
     intraday_quote_sampler_worker.stop()
+    t0_engine_worker.stop()
+    t0_sweeper_worker.stop()
+    t0_kline_ticker.stop()
     shutdown_baostock()
     logger.info("👋 CT-OS V4.0 已关闭")
 
@@ -114,6 +128,9 @@ app.include_router(kronos.router, prefix="/api/kronos", tags=["kronos tsfm"])
 
 from server.api import ai_structure
 app.include_router(ai_structure.router, prefix="/api/ai-structure", tags=["ai native v5 structure"])
+
+from server.api import t0 as t0_api
+app.include_router(t0_api.router)
 
 # Phase 2+:
 # from server.api import alerts, analysis
