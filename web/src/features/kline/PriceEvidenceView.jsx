@@ -999,13 +999,13 @@ function structureStatusLabel(status, view) {
   if (status === 'ready') {
     const biCount = view?.bis?.length || 0
     const segmentCount = view?.segments?.length || 0
-    const sourceLabel = view?.mode === 'preview' ? '实时结构' : '快照结构'
+    const sourceLabel = '实时结构'
     if (segmentCount > 0) return `${sourceLabel} · ${biCount} 笔 · ${segmentCount} 线段`
     if (view?.capabilities?.segment_status === 'unavailable') return `${sourceLabel} · ${biCount} 笔 · 线段待接入`
     return `${sourceLabel} · ${biCount} 笔`
   }
   if (status === 'loading') return '结构加载'
-  if (status === 'missing') return '无结构'
+  if (status === 'missing') return '实时结构失败'
   return ''
 }
 
