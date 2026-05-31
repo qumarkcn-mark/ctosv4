@@ -287,6 +287,49 @@ def _query_tdx_display_klines(symbol: str, freq: str, count: int) -> list[dict]:
     return qfq_rows or raw_rows
 
 
+def _query_qmt_today_1m_display_klines(symbol: str, count: int) -> list[dict]:
+    """Read today's intraday preview 1m rows from qmt_lake for display only."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = query_lake_klines(symbol, "1", start_date=today, limit=count, adjustflag="3", source="qmt")
+    result = []
+    now_minute = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for row in rows:
+        date = str(row.get("date") or "")
+        if not date.startswith(today):
+            continue
+        result.append(
+            {
+                "symbol": symbol.replace(".", ""),
+                "freq": "1",
+                "date": date,
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+                "volume": row.get("volume", 0),
+                "amount": row.get("amount", 0),
+                "adjustflag": "3",
+                "bar_status": "FORMING" if date[:16] == now_minute else "CLOSED",
+                "source": "qmt_lake_1m_preview",
+            }
+        )
+    return result[-count:]
+
+
+def _merge_m1_display_rows(history_rows: list[dict], preview_rows: list[dict], count: int) -> list[dict]:
+    """Merge formal/replay 1m history with today's preview tape by timestamp."""
+    merged: dict[str, dict] = {}
+    for row in history_rows or []:
+        date = str(row.get("date") or "")
+        if date:
+            merged[date] = row
+    for row in preview_rows or []:
+        date = str(row.get("date") or "")
+        if date:
+            merged[date] = row
+    return [merged[key] for key in sorted(merged)][-count:]
+
+
 def _sync_local_tdx_history_to_lake(symbol: str, freq: str, count: int = 5000) -> tuple[int, list[dict]]:
     """Import local TDX .day/.lc1 derived history bars when bridge has no rows."""
     if freq == "week":
@@ -402,7 +445,14 @@ async def query_klines(
         klines = await fetch_tdx_klines(symbol, period="1m", count=count)
         if not klines:
             klines = await run_in_threadpool(read_tdx_1m_klines, symbol, count)
+        qmt_preview = await run_in_threadpool(_query_qmt_today_1m_display_klines, canonical_symbol, count)
+        klines = _merge_m1_display_rows(klines, qmt_preview, count)
         quote = await get_current_price(canonical_symbol)
+        if quote:
+            try:
+                ingest_intraday_quote(canonical_symbol, quote)
+            except Exception:
+                pass
         klines = append_live_quote_1m_bar(klines, quote, symbol, count)
         interval = "m1"
         if not klines:

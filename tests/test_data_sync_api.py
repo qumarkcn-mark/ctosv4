@@ -337,6 +337,8 @@ def test_query_m1_klines_appends_current_price_quote(monkeypatch):
     monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
     monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
     monkeypatch.setattr(data_api, "get_current_price", fake_current_price)
+    monkeypatch.setattr(data_api, "query_lake_klines", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(data_api, "ingest_intraday_quote", lambda *_args, **_kwargs: None)
 
     app = FastAPI()
     app.include_router(data_api.router)
@@ -350,6 +352,75 @@ def test_query_m1_klines_appends_current_price_quote(monkeypatch):
     assert payload["klines"][-1]["date"] == "2026-05-25 10:27:00"
     assert payload["klines"][-1]["close"] == 270.98
     assert payload["klines"][-1]["bar_status"] == "FORMING"
+
+
+def test_query_m1_klines_merges_qmt_preview_rows(monkeypatch):
+    async def inline_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def fake_fetch(symbol, period="1m", count=5000, refresh=False, **_kwargs):
+        return [
+            {
+                "symbol": "sz002158",
+                "freq": "1",
+                "date": "2026-05-27 09:31:00",
+                "open": 31.0,
+                "high": 31.2,
+                "low": 30.9,
+                "close": 31.1,
+                "volume": 1000,
+                "amount": 31100,
+                "adjustflag": "2",
+                "bar_status": "CLOSED",
+                "source": "tdx_bridge",
+            }
+        ]
+
+    def fake_query(symbol, freq, start_date=None, end_date=None, limit=2000, adjustflag="2", source=None):
+        assert symbol == "sz.002158"
+        assert freq == "1"
+        assert adjustflag == "3"
+        assert source == "qmt"
+        return [
+            {
+                "date": "2026-05-27 10:19:00",
+                "open": 32.2,
+                "high": 32.7,
+                "low": 32.1,
+                "close": 32.6,
+                "volume": 2000,
+                "amount": 65200,
+            }
+        ]
+
+    async def fake_current_price(symbol):
+        return None
+
+    class FixedDatetime(data_api.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 27, 10, 20, 0)
+
+    monkeypatch.setattr(data_api, "datetime", FixedDatetime)
+    monkeypatch.setattr(data_api, "run_in_threadpool", inline_threadpool)
+    monkeypatch.setattr(data_api, "fetch_tdx_klines", fake_fetch)
+    monkeypatch.setattr(data_api, "query_lake_klines", fake_query)
+    monkeypatch.setattr(data_api, "get_current_price", fake_current_price)
+
+    app = FastAPI()
+    app.include_router(data_api.router)
+    client = TestClient(app)
+
+    response = client.get("/klines/sz002158?interval=m1&count=120")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["date"] for row in payload["klines"]] == [
+        "2026-05-27 09:31:00",
+        "2026-05-27 10:19:00",
+    ]
+    assert payload["klines"][-1]["source"] == "qmt_lake_1m_preview"
+    assert payload["klines"][-1]["adjustflag"] == "3"
 
 
 def test_postmarket_sync_skips_when_tdx_stale(monkeypatch):
