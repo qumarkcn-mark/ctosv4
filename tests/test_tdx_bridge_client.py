@@ -110,6 +110,37 @@ def test_append_live_quote_1m_bar_adds_forming_bar():
     assert merged[-1]["source"] == "tdx_live_quote_1m"
 
 
+def test_append_live_quote_1m_bar_ignores_after_hours_quote():
+    tdx_bridge_client._LIVE_1M_BARS.clear()
+    rows = [
+        {
+            "symbol": "sz301076",
+            "freq": "1",
+            "date": "2026-05-25 15:00:00",
+            "open": 31.94,
+            "high": 31.94,
+            "low": 31.94,
+            "close": 31.94,
+            "volume": 37600.0,
+            "amount": 1200624.62,
+            "adjustflag": "2",
+            "bar_status": "CLOSED",
+            "source": "tdx_local_1m",
+        }
+    ]
+    quote = {
+        "symbol": "sz301076",
+        "price": 31.94,
+        "trade_datetime": "2026-05-25 16:14:00",
+        "now_volume": 0,
+        "source": "tencent_quote",
+    }
+
+    merged = tdx_bridge_client.append_live_quote_1m_bar(rows, quote, "sz.301076", count=10)
+
+    assert merged == rows
+
+
 def test_append_live_quote_1m_bar_updates_same_minute():
     tdx_bridge_client._LIVE_1M_BARS.clear()
     rows = [

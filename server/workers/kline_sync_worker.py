@@ -22,8 +22,9 @@ from server.engines.ai_native.universe_resolver import list_ai_native_user_ids, 
 
 logger = logging.getLogger(__name__)
 
-# 同步的频率列表。周线是 AI 推演和 CZSC 结构快照的宏观背景，不能只在展示层支持。
-ALL_FREQS = ["week", "day", "60", "30", "15", "5"]
+# 同步的频率列表。1分钟线进入数据湖供盘中验证和 K 线展示使用；
+# 正式 CZSC 结构仍只由 FREQ_TO_STRUCTURE_LEVEL 中的 week/day/30/5 触发。
+ALL_FREQS = ["week", "day", "60", "30", "15", "5", "1"]
 
 # 检查间隔（秒）：30 分钟
 CHECK_INTERVAL = 30 * 60
@@ -198,15 +199,26 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
 
     from server.db.kline_lake import upsert_klines
     from server.services.tdx_bridge_client import fetch_tdx_klines
-    from server.services.tdx_daily_sync_service import read_tdx_day_klines, read_tdx_week_klines
-    from server.services.tdx_minute_service import read_tdx_derived_minute_klines
+    from server.services.tdx_daily_sync_service import aggregate_tdx_week_klines, read_tdx_day_klines
+    from server.services.tdx_minute_service import derive_tdx_day_from_minutes, read_tdx_derived_minute_klines
+
+    def _day_rows_with_minute_fallback(limit: int = 5000) -> list[dict]:
+        today = datetime.today().strftime("%Y-%m-%d")
+        rows = read_tdx_day_klines(symbol, limit=limit)
+        if rows and str(rows[-1].get("date") or "")[:10] >= today:
+            return rows
+        derived = derive_tdx_day_from_minutes(symbol, today)
+        if not derived:
+            return rows
+        rows = [row for row in rows if str(row.get("date") or "")[:10] != today]
+        return [*rows, derived][-max(1, min(int(limit), 20000)):]
 
     def _sync_local_history(freq: str) -> tuple[int, list[dict]]:
         if freq == "week":
-            rows = read_tdx_week_klines(symbol, limit=1200)
+            rows = aggregate_tdx_week_klines(_day_rows_with_minute_fallback(limit=20000))[-1200:]
         elif freq == "day":
-            rows = read_tdx_day_klines(symbol, limit=5000)
-        elif freq in {"5", "15", "30", "60"}:
+            rows = _day_rows_with_minute_fallback(limit=5000)
+        elif freq in {"1", "5", "15", "30", "60"}:
             rows = read_tdx_derived_minute_klines(symbol, freq, limit=5000)
         else:
             rows = []
@@ -224,6 +236,7 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
                 "30": "30m",
                 "15": "15m",
                 "5": "5m",
+                "1": "1m",
             }.get(freq)
             if not period:
                 continue
@@ -373,10 +386,10 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
 
 def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> dict:
     """Sync tracked symbols from local TDX after-hours history files."""
-    from server.db.kline_lake import get_last_sync_date, upsert_klines
+    from server.db.kline_lake import query_klines, upsert_klines
     from server.services.tdx_bridge_client import fetch_tdx_klines
-    from server.services.tdx_daily_sync_service import read_tdx_day_klines, read_tdx_week_klines
-    from server.services.tdx_minute_service import read_tdx_derived_minute_klines
+    from server.services.tdx_daily_sync_service import aggregate_tdx_week_klines, read_tdx_day_klines
+    from server.services.tdx_minute_service import derive_tdx_day_from_minutes, read_tdx_derived_minute_klines
 
     def _fetch_front_day_rows(symbol: str) -> list[dict]:
         try:
@@ -399,12 +412,49 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
     errors = 0
     changed: list[dict] = []
 
+    def _day_rows_with_minute_fallback(symbol: str, limit: int = 5000) -> list[dict]:
+        rows = read_tdx_day_klines(symbol, limit=limit)
+        if rows and str(rows[-1].get("date") or "")[:10] >= today:
+            return rows
+        derived = derive_tdx_day_from_minutes(symbol, today)
+        if not derived:
+            return rows
+        rows = [row for row in rows if str(row.get("date") or "")[:10] != today]
+        return [*rows, derived][-max(1, min(int(limit), 20000)):]
+
+    def _rows_after(rows: list[dict], last_date: str | None) -> list[dict]:
+        if not last_date:
+            return rows
+        return [row for row in rows if str(row.get("date") or "") > str(last_date)]
+
+    def _last_lake_date(symbol: str, freq: str, adjustflag: str) -> str:
+        rows = query_klines(symbol, freq, limit=1, adjustflag=adjustflag, source="tdx")
+        return str((rows[-1] if rows else {}).get("date") or "")
+
+    def _qfq_stale_freqs(symbol: str) -> list[str]:
+        stale = []
+        for freq in freqs:
+            if freq == "day":
+                continue
+            raw_last = _last_lake_date(symbol, freq, "3")
+            qfq_last = _last_lake_date(symbol, freq, "2")
+            if raw_last and raw_last > qfq_last:
+                stale.append(freq)
+        return stale
+
+    def _day_qfq_is_stale(symbol: str) -> bool:
+        raw_last = _last_lake_date(symbol, "day", "3")
+        qfq_last = _last_lake_date(symbol, "day", "2")
+        return bool(raw_last and raw_last > qfq_last)
+
     for symbol in symbols:
         symbol_updated = False
         qfq_written: dict[str, int] = {}
         if "day" in freqs:
             try:
+                last_qfq_day = _last_lake_date(symbol, "day", "2")
                 front_day_rows = _fetch_front_day_rows(symbol)
+                front_day_rows = _rows_after(front_day_rows, last_qfq_day)
                 written = upsert_klines(symbol, "day", front_day_rows, adjustflag="2", source="tdx")
                 total_written += written
                 if written > 0:
@@ -416,17 +466,18 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
 
         for freq in freqs:
             try:
-                last_date = get_last_sync_date(symbol, freq, source="tdx")
+                last_date = _last_lake_date(symbol, freq, "3")
                 if last_date and last_date[:10] >= today:
                     continue
                 if freq == "week":
-                    rows = read_tdx_week_klines(symbol, limit=1200)
+                    rows = aggregate_tdx_week_klines(_day_rows_with_minute_fallback(symbol, limit=20000))[-1200:]
                 elif freq == "day":
-                    rows = read_tdx_day_klines(symbol, limit=5000)
-                elif freq in {"5", "15", "30", "60"}:
+                    rows = _day_rows_with_minute_fallback(symbol, limit=5000)
+                elif freq in {"1", "5", "15", "30", "60"}:
                     rows = read_tdx_derived_minute_klines(symbol, freq, limit=5000)
                 else:
                     rows = []
+                rows = _rows_after(rows, last_date)
                 written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
                 total_written += written
                 if written > 0:
@@ -435,13 +486,15 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
                 logger.error("TDX 本地历史同步失败 %s/%s: %s", symbol, freq, e)
                 errors += 1
 
-        if symbol_updated:
+        qfq_target_freqs = _qfq_stale_freqs(symbol)
+        if symbol_updated or qfq_target_freqs or _day_qfq_is_stale(symbol):
             try:
                 from server.services.tdx_qfq_normalizer import rebuild_tdx_qfq_from_existing_factors
 
                 qfq_result = rebuild_tdx_qfq_from_existing_factors(
                     symbol,
-                    target_freqs=[freq for freq in freqs if freq != "day"],
+                    target_freqs=qfq_target_freqs,
+                    limit=5000,
                 )
                 qfq_written = qfq_result.written
                 for freq, written in qfq_written.items():

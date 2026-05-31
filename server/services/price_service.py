@@ -366,7 +366,8 @@ def _parse_qt_response(symbol: str, raw: str) -> Optional[dict]:
         price = float(parts[3]) if parts[3] else 0
         prev_close = float(parts[4]) if parts[4] else 0
         open_price = float(parts[5]) if parts[5] else 0
-        quote_time = _format_qt_quote_time(parts[30] if len(parts) > 30 else "")
+        raw_quote_time = parts[30] if len(parts) > 30 else ""
+        quote_time = _format_qt_quote_time(raw_quote_time)
 
         return {
             "symbol": symbol,
@@ -380,6 +381,8 @@ def _parse_qt_response(symbol: str, raw: str) -> Optional[dict]:
             "open": open_price,
             "prev_close": prev_close,
             "quote_time": quote_time,
+            "trade_datetime": _format_qt_trade_datetime(raw_quote_time),
+            "source": "tencent_quote",
         }
     except (ValueError, IndexError) as e:
         logger.warning("解析行情数据失败 %s: %s", symbol, e)
@@ -392,3 +395,11 @@ def _format_qt_quote_time(raw: str) -> str:
     if len(value) < 14 or not value[:14].isdigit():
         return ""
     return f"{value[8:10]}:{value[10:12]}:{value[12:14]}"
+
+
+def _format_qt_trade_datetime(raw: str) -> str:
+    """腾讯行情时间戳转为 K 线可用的完整时间。"""
+    value = str(raw or "").strip()
+    if len(value) < 14 or not value[:14].isdigit():
+        return ""
+    return f"{value[:4]}-{value[4:6]}-{value[6:8]} {value[8:10]}:{value[10:12]}:{value[12:14]}"

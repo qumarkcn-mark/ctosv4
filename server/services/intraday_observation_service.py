@@ -15,10 +15,10 @@ import pandas as pd
 
 from czsc.py.bar_generator import freq_end_time, resample_bars
 
-from server.db.kline_lake import query_klines
+from server.db.kline_lake import query_klines, upsert_klines
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
-from server.services.price_service import get_minute_klines
+from server.services.price_service import get_current_price, get_minute_klines
 from server.services.tdx_bridge_client import fetch_tdx_quote
 
 _LIVE_1M_BY_SYMBOL: dict[str, list[dict[str, Any]]] = {}
@@ -33,6 +33,8 @@ async def get_intraday_observation(symbol: str, *, quote: dict | None = None) ->
     """
     canonical = normalize_symbol(symbol)
     live_quote = quote if quote is not None else await fetch_tdx_quote(canonical)
+    if not live_quote:
+        live_quote = await get_current_price(canonical)
     return get_intraday_observation_snapshot(canonical, quote=live_quote)
 
 
@@ -46,7 +48,7 @@ def get_intraday_observation_snapshot(symbol: str, *, quote: dict | None = None)
 
     lake_today_1m = _today_lake_1m_rows(canonical)
     today_1m = _merge_rows(lake_today_1m, list(_LIVE_1M_BY_SYMBOL.get(compact, [])))
-    as_of = _quote_datetime(live_quote) or (today_1m[-1]["date"] if today_1m else "")
+    as_of = _quote_datetime(live_quote) or _quote_minute(live_quote or {}) or (today_1m[-1]["date"] if today_1m else "")
     coverage = _coverage(today_1m, as_of)
 
     levels = {
@@ -64,7 +66,7 @@ def get_intraday_observation_snapshot(symbol: str, *, quote: dict | None = None)
         levels[level] = _level_payload(level, preview_today, closed_rows, preview_rows)
 
     return {
-        "source": "tdx_quote_aggregation",
+        "source": _observation_source(live_quote),
         "usage": "intraday_preview",
         "symbol": canonical,
         "as_of": as_of,
@@ -102,27 +104,37 @@ def _today_lake_1m_rows(symbol: str) -> list[dict[str, Any]]:
             )
         except Exception:
             rows = []
-        normalized = [
-            {
-                "symbol": to_tencent_symbol(symbol),
-                "freq": "1",
-                "date": row.get("date") or "",
-                "open": _num(row.get("open")),
-                "high": _num(row.get("high")),
-                "low": _num(row.get("low")),
-                "close": _num(row.get("close")),
-                "volume": _num(row.get("volume") or row.get("vol")),
-                "amount": _num(row.get("amount")),
-                "adjustflag": adjustflag,
-                "bar_status": "CLOSED",
-                "source": f"{source}_lake_1m",
-            }
-            for row in rows
-            if _is_a_share_trading_minute(str(row.get("date") or "")) and _num(row.get("close")) > 0
-        ]
+        normalized = [_lake_1m_row(symbol, row, source=source, adjustflag=adjustflag) for row in rows]
+        normalized = [row for row in normalized if row]
         if normalized:
             return normalized[-360:]
     return []
+
+
+def _lake_1m_row(symbol: str, row: dict[str, Any], *, source: str, adjustflag: str) -> dict[str, Any]:
+    date = str(row.get("date") or "")
+    if not _is_a_share_trading_minute(date) or _num(row.get("close")) <= 0:
+        return {}
+    return {
+        "symbol": to_tencent_symbol(symbol),
+        "freq": "1",
+        "date": date,
+        "open": _num(row.get("open")),
+        "high": _num(row.get("high")),
+        "low": _num(row.get("low")),
+        "close": _num(row.get("close")),
+        "volume": _num(row.get("volume") or row.get("vol")),
+        "amount": _num(row.get("amount")),
+        "adjustflag": adjustflag,
+        "bar_status": _lake_1m_bar_status(date, source),
+        "source": f"{source}_lake_1m",
+    }
+
+
+def _lake_1m_bar_status(date: str, source: str) -> str:
+    if source == "qmt" and date[:16] == datetime.now().strftime("%Y-%m-%d %H:%M"):
+        return "FORMING"
+    return "CLOSED"
 
 
 def _lake_minute_history(symbol: str, interval: str) -> list[dict[str, Any]]:
@@ -178,7 +190,36 @@ def _ingest_quote(compact: str, quote: dict[str, Any]) -> None:
             }
         )
 
-    _LIVE_1M_BY_SYMBOL[compact] = sorted(rows, key=lambda item: item.get("date") or "")[-360:]
+    rows = sorted(rows, key=lambda item: item.get("date") or "")[-360:]
+    _LIVE_1M_BY_SYMBOL[compact] = rows
+    _persist_live_1m_row(compact, next((row for row in rows if row.get("date") == minute), None))
+
+
+def _persist_live_1m_row(compact: str, row: dict[str, Any] | None) -> None:
+    """Persist the live preview 1m row so restart can continue today's tape."""
+    if not row:
+        return
+    try:
+        upsert_klines(
+            normalize_symbol(compact),
+            "1",
+            [
+                {
+                    "date": row.get("date") or "",
+                    "open": _num(row.get("open")),
+                    "high": _num(row.get("high")),
+                    "low": _num(row.get("low")),
+                    "close": _num(row.get("close")),
+                    "volume": _num(row.get("volume")),
+                    "amount": _num(row.get("amount")),
+                }
+            ],
+            adjustflag="3",
+            update_meta=True,
+            source="qmt",
+        )
+    except Exception:
+        pass
 
 
 def _resample_today(rows: list[dict[str, Any]], target_freq: str, *, drop_unfinished: bool) -> list[dict[str, Any]]:
@@ -336,6 +377,15 @@ def _quote_payload(quote: dict | None) -> dict[str, Any]:
         "source": quote.get("source") or "",
         "change_pct": quote.get("change_pct"),
     }
+
+
+def _observation_source(quote: dict | None) -> str:
+    source = str((quote or {}).get("source") or "")
+    if source.startswith("tdx"):
+        return "tdx_quote_aggregation"
+    if source:
+        return f"{source}_aggregation"
+    return "quote_aggregation"
 
 
 def _normalize_history_row(row: dict[str, Any]) -> dict[str, Any]:

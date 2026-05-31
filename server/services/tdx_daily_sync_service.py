@@ -25,6 +25,7 @@ TAIL_RECORDS = 120
 
 DEFAULT_VIPDOC_CANDIDATES = (
     TDX_VIPDOC,
+    "/Users/markqu/Desktop/new_tdx64_mount/vipdoc",
     "/Users/markqu/Desktop/tdx_vipdoc_mount/vipdoc",
     "/Users/markqu/Desktop/tdx_vipdoc_mount",
     "/Volumes/tdx_vipdoc",

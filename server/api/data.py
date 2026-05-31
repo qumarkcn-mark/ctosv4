@@ -1,10 +1,11 @@
 """CSV 导入 + 行情查询 API"""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Query
 from fastapi.concurrency import run_in_threadpool
 
 from server.api.auth import get_current_user_id
@@ -16,6 +17,7 @@ from server.services.price_service import (
     get_current_price,
     get_batch_prices,
 )
+from server.services.intraday_observation_service import ingest_intraday_quote
 from server.services.qmt_bridge_client import (
     fetch_qmt_klines,
     qmt_health,
@@ -23,18 +25,26 @@ from server.services.qmt_bridge_client import (
     qmt_log_quotes,
     qmt_stream_probe,
 )
-from server.services.tdx_minute_service import read_tdx_1m_klines, read_tdx_derived_minute_klines, tdx_minute_status
-from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines, fetch_tdx_quote
+from server.services.tdx_minute_service import (
+    derive_tdx_day_from_minutes,
+    read_tdx_1m_klines,
+    read_tdx_5m_klines,
+    read_tdx_derived_minute_klines,
+    tdx_minute_status,
+)
+from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines
 from server.services.tdx_daily_sync_service import (
     get_sync_job,
     latest_sync_job,
     read_tdx_day_klines,
     read_tdx_week_klines,
+    resolve_vipdoc,
     start_daily_sync,
     vipdoc_status,
 )
 
 router = APIRouter()
+_POSTMARKET_SYNC_JOBS: dict[str, dict] = {}
 
 TDX_PERIOD_BY_FREQ = {
     "1": "1m",
@@ -45,6 +55,159 @@ TDX_PERIOD_BY_FREQ = {
     "day": "1d",
     "week": "1w",
 }
+
+
+def _target_tdx_trading_date(now: Optional[datetime] = None) -> str:
+    """Return the date that post-market TDX files should have reached."""
+    current = (now or datetime.now()).date()
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current.isoformat()
+
+
+def _latest_row_date(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    return str(rows[-1].get("date") or "")
+
+
+def _tdx_postmarket_readiness(vipdoc: Optional[str] = None, sample_limit: int = 24) -> dict:
+    """Check whether local TDX has reached today's post-market files.
+
+    This is a cheap preflight for the global post-market button. It samples
+    tracked symbols instead of reading the full market, then only runs the heavy
+    sync when TDX itself looks updated.
+    """
+    from server.workers.kline_sync_worker import _get_all_tracked_symbols
+
+    target_date = _target_tdx_trading_date()
+    symbols = _get_all_tracked_symbols()[: max(1, min(int(sample_limit or 24), 80))]
+    status = _quick_vipdoc_status(vipdoc)
+    samples = []
+    latest_day = ""
+    latest_1m = ""
+    latest_5m = ""
+    day_ready_count = 0
+    minute_ready_count = 0
+
+    for symbol in symbols:
+        day_latest = _latest_row_date(read_tdx_day_klines(symbol, limit=1, vipdoc=vipdoc))
+        m1_latest = _latest_row_date(read_tdx_1m_klines(symbol, limit=1, vipdoc=vipdoc))
+        m5_latest = _latest_row_date(read_tdx_5m_klines(symbol, limit=1, vipdoc=vipdoc))
+        latest_day = max(latest_day, day_latest[:10])
+        latest_1m = max(latest_1m, m1_latest)
+        latest_5m = max(latest_5m, m5_latest)
+        day_ready = day_latest[:10] >= target_date
+        minute_ready = m1_latest[:10] >= target_date or m5_latest[:10] >= target_date
+        day_ready_count += 1 if day_ready else 0
+        minute_ready_count += 1 if minute_ready else 0
+        if len(samples) < 8:
+            samples.append(
+                {
+                    "symbol": symbol,
+                    "day_latest": day_latest,
+                    "m1_latest": m1_latest,
+                    "m5_latest": m5_latest,
+                    "day_ready": day_ready,
+                    "minute_ready": minute_ready,
+                }
+            )
+
+    symbol_count = len(symbols)
+    day_ready_ratio = round(day_ready_count / symbol_count, 3) if symbol_count else 0
+    minute_ready_ratio = round(minute_ready_count / symbol_count, 3) if symbol_count else 0
+    day_ready = bool(symbol_count and day_ready_ratio >= 0.6)
+    minute_ready = bool(symbol_count and minute_ready_ratio >= 0.6)
+    if not status.get("available"):
+        readiness = "error"
+        message = "TDX vipdoc 不可用，请先确认 Windows TDX 共享挂载。"
+    elif not symbol_count:
+        readiness = "empty"
+        message = "没有持仓/盯盘/自选股票需要同步。"
+    elif day_ready and minute_ready:
+        readiness = "ready"
+        message = f"TDX 本地数据已到 {target_date}，可以执行盘后同步。"
+    elif minute_ready:
+        readiness = "ready"
+        message = f"TDX 分钟线已到 {target_date} 15:00；日线缓存未追加，将用分钟线生成今日日线。"
+    elif day_ready:
+        readiness = "partial"
+        message = f"TDX 日线已到 {target_date}，分钟线仍未完整更新。"
+    else:
+        readiness = "stale"
+        message = f"TDX 本地数据还没到 {target_date}，请先在 Windows TDX 更新盘后数据。"
+
+    return {
+        "status": readiness,
+        "message": message,
+        "target_date": target_date,
+        "vipdoc": status,
+        "sampled_symbols": symbol_count,
+        "ready_counts": {
+            "day": day_ready_count,
+            "minute": minute_ready_count,
+            "day_ratio": day_ready_ratio,
+            "minute_ratio": minute_ready_ratio,
+        },
+        "latest": {
+            "day": latest_day,
+            "m1": latest_1m,
+            "m5": latest_5m,
+        },
+        "samples": samples,
+    }
+
+
+def _run_tdx_postmarket_sync(vipdoc: Optional[str] = None, mode: str = "incremental") -> dict:
+    from server.scripts.run_tdx_postmarket_sync import run_postmarket_sync
+
+    return run_postmarket_sync(vipdoc=vipdoc, mode=mode, reset=False)
+
+
+def _run_tdx_postmarket_sync_job(job_id: str, *, vipdoc: Optional[str], mode: str, readiness: dict) -> None:
+    job = _POSTMARKET_SYNC_JOBS[job_id]
+    try:
+        result = _run_tdx_postmarket_sync(vipdoc=vipdoc, mode=mode)
+        tracked = result.get("tracked") or {}
+        snapshots = result.get("snapshot_prewarm") or {}
+        status = result.get("status") or "success"
+        job.update(
+            {
+                "status": status,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "message": (
+                    f"TDX 盘后同步完成：更新 {tracked.get('updated_symbols', 0)}/"
+                    f"{tracked.get('total_symbols', 0)} 只，结构刷新 {snapshots.get('count', 0)} 个任务。"
+                    if status == "success"
+                    else f"TDX 盘后同步部分完成：错误 {tracked.get('errors', 0)} 个，请查看详情。"
+                ),
+                "tdx_status": readiness,
+                "sync_result": result,
+            }
+        )
+    except Exception as exc:
+        job.update(
+            {
+                "status": "error",
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "message": f"TDX 盘后同步失败: {exc}",
+                "tdx_status": readiness,
+                "sync_result": None,
+                "error": str(exc),
+            }
+        )
+
+
+def _quick_vipdoc_status(vipdoc: Optional[str] = None) -> dict:
+    from pathlib import Path
+
+    root = Path(resolve_vipdoc(vipdoc))
+    available = (root / "sh" / "lday").is_dir() and (root / "sz" / "lday").is_dir()
+    return {
+        "vipdoc": str(root),
+        "available": available,
+        "reason": "" if available else "VIPDOC_NOT_FOUND",
+    }
 
 
 def _normalize_kline_sync_interval(interval: Optional[str]) -> Optional[str]:
@@ -127,15 +290,34 @@ def _query_tdx_display_klines(symbol: str, freq: str, count: int) -> list[dict]:
 def _sync_local_tdx_history_to_lake(symbol: str, freq: str, count: int = 5000) -> tuple[int, list[dict]]:
     """Import local TDX .day/.lc1 derived history bars when bridge has no rows."""
     if freq == "week":
-        rows = read_tdx_week_klines(symbol, limit=min(count, 1200))
+        rows = _tdx_week_rows_with_minute_day(symbol, limit=min(count, 1200))
     elif freq == "day":
-        rows = read_tdx_day_klines(symbol, limit=count)
+        rows = _tdx_day_rows_with_minute_fallback(symbol, limit=count)
     elif freq in {"1", "5", "15", "30", "60"}:
         rows = read_tdx_derived_minute_klines(symbol, freq, limit=count)
     else:
         rows = []
     written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
     return written, rows
+
+
+def _tdx_day_rows_with_minute_fallback(symbol: str, limit: int = 5000, vipdoc: Optional[str] = None) -> list[dict]:
+    rows = read_tdx_day_klines(symbol, limit=limit, vipdoc=vipdoc)
+    target_date = _target_tdx_trading_date()
+    if rows and str(rows[-1].get("date") or "")[:10] >= target_date:
+        return rows
+    derived = derive_tdx_day_from_minutes(symbol, target_date, vipdoc=vipdoc)
+    if not derived:
+        return rows
+    rows = [row for row in rows if str(row.get("date") or "")[:10] != target_date]
+    return [*rows, derived][-max(1, min(int(limit), 20000)):]
+
+
+def _tdx_week_rows_with_minute_day(symbol: str, limit: int = 1200, vipdoc: Optional[str] = None) -> list[dict]:
+    from server.services.tdx_daily_sync_service import aggregate_tdx_week_klines
+
+    day_rows = _tdx_day_rows_with_minute_fallback(symbol, limit=20000, vipdoc=vipdoc)
+    return aggregate_tdx_week_klines(day_rows)[-max(1, min(int(limit), 5000)):]
 
 
 # ── CSV 导入 ──
@@ -172,6 +354,7 @@ async def query_price(symbol: str):
     result = await get_current_price(symbol)
     if not result:
         raise HTTPException(404, f"行情查询失败: {symbol}")
+    _ingest_price_quotes_for_intraday({symbol: result})
     return result
 
 
@@ -185,7 +368,22 @@ async def query_batch_prices(symbols: str = Query(..., description="逗号分隔
         raise HTTPException(400, "最多同时查询 30 只")
 
     results = await get_batch_prices(symbol_list)
+    _ingest_price_quotes_for_intraday(results)
     return {"count": len(results), "prices": results}
+
+
+def _ingest_price_quotes_for_intraday(results: dict[str, dict]) -> None:
+    """Feed visible quote polling into the live intraday preview cache."""
+    for raw_symbol, quote in (results or {}).items():
+        if not isinstance(quote, dict):
+            continue
+        symbol = str(quote.get("symbol") or raw_symbol or "").strip()
+        if not symbol:
+            continue
+        try:
+            ingest_intraday_quote(symbol, quote)
+        except Exception:
+            continue
 
 
 # ── K 线数据 (给前端图表用) ──
@@ -204,7 +402,7 @@ async def query_klines(
         klines = await fetch_tdx_klines(symbol, period="1m", count=count)
         if not klines:
             klines = await run_in_threadpool(read_tdx_1m_klines, symbol, count)
-        quote = await fetch_tdx_quote(symbol)
+        quote = await get_current_price(canonical_symbol)
         klines = append_live_quote_1m_bar(klines, quote, symbol, count)
         interval = "m1"
         if not klines:
@@ -481,6 +679,67 @@ async def start_tdx_daily_sync(
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/tdx/sync/postmarket")
+async def start_tdx_postmarket_sync(
+    background_tasks: BackgroundTasks,
+    vipdoc: Optional[str] = Query(None, description="TDX vipdoc 路径；不填则自动探测"),
+    mode: str = Query("incremental", description="incremental / full"),
+    force: bool = Query(False, description="即使预检不是 ready 也强制同步"),
+):
+    """执行全局 TDX 盘后同步；供顶部全局按钮使用。"""
+    if mode not in {"incremental", "full"}:
+        raise HTTPException(400, "mode 只支持 incremental / full")
+
+    readiness = await run_in_threadpool(_tdx_postmarket_readiness, vipdoc)
+    if readiness["status"] != "ready" and not force:
+        return {
+            "status": readiness["status"],
+            "message": readiness["message"],
+            "tdx_status": readiness,
+            "sync_result": None,
+            "skipped": True,
+        }
+
+    for existing in reversed(list(_POSTMARKET_SYNC_JOBS.values())):
+        if existing.get("status") == "running":
+            return {
+                "status": "running",
+                "message": "TDX 盘后同步正在进行中。",
+                "tdx_status": existing.get("tdx_status") or readiness,
+                "sync_result": None,
+                "job_id": existing.get("job_id"),
+                "skipped": False,
+            }
+
+    job_id = uuid4().hex[:12]
+    _POSTMARKET_SYNC_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "message": "TDX 盘后同步已开始，后台正在导入数据并刷新结构。",
+        "tdx_status": readiness,
+        "sync_result": None,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "finished_at": "",
+    }
+    background_tasks.add_task(_run_tdx_postmarket_sync_job, job_id, vipdoc=vipdoc, mode=mode, readiness=readiness)
+    return {
+        "status": "running",
+        "message": _POSTMARKET_SYNC_JOBS[job_id]["message"],
+        "tdx_status": readiness,
+        "sync_result": None,
+        "job_id": job_id,
+        "skipped": False,
+    }
+
+
+@router.get("/tdx/sync/postmarket/latest")
+async def query_latest_tdx_postmarket_sync():
+    """查询最近一次 TDX 盘后同步任务。"""
+    if not _POSTMARKET_SYNC_JOBS:
+        return {}
+    return next(reversed(_POSTMARKET_SYNC_JOBS.values())).copy()
 
 
 @router.get("/tdx/sync/latest")

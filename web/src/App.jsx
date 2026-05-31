@@ -56,6 +56,8 @@ function App() {
     () => normalizePage(pageFromPath(window.location.pathname) || localStorage.getItem('ct_last_page')) || 'ai'
   )
   const [showSettings, setShowSettings] = useState(false)
+  const [tdxSyncState, setTdxSyncState] = useState({ status: 'idle', message: '' })
+  const [dismissedSyncNoticeKey, setDismissedSyncNoticeKey] = useState('')
 
   // ─── 全局活跃股票 (各板块共享) ───────────────────────────
   const [activeSymbol, setActiveSymbol] = useState(
@@ -119,6 +121,82 @@ function App() {
     }
   }
 
+  const handlePostmarketSync = useCallback(async () => {
+    if (tdxSyncState.status === 'running') return
+    setDismissedSyncNoticeKey('')
+    setTdxSyncState({ status: 'running', message: '正在检查 TDX 本地盘后数据...' })
+    try {
+      const response = await apiFetch('/api/data/tdx/sync/postmarket', { method: 'POST' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || `盘后同步失败 ${response.status}`)
+      }
+      const nextStatus = payload.status || 'success'
+      setTdxSyncState({
+        status: nextStatus,
+        message: payload.message || postmarketSyncMessage(payload),
+        jobId: payload.job_id || '',
+      })
+    } catch (err) {
+      setTdxSyncState({
+        status: 'error',
+        message: err.message || 'TDX 盘后同步失败',
+      })
+    }
+  }, [tdxSyncState.status])
+
+  const loadPostmarketSyncStatus = useCallback(async () => {
+    try {
+      const response = await apiFetch('/api/data/tdx/sync/postmarket/latest')
+      if (!response.ok) return
+      const payload = await response.json().catch(() => ({}))
+      if (!payload?.status) {
+        setTdxSyncState((prev) => (prev.status === 'running' ? { status: 'idle', message: '' } : prev))
+        return
+      }
+      setTdxSyncState((prev) => {
+        if (prev.status !== 'running' && payload.status === 'running') return prev
+        const noticeKey = postmarketSyncNoticeKey(payload)
+        const message = noticeKey && noticeKey === dismissedSyncNoticeKey
+          ? ''
+          : payload.message || postmarketSyncMessage(payload)
+        return {
+          status: payload.status,
+          message,
+          jobId: payload.job_id || prev.jobId || '',
+        }
+      })
+    } catch (err) {
+      console.warn('读取 TDX 盘后同步状态失败:', err)
+    }
+  }, [dismissedSyncNoticeKey])
+
+  useEffect(() => {
+    void loadPostmarketSyncStatus()
+  }, [loadPostmarketSyncStatus])
+
+  useEffect(() => {
+    if (tdxSyncState.status !== 'running') return undefined
+    const timer = setInterval(() => {
+      void loadPostmarketSyncStatus()
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [loadPostmarketSyncStatus, tdxSyncState.status])
+
+  useEffect(() => {
+    if (!tdxSyncState.message || tdxSyncState.status === 'running') return undefined
+    const timer = setTimeout(() => {
+      setDismissedSyncNoticeKey(postmarketSyncNoticeKey(tdxSyncState))
+      setTdxSyncState((prev) => ({ ...prev, message: '' }))
+    }, 8000)
+    return () => clearTimeout(timer)
+  }, [tdxSyncState])
+
+  const dismissPostmarketSyncNotice = useCallback(() => {
+    setDismissedSyncNoticeKey(postmarketSyncNoticeKey(tdxSyncState))
+    setTdxSyncState((prev) => ({ ...prev, message: '' }))
+  }, [tdxSyncState])
+
   useEffect(() => {
     const handlePopState = () => {
       setPage(normalizePage(pageFromPath(window.location.pathname) || localStorage.getItem('ct_last_page')))
@@ -163,13 +241,35 @@ function App() {
           </button>
         </nav>
         <div className="status-bar-right">
+          <span className="status-dot online"></span>
+          <span className="text-secondary">系统在线</span>
+          <button
+            className={`postmarket-sync-btn is-${tdxSyncState.status}`}
+            onClick={handlePostmarketSync}
+            disabled={tdxSyncState.status === 'running'}
+            title={tdxSyncState.message || '同步 Windows TDX 盘后数据'}
+          >
+            {postmarketSyncLabel(tdxSyncState.status)}
+          </button>
           <button className="settings-btn" onClick={() => setShowSettings(true)} title="系统设置">
             ⚙️
           </button>
-          <span className="status-dot online"></span>
-          <span className="text-secondary">系统在线</span>
         </div>
       </header>
+      {tdxSyncState.message && (
+        <div className={`global-sync-toast is-${tdxSyncState.status}`} role="status">
+          <span>{tdxSyncState.message}</span>
+          <button
+            className="global-sync-toast__close"
+            type="button"
+            onClick={dismissPostmarketSyncNotice}
+            aria-label="关闭同步提示"
+            title="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* 主内容区 */}
       <main className="main-content">
@@ -194,6 +294,34 @@ function App() {
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   )
+}
+
+function postmarketSyncLabel(status) {
+  if (status === 'running') return '同步中'
+  if (status === 'success') return '今日已同步'
+  if (status === 'stale') return 'TDX未更新'
+  if (status === 'partial') return '部分同步'
+  if (status === 'error') return '同步失败'
+  if (status === 'empty') return '无同步项'
+  return '盘后同步'
+}
+
+function postmarketSyncMessage(payload) {
+  const latest = payload?.tdx_status?.latest || {}
+  if (payload?.status === 'ready') return `TDX 已更新，日线 ${latest.day || '-'}，5分 ${latest.m5 || '-'}`
+  if (payload?.status === 'stale') return payload.message || 'TDX 本地数据还没到今天'
+  if (payload?.status === 'partial') return payload.message || 'TDX 数据部分更新'
+  return payload?.message || 'TDX 盘后同步完成'
+}
+
+function postmarketSyncNoticeKey(payload) {
+  if (!payload) return ''
+  return [
+    payload.jobId || payload.job_id || '',
+    payload.status || '',
+    payload.finished_at || '',
+    payload.message || '',
+  ].join('|')
 }
 
 export default App
