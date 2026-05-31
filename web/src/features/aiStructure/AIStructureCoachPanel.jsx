@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE } from '../../config.js'
-import { apiJson } from '../../api/client.js'
+import { apiFetch, apiJson } from '../../api/client.js'
 import './AIStructureCoachPanel.css'
 
 const QUICK_QUESTIONS = [
@@ -147,6 +147,66 @@ export default function AIStructureCoachPanel({
       return {}
     }
   }, [symbol])
+
+  const patchStreamingMessage = useCallback((streamingKey, patch) => {
+    setMessages((prev) => prev.map((item) => (
+      item.streamingKey === streamingKey ? { ...item, ...patch } : item
+    )))
+  }, [])
+
+  const appendStreamingMessage = useCallback((streamingKey, delta) => {
+    if (!delta) return
+    setMessages((prev) => prev.map((item) => {
+      if (item.streamingKey !== streamingKey) return item
+      const answer = item.answer || {}
+      return {
+        ...item,
+        answer: {
+          ...answer,
+          coach_answer: `${answer.coach_answer || answer.answer || ''}${delta}`,
+        },
+      }
+    }))
+  }, [])
+
+  const streamAnswer = useCallback(async ({ question, quotePayload, streamingKey }) => {
+    const response = await apiFetch(`${API_BASE}/ai-structure/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        question,
+        session_id: activeSessionId || undefined,
+        ...quotePayload,
+      }),
+    })
+    if (!response.ok || !response.body) {
+      throw new Error(`流式问答失败 ${response.status}`)
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let doneMeta = null
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
+      for (const part of parts) {
+        const event = parseSseEvent(part)
+        if (!event) continue
+        if (event.event === 'delta') {
+          appendStreamingMessage(streamingKey, event.data?.content || '')
+        } else if (event.event === 'done') {
+          doneMeta = event.data || {}
+        } else if (event.event === 'error') {
+          throw new Error(event.data?.message || '流式问答失败')
+        }
+      }
+    }
+    return doneMeta || {}
+  }, [symbol, activeSessionId, appendStreamingMessage])
 
   const loadChatHistory = useCallback(async () => {
     if (!symbol) return
@@ -314,35 +374,28 @@ export default function AIStructureCoachPanel({
     setActiveQuestion(question)
     setError('')
     setInput('')
+    const streamingKey = `assistant-${Date.now()}`
+    setMessages((prev) => [
+      ...prev.filter((item) => !(item.role === 'user' && item.pending && item.text === question)),
+      { role: 'user', text: question },
+      { role: 'assistant', answer: { coach_answer: '' }, streamingKey, isStreaming: true },
+    ])
     try {
       const quotePayload = await loadCurrentQuote()
-      const json = await apiJson(`${API_BASE}/ai-structure/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol,
-          question,
-          session_id: activeSessionId || undefined,
-          ...quotePayload,
-        }),
-      })
-      const answer = json.data
-      setActiveSessionId(answer.session_id || activeSessionId)
-      setMessages((prev) => [
-        ...prev.filter((item) => !(item.role === 'user' && item.pending && item.text === question)),
-        { role: 'user', text: question },
-        { role: 'assistant', answer },
-      ])
+      const doneMeta = await streamAnswer({ question, quotePayload, streamingKey })
+      patchStreamingMessage(streamingKey, { isStreaming: false })
+      if (doneMeta.session_id) setActiveSessionId(doneMeta.session_id)
       setPendingQuestion('')
-      await loadChartEvidence(answer)
+      await loadChatHistory()
       await loadStatus()
     } catch (err) {
+      patchStreamingMessage(streamingKey, { isStreaming: false })
       setError(err?.message || 'AI 问答失败')
     } finally {
       setLoading(false)
       setActiveQuestion('')
     }
-  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence, activeSessionId, loadCurrentQuote])
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, activeSessionId, loadCurrentQuote, streamAnswer, patchStreamingMessage, loadChatHistory])
 
   useEffect(() => {
     if (!pendingQuestion || loading || !canAsk) return
@@ -1149,6 +1202,22 @@ function restoreChatMessages(rows) {
     }
     return items
   })
+}
+
+function parseSseEvent(raw) {
+  const lines = String(raw || '').split('\n')
+  let event = 'message'
+  const dataLines = []
+  lines.forEach((line) => {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+  })
+  if (!dataLines.length) return null
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) }
+  } catch {
+    return { event, data: { content: dataLines.join('\n') } }
+  }
 }
 
 function elapsedSeconds(startedAt, now) {
