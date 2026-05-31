@@ -9,6 +9,7 @@ from server.engines.ai_native.structure_context_service import (
     save_reasoning_run,
 )
 from server.engines.ai_native.structure_chat_service import answer_structure_question
+from server.engines.ai_native.structure_chat_service import _build_chat_context_pack, _chat_position_context
 from server.prompts.ai_structure_reasoning_prompt import normalize_reasoning_payload
 from server.services.llm_service import _loads_lenient_json_object, _message_content_text, _message_reasoning_text
 
@@ -282,6 +283,8 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         assert payload["chat_context"]["version"] == "ai_structure_chat_context.v1"
         assert payload["answer_contract"]["mode"] == "concise"
         assert payload["question"] == "我先持仓2000股，成本135，要不要加仓？"
+        assert payload["position_context"]["current_price"] > 0
+        assert "unrealized_pct" in payload["position_context"]
         assert payload["runtime_context"]["current_price"] == 247.98
         assert payload["runtime_context"]["think"]["ready"] is True
         assert payload["runtime_context"]["think"]["llm_status"] == "success"
@@ -290,6 +293,8 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         assert model_route.reasoning_effort == "high"
         assert "盘中盯盘搭档" in system_prompt
         assert "缠中说缠原文" in system_prompt
+        assert "按输入数值核对" in system_prompt
+        assert "盘中曾上破" in system_prompt
         return "已有盈利仓先保护利润，现在不适合加仓，只有5分钟站回253.49后才进入观察；跌破243要复核防守。仅供参考，不构成投资建议"
 
     monkeypatch.setattr("server.services.llm_service.LLMService.infer_ai_native_markdown", fake_markdown)
@@ -319,6 +324,69 @@ def test_chat_answers_from_saved_full_reasoning(monkeypatch, tmp_path):
         "decision": "generated",
         "context_id": context["context_id"],
     }
+
+
+def test_chat_context_omits_prior_answer_for_new_question() -> None:
+    context = {
+        "version": "ai_structure_conversation_context.v1",
+        "recent_turns": [
+            {
+                "question_text": "刚才算突破吗？",
+                "intent_type": "buy_window",
+                "answer_excerpt": "旧答案里可能有错误的价格比较。",
+            }
+        ],
+    }
+
+    pack = _build_chat_context_pack(
+        question="现在这个位置是反抽还是买点转化？",
+        intent_type="buy_window",
+        intraday_observation={},
+        intraday_snapshot={},
+        reasoning_continuity_context={},
+        conversation_context=context,
+        runtime_context={},
+    )
+
+    assert pack["recent_dialogue"] == [
+        {"question_text": "刚才算突破吗？", "intent_type": "buy_window"}
+    ]
+
+
+def test_chat_position_context_uses_runtime_current_price() -> None:
+    position = _chat_position_context(
+        {"raw_context": {"position_context": {"has_position": True, "avg_cost": 100.0, "current_price": 90.0}}},
+        {"chat_current_price": 120.0, "chat_current_price_source": "watchboard_quote"},
+    )
+
+    assert position["current_price"] == 120.0
+    assert position["current_price_source"] == "watchboard_quote"
+    assert position["unrealized_pct"] == 20.0
+
+
+def test_chat_context_keeps_prior_answer_for_followup_question() -> None:
+    context = {
+        "version": "ai_structure_conversation_context.v1",
+        "recent_turns": [
+            {
+                "question_text": "刚才算突破吗？",
+                "intent_type": "buy_window",
+                "answer_excerpt": "站回中枢才算突破确认。",
+            }
+        ],
+    }
+
+    pack = _build_chat_context_pack(
+        question="那如果继续回落呢？",
+        intent_type="invalidation",
+        intraday_observation={},
+        intraday_snapshot={},
+        reasoning_continuity_context={},
+        conversation_context=context,
+        runtime_context={},
+    )
+
+    assert pack["recent_dialogue"][0]["answer_excerpt"] == "站回中枢才算突破确认。"
 
 
 def test_unified_chat_receives_reasoning_continuity_context(monkeypatch, tmp_path):

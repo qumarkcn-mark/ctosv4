@@ -796,7 +796,7 @@ def _chat_llm_prompt_material(
             "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
             "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
             "watch_card_context": reasoning_reference["watch_card_context"],
-            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "position_context": _chat_position_context(context, runtime_context or {}),
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
@@ -826,7 +826,7 @@ def _chat_llm_prompt_material(
                 "coach_summary": context.get("coach_summary") or "",
                 "reasoning": context.get("reasoning") or {},
             },
-            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "position_context": _chat_position_context(context, runtime_context or {}),
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
@@ -909,7 +909,7 @@ def _build_ai_answer_from_full_reasoning(
             "full_reasoning_excerpt": reasoning_reference["head_excerpt"],
             "full_reasoning_tail_excerpt": reasoning_reference["tail_excerpt"],
             "watch_card_context": reasoning_reference["watch_card_context"],
-            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "position_context": _chat_position_context(context, runtime_context or {}),
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
@@ -940,7 +940,7 @@ def _build_ai_answer_from_full_reasoning(
                 "coach_summary": context.get("coach_summary") or "",
                 "reasoning": context.get("reasoning") or {},
             },
-            "position_context": (context.get("raw_context") or {}).get("position_context") or {},
+            "position_context": _chat_position_context(context, runtime_context or {}),
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
@@ -1031,6 +1031,8 @@ def _chat_system_prompt() -> str:
     return (
         "你是用户的盘中盯盘搭档，熟悉缠中说缠原文、买卖点转化和实盘节奏。"
         "你会结合后台预案、持仓、盘中1分钟/5分钟/30分钟事实，像真人一样回答用户当下的问题。"
+        "涉及价格、涨跌幅、是否触及关键位时，必须按输入数值核对；数据不足就直接说明不足。"
+        "如果日内最高价已高于某压力位，不要说没摸到，只能说盘中曾上破但没有站稳或收住。"
         f"{RISK_DISCLAIMER}。"
     )
 
@@ -1392,6 +1394,20 @@ def _chat_current_price_source(runtime_context: dict[str, Any], intraday_observa
     return str(runtime_context.get("price_source") or "")
 
 
+def _chat_position_context(context: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    position = dict((context.get("raw_context") or {}).get("position_context") or {})
+    current_price = _num(runtime_context.get("chat_current_price")) or _num(runtime_context.get("watchboard_current_price"))
+    if current_price <= 0:
+        current_price = _num(runtime_context.get("current_price"))
+    if current_price > 0:
+        position["current_price"] = current_price
+        position["current_price_source"] = runtime_context.get("chat_current_price_source") or runtime_context.get("price_source") or ""
+    cost = _num(position.get("avg_cost")) or _num(position.get("cost"))
+    if current_price > 0 and cost > 0:
+        position["unrealized_pct"] = round((current_price - cost) / cost * 100, 2)
+    return position
+
+
 def _build_chat_context_pack(
     *,
     question: str,
@@ -1415,7 +1431,10 @@ def _build_chat_context_pack(
         "intraday_live_snapshot": _chat_live_tape(intraday_observation, runtime_context),
         "postmarket_1m_snapshot": _chat_intraday_snapshot_pack(intraday_snapshot),
         "trigger_state": _chat_trigger_state(triggers),
-        "recent_dialogue": _chat_recent_dialogue(conversation_context),
+        "recent_dialogue": _chat_recent_dialogue(
+            conversation_context,
+            include_answer_excerpt=_is_contextual_followup_question(question),
+        ),
     }
 
     return pack
@@ -1518,17 +1537,31 @@ def _chat_trigger_state(triggers: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _chat_recent_dialogue(conversation_context: dict[str, Any]) -> list[dict[str, Any]]:
+def _chat_recent_dialogue(
+    conversation_context: dict[str, Any],
+    *,
+    include_answer_excerpt: bool = False,
+) -> list[dict[str, Any]]:
     turns = conversation_context.get("recent_turns") or []
-    return [
-        {
+    result = []
+    for item in turns[-3:]:
+        if not item.get("question_text"):
+            continue
+        row = {
             "question_text": item.get("question_text") or "",
             "intent_type": item.get("intent_type") or "",
-            "answer_excerpt": item.get("answer_excerpt") or "",
         }
-        for item in turns[-3:]
-        if item.get("question_text")
-    ]
+        if include_answer_excerpt:
+            row["answer_excerpt"] = item.get("answer_excerpt") or ""
+        result.append(row)
+    return result
+
+
+def _is_contextual_followup_question(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    return any(token in text for token in ("那", "如果", "它", "继续", "还有", "呢", "刚才", "上面", "前面"))
 
 
 def _freshness_note(data_status: dict[str, Any] | None) -> str:
