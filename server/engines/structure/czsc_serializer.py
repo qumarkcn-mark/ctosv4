@@ -136,11 +136,12 @@ def _serialize_ubi(czsc_obj: Any) -> dict[str, Any] | None:
     if not start_price or not start_dt:
         return None
 
-    # 终点：未完成，取 fx_a 之后的当前方向极值。
-    # CZSC ubi.raw_bars 可能包含 fx_a 之前的候选 K 线，ubi.high/low 也会覆盖这段范围；
-    # 若直接使用会把未完成笔画到起点之前。
+    # 终点：未完成，取 fx_a 之后去包含 NewBar 的当前方向极值。
+    # CZSC 的分型 / 笔基于 bars_ubi（去包含后的 NewBar）生成；如果这里改用 raw_bars，
+    # 会把包含关系中的原始高低点投到 NewBar 分型上，导致 K 线图上未完成笔错位。
+    bars = ubi.get("bars") or []
     raw_bars = ubi.get("raw_bars") or []
-    directional_bars = _ubi_directional_bars(raw_bars, start_dt)
+    directional_bars = _ubi_directional_bars(bars, start_dt) or _ubi_directional_bars(raw_bars, start_dt)
     high = _max_bar_value(directional_bars, "high", fallback=_num(ubi.get("high", 0)))
     low = _min_bar_value(directional_bars, "low", fallback=_num(ubi.get("low", 0)))
     end_price = high if is_up else low

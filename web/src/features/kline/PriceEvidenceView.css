@@ -446,46 +446,6 @@
   fill: rgba(226, 232, 240, 0.82);
 }
 
-.base-kline__price-line {
-  position: absolute;
-  left: 0;
-  right: 52px;
-  z-index: 5;
-  height: 0;
-  border-top: 1px dashed rgba(255,255,255,0.34);
-  pointer-events: none;
-}
-
-.base-kline__price-line span {
-  position: absolute;
-  top: -10px;
-  right: -50px;
-  min-width: 46px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  color: #08080a;
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
-  line-height: 1.1;
-  text-align: center;
-}
-
-.base-kline__price-line.is-up {
-  border-color: rgba(244,63,94,0.72);
-}
-
-.base-kline__price-line.is-up span {
-  background: var(--bull-red, #f43f5e);
-}
-
-.base-kline__price-line.is-down {
-  border-color: rgba(16,185,129,0.72);
-}
-
-.base-kline__price-line.is-down span {
-  background: var(--bear-green, #10b981);
-}
-
 .base-kline__loading,
 .base-kline__error,
 .base-kline__empty {

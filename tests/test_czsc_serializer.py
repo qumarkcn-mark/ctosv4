@@ -231,6 +231,41 @@ def test_serialize_unfinished_bi_ignores_extremes_before_start_fx():
     assert result["unfinished_bi"]["end_price"] == 32.13
 
 
+def test_serialize_unfinished_bi_prefers_included_bars_over_raw_bars():
+    fx_a = Obj(dt="2026-01-01 10:00:00", mark="D", high=10.2, low=9.8, fx=9.8)
+    # raw_bars 里有一个更高的包含关系影子高点；真实 CZSC 分型/笔应以去包含 NewBar 为准。
+    raw_bars = [
+        Obj(dt="2026-01-01 10:30:00", high=13.5, low=10.0),
+        Obj(dt="2026-01-01 11:00:00", high=12.1, low=10.5),
+    ]
+    bars = [
+        Obj(dt="2026-01-01 10:30:00", high=11.4, low=10.0),
+        Obj(dt="2026-01-01 11:00:00", high=12.1, low=10.5),
+    ]
+    czsc_obj = Obj(
+        fx_list=[fx_a],
+        bi_list=[],
+        zs_list=[],
+        ubi={
+            "direction": "Up",
+            "fx_a": fx_a,
+            "bars": bars,
+            "raw_bars": raw_bars,
+            "high": 13.5,
+            "low": 9.8,
+        },
+    )
+
+    result = serialize_czsc_level(
+        czsc_obj,
+        rows=[{"date": "2026-01-01 11:00:00", "open": 11, "high": 12.1, "low": 10.5, "close": 12, "volume": 100}],
+        level="30",
+    )
+
+    assert result["unfinished_bi"]["x1"] == "2026-01-01 11:00:00"
+    assert result["unfinished_bi"]["end_price"] == 12.1
+
+
 def test_serialize_czsc_level_exposes_existing_native_signals():
     fx_a = Obj(dt="2026-01-01", mark="D", high=11, low=10, fx=10)
     fx_b = Obj(dt="2026-01-02", mark="G", high=12, low=11, fx=12)
