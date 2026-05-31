@@ -1,5 +1,6 @@
 from server.engines.ai_native.unified_reasoning_service import (
     normalize_monitor_conditions,
+    normalize_watch_state_machine,
     normalize_watchboard_payload,
     summarize_unified_reasoning,
 )
@@ -125,13 +126,44 @@ def test_normalize_watchboard_payload_compacts_card_action():
     assert result["card_action"] == "持仓观望"
 
 
+def test_normalize_watchboard_payload_rejects_pnl_as_card_action():
+    result = normalize_watchboard_payload(
+        {
+            "card_summary": "30分钟中枢震荡，等方向",
+            "card_secondary": "上破看三买延续，跌回中枢看离开失败",
+            "card_action": "浮盈2.73%",
+            "triggers": [],
+        },
+        fallback_summary="fallback",
+    )
+
+    assert result["card_action"] == "持仓观望"
+    assert result["card_secondary"] == "上破看三买延续，跌回中枢看离开失败"
+
+
 def test_normalize_watchboard_payload_keeps_watch_plan_and_derives_triggers():
     payload = {
         "watch_plan": {
             "main_task": "日线回拉后等待5分钟三买确认",
             "card": {
                 "summary": "4.33压力，观察5分三买",
+                "secondary": "站稳看二买，跌回中枢则失败",
                 "action": "持仓观望",
+            },
+            "watch_chain": {
+                "level": "5分钟",
+                "base_state": "5分中枢内震荡",
+                "base_display": "5分中枢内，等方向选择",
+                "steps": [
+                    {
+                        "id": "up_break",
+                        "trigger": {"type": "price_above", "level": 4.33},
+                        "display": "上离中枢，先看4.50压力",
+                        "then_watch": "回落后看买点是否形成",
+                        "fail_watch": "跌回中枢则离开失败",
+                        "buy_sell_point": "二买",
+                    }
+                ],
             },
             "key_levels": [
                 {
@@ -170,8 +202,12 @@ def test_normalize_watchboard_payload_keeps_watch_plan_and_derives_triggers():
     result = normalize_watchboard_payload(payload, fallback_summary="fallback")
 
     assert result["card_summary"] == "4.33压力，观察5分三买"
+    assert result["card_secondary"] == "站稳看二买，跌回中枢则失败"
     assert result["card_action"] == "持仓观望"
     assert result["watch_plan"]["main_task"] == "日线回拉后等待5分钟三买确认"
+    assert result["watch_plan"]["watch_chain"]["base_display"] == "5分中枢内，等方向选择"
+    assert result["watch_plan"]["watch_chain"]["steps"][0]["display"] == "上离中枢，先看4.50压力"
+    assert result["watch_plan"]["watch_chain"]["steps"][0]["buy_sell_point"] == "二买"
     assert result["watch_plan"]["key_levels"][0]["price"] == 4.33
     assert result["watch_plan"]["key_levels"][0]["trigger"] == "price_above"
     assert result["watch_plan"]["t_plan"]["enabled"] is True
@@ -180,17 +216,112 @@ def test_normalize_watchboard_payload_keeps_watch_plan_and_derives_triggers():
             "id": "t1",
             "type": "price_above",
             "level": 4.33,
-            "message_on_trigger": "站上后回踩不破",
+            "message_on_trigger": "上离中枢，先看4.50压力",
             "action_on_trigger": "关注",
         },
         {
             "id": "t2",
+            "type": "price_above",
+            "level": 4.33,
+            "message_on_trigger": "站上后回踩不破",
+            "action_on_trigger": "关注",
+        },
+        {
+            "id": "t3",
             "type": "price_below",
             "level": 4.18,
             "message_on_trigger": "跌破后反抽回不去",
             "action_on_trigger": "关注",
         },
     ]
+
+
+def test_normalize_watchboard_payload_keeps_state_machine_and_derives_triggers():
+    payload = {
+        "card_summary": "中枢震荡，等方向选择",
+        "card_action": "持仓观察",
+        "watch_state_machine": {
+            "current_state": {
+                "name": "30分钟中枢震荡",
+                "level": "5分钟",
+                "range": [189.48, 200.96],
+                "display": "中枢内，等离开方向",
+            },
+            "transitions": [
+                {
+                    "id": "up_break",
+                    "trigger": {"type": "price_above", "level": 195.96},
+                    "next_state": "向上离开确认",
+                    "observe": "站上压力后看回踩",
+                    "success": "回踩不破看买点确认",
+                    "failure": "跌回中枢看离开失败",
+                    "next_watch": "继续看上方压力",
+                },
+                {
+                    "id": "down_break",
+                    "trigger": {"type": "price_below", "level": 189.48},
+                    "next_state": "支撑测试",
+                    "observe": "跌破下沿看能否拉回",
+                    "success": "拉回中枢看反抽",
+                    "failure": "拉不回则结构转弱",
+                    "next_watch": "观察反抽卖点",
+                },
+            ],
+        },
+    }
+
+    result = normalize_watchboard_payload(payload, fallback_summary="fallback")
+
+    assert result["extract_status"] == "success"
+    assert result["watch_state_machine"]["current_state"]["range"] == [189.48, 200.96]
+    assert result["watch_state_machine"]["transitions"][0]["trigger"]["level"] == 195.96
+    assert result["watch_plan"]["watch_state_machine"]["transitions"][1]["next_state"] == "支撑测试"
+    assert result["monitor_conditions"]["triggers"] == [
+        {
+            "id": "t1",
+            "type": "price_above",
+            "level": 195.96,
+            "message_on_trigger": "站上压力后看回踩",
+            "action_on_trigger": "关注",
+        },
+        {
+            "id": "t2",
+            "type": "price_below",
+            "level": 189.48,
+            "message_on_trigger": "跌破下沿看能否拉回",
+            "action_on_trigger": "关注",
+        },
+    ]
+
+
+def test_normalize_watch_state_machine_removes_trade_words_and_bad_levels():
+    payload = {
+        "watch_state_machine": {
+            "current_state": {"name": "加仓观察", "level": "5分钟", "range": [40.0, 45.0], "display": "止损防守"},
+            "transitions": [
+                {
+                    "trigger": {"type": "price_above", "level": "not-price"},
+                    "next_state": "无效",
+                    "observe": "无效",
+                },
+                {
+                    "trigger": {"type": "price_below", "level": 41.84},
+                    "next_state": "减仓风险",
+                    "observe": "跌破后止损",
+                    "failure": "清仓离场",
+                },
+            ],
+        }
+    }
+
+    result = normalize_watch_state_machine(payload)
+
+    assert result["current_state"]["name"] == "观察"
+    assert result["current_state"]["display"] == "防守"
+    assert len(result["transitions"]) == 1
+    assert result["transitions"][0]["next_state"] == "风险"
+    assert result["transitions"][0]["observe"] == "跌破后"
+    assert result["transitions"][0]["failure"] == "离场"
 
 
 def test_normalize_watchboard_payload_builds_watch_plan_from_legacy_triggers():

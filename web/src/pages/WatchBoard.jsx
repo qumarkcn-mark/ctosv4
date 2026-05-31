@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { apiJson } from '../api/client.js'
+import { apiFetch, apiJson } from '../api/client.js'
 import StockSearch from '../components/StockSearch.jsx'
 import WatchCard from '../components/WatchCard.jsx'
 import { computeTacticalState } from '../utils/watchboardState.js'
@@ -24,18 +24,50 @@ function priceKey(symbol) {
   return String(symbol || '').replace('.', '')
 }
 
-function mergePrice(item, prices) {
+function mergePrice(item, prices, previousPrices = {}) {
   const quote = prices[item.symbol] || prices[priceKey(item.symbol)]
+  const previousQuote = previousPrices[item.symbol] || previousPrices[priceKey(item.symbol)]
   if (!quote) return item
   return {
     ...item,
     price: quote.price ?? item.price,
+    previous_price: previousQuote?.price ?? item.previous_price,
     change_pct: quote.change_pct ?? item.change_pct,
     price_data: {
       ...(item.price_data || {}),
       ...quote,
     },
   }
+}
+
+function chatQuestionPayload(item, question, thinkingEnabled = false) {
+  const price = Number(item?.price || item?.price_data?.price || 0)
+  return {
+    symbol: item?.symbol || '',
+    question,
+    current_price: price > 0 ? price : undefined,
+    quote_time: item?.price_data?.quote_time || undefined,
+    change_pct: item?.change_pct ?? item?.price_data?.change_pct,
+    price_source: price > 0 ? 'watchboard_quote' : undefined,
+    thinking_enabled: thinkingEnabled,
+  }
+}
+
+function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
+  const price = Number(currentPrice || 0)
+  if (price <= 0) return ''
+  const prev = Number(previousPrice || 0)
+  const change = prev > 0 ? `，较上一跳${price >= prev ? '上移' : '回落'}到${formatPrice(price)}` : `，当前价${formatPrice(price)}`
+  return `结合上一版推演和今天1分钟盘中走势复核一下${item?.name || item?.symbol || ''}${change}，现在是在验证哪条买卖点转化路径？成立看哪里，失败又会怎样？`
+}
+
+function intradayReviewLabel(item, currentPrice, previousPrice) {
+  const price = Number(currentPrice || 0)
+  if (price <= 0) return '1m区间复核'
+  const prev = Number(previousPrice || 0)
+  if (prev > 0 && price > prev) return '1m上移复核'
+  if (prev > 0 && price < prev) return '1m回落复核'
+  return '1m区间复核'
 }
 
 function formatPrice(value) {
@@ -152,9 +184,26 @@ function restoreWatchboardChatMessages(rows, currentContextId = '') {
   })
 }
 
+function parseSseEvent(chunk) {
+  const lines = String(chunk || '').split('\n')
+  let event = 'message'
+  const dataLines = []
+  for (const line of lines) {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+  }
+  if (!dataLines.length) return null
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) }
+  } catch {
+    return null
+  }
+}
+
 export default function WatchBoard() {
   const [groups, setGroups] = useState([])
   const [prices, setPrices] = useState({})
+  const [previousPrices, setPreviousPrices] = useState({})
   const [selected, setSelected] = useState(null)
   const [fullText, setFullText] = useState('')
   const [detailStatus, setDetailStatus] = useState('idle')
@@ -170,6 +219,7 @@ export default function WatchBoard() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
+  const [thinkingEnabled, setThinkingEnabled] = useState(false)
   const [activeDetailTab, setActiveDetailTab] = useState('reasoning')
   const chatLogRef = useRef(null)
   const autoOpenedRef = useRef(false)
@@ -177,12 +227,16 @@ export default function WatchBoard() {
   const allItems = useMemo(() => flattenGroups(groups), [groups])
   const displayGroups = useMemo(() => (
     groups.map((group) => ({
-      ...group,
-      items: (group.items || [])
+          ...group,
+          items: (group.items || [])
         .map((item, index) => {
-          const merged = mergePrice(item, prices)
+          const merged = mergePrice(item, prices, previousPrices)
           const tactical = computeTacticalState(merged, merged.price)
-          return { ...merged, _watchboardIndex: index, _tacticalState: tactical }
+          return {
+            ...merged,
+            _watchboardIndex: index,
+            _tacticalState: tactical,
+          }
         })
         .sort((a, b) => {
           const priorityDiff = (b._tacticalState?.priority || 0) - (a._tacticalState?.priority || 0)
@@ -196,7 +250,7 @@ export default function WatchBoard() {
           return a._watchboardIndex - b._watchboardIndex
         }),
     }))
-  ), [groups, prices])
+  ), [groups, prices, previousPrices])
   const selectedReasoningStatus = useMemo(() => (
     buildReasoningStatus(
       selected?.reasoning_freshness,
@@ -205,6 +259,15 @@ export default function WatchBoard() {
       selected?.reasoning_summary || {},
     )
   ), [selected, reasoningRun, nowTick])
+  const selectedLiveItem = useMemo(() => (
+    selected ? mergePrice(selected, prices, previousPrices) : null
+  ), [selected, prices, previousPrices])
+  const selectedIntradayReviewQuestion = useMemo(() => (
+    selectedLiveItem ? buildIntradayReviewQuestion(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
+  ), [selectedLiveItem])
+  const selectedIntradayReviewLabel = useMemo(() => (
+    selectedLiveItem ? intradayReviewLabel(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
+  ), [selectedLiveItem])
 
   const loadWatchboard = useCallback(async () => {
     setError('')
@@ -226,7 +289,11 @@ export default function WatchBoard() {
     if (!symbols.length) return
     try {
       const json = await apiJson(`/api/data/prices?symbols=${symbols.map(encodeURIComponent).join(',')}`)
-      setPrices(json.prices || {})
+      const nextPrices = json.prices || {}
+      setPrices((prevPrices) => {
+        setPreviousPrices(prevPrices || {})
+        return nextPrices
+      })
     } catch (err) {
       console.error('盯盘价格刷新失败:', err)
     }
@@ -285,7 +352,7 @@ export default function WatchBoard() {
   }, [])
 
   const openDetail = useCallback(async (item) => {
-    const current = mergePrice(item, prices)
+    const current = mergePrice(item, prices, previousPrices)
     setSelected(current)
     setFullText('')
     setDetailStatus('loading')
@@ -304,7 +371,7 @@ export default function WatchBoard() {
     } finally {
       setDrawerLoading(false)
     }
-  }, [prices, restoreChatHistory])
+  }, [prices, previousPrices, restoreChatHistory])
 
   useEffect(() => {
     if (autoOpenedRef.current || selected || loading) return
@@ -330,7 +397,7 @@ export default function WatchBoard() {
       setDetailStatus('ready')
       const nextGroups = await loadWatchboard()
       const updated = flattenGroups(nextGroups || []).find((item) => item.symbol === selected.symbol)
-      if (updated) setSelected(mergePrice(updated, prices))
+      if (updated) setSelected(mergePrice(updated, prices, previousPrices))
     } catch (err) {
       setDetailStatus('missing')
       setFullText('')
@@ -371,32 +438,100 @@ export default function WatchBoard() {
   const sendQuestion = async (question = chatInput) => {
     const text = String(question || '').trim()
     if (!text || !selected) return
+    const selectedWithPrice = selectedLiveItem || mergePrice(selected, prices, previousPrices)
     setChatLoading(true)
     setActiveDetailTab('chat')
     setChatInput('')
     const sentAt = new Date().toISOString()
-    setChatMessages((prev) => [...prev, { role: 'user', content: text, contextId: selected.context_id || '', createdAt: sentAt }])
+    const assistantKey = `assistant-${Date.now()}`
+    setChatMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text, contextId: selected.context_id || '', createdAt: sentAt },
+      { role: 'assistant', content: '', contextId: selected.context_id || '', createdAt: new Date().toISOString(), streamingKey: assistantKey, isStreaming: true },
+    ])
     try {
-      const json = await apiJson('/api/ai-structure/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: selected.symbol, question: text }),
-      })
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
+      await streamQuestionAnswer({ text, assistantKey, item: selectedWithPrice, thinking: thinkingEnabled })
+    } catch (err) {
+      try {
+        const json = await apiJson('/api/ai-structure/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(chatQuestionPayload(selectedWithPrice, text, thinkingEnabled)),
+        })
+        patchStreamingMessage(assistantKey, {
           content: json.data?.coach_answer || '暂无回答',
           contextId: json.data?.context_id || selected.context_id || '',
           createdAt: json.data?.created_at || new Date().toISOString(),
-        },
-      ])
-    } catch (err) {
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: err.message || '问答失败' }])
+          isStreaming: false,
+        })
+      } catch (fallbackErr) {
+        patchStreamingMessage(assistantKey, {
+          content: fallbackErr.message || err.message || '问答失败',
+          isStreaming: false,
+        })
+      }
     } finally {
       setChatLoading(false)
     }
   }
+
+  const runIntradayReview = () => {
+    if (!selectedIntradayReviewQuestion || chatLoading) return
+    sendQuestion(selectedIntradayReviewQuestion)
+  }
+
+  const patchStreamingMessage = useCallback((streamingKey, patch) => {
+    setChatMessages((prev) => prev.map((message) => (
+      message.streamingKey === streamingKey ? { ...message, ...patch } : message
+    )))
+  }, [])
+
+  const appendStreamingMessage = useCallback((streamingKey, delta) => {
+    if (!delta) return
+    setChatMessages((prev) => prev.map((message) => (
+      message.streamingKey === streamingKey
+        ? { ...message, content: `${message.content || ''}${delta}` }
+        : message
+    )))
+  }, [])
+
+  const streamQuestionAnswer = useCallback(async ({ text, assistantKey, item, thinking = false }) => {
+    const response = await apiFetch('/api/ai-structure/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(chatQuestionPayload(item || selected, text, thinking)),
+    })
+    if (!response.ok || !response.body) {
+      throw new Error(`流式问答失败 ${response.status}`)
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let doneMeta = null
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
+      for (const part of parts) {
+        const event = parseSseEvent(part)
+        if (!event) continue
+        if (event.event === 'delta') {
+          appendStreamingMessage(assistantKey, event.data?.content || '')
+        } else if (event.event === 'done') {
+          doneMeta = event.data || {}
+        } else if (event.event === 'error') {
+          throw new Error(event.data?.message || '流式问答失败')
+        }
+      }
+    }
+    patchStreamingMessage(assistantKey, {
+      contextId: doneMeta?.context_id || selected.context_id || '',
+      createdAt: doneMeta?.created_at || new Date().toISOString(),
+      isStreaming: false,
+    })
+  }, [appendStreamingMessage, patchStreamingMessage, selected])
 
   const chatStatus = chatLoading
     ? { tone: 'active', label: '推演中', detail: '正在结合完整推演与当前价格' }
@@ -445,6 +580,7 @@ export default function WatchBoard() {
                     key={`${group.type}:${item.symbol}`}
                     item={item}
                     currentPrice={item.price}
+                    previousPrice={item.previous_price}
                     onClick={() => openDetail(item)}
                   />
                 ))}
@@ -523,7 +659,7 @@ export default function WatchBoard() {
                   <ReactMarkdown>{fullText || '暂无完整推演。'}</ReactMarkdown>
                 </div>
               )
-            ) : (
+            ) : activeDetailTab === 'chat' ? (
               <div className="watchboard-chat-panel">
                 {chatMessages.length ? (
                   <div className="watchboard-chat-log" aria-live="polite" ref={chatLogRef}>
@@ -535,12 +671,13 @@ export default function WatchBoard() {
                         <span>
                           {message.role === 'user' ? '你问' : '教练'}
                           {message.createdAt ? <time>{formatChatTime(message.createdAt)}</time> : null}
+                          {message.isStreaming ? <em>生成中</em> : null}
                           {message.isHistorical ? <em>历史推演</em> : null}
                         </span>
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                        <ReactMarkdown>{message.content || (message.isStreaming ? '...' : '')}</ReactMarkdown>
                       </article>
                     ))}
-                    {chatLoading && (
+                    {chatLoading && !chatMessages.some((message) => message.isStreaming) && (
                       <article className="watchboard-chat-message chat-assistant is-loading">
                         <span>教练</span>
                         <p>正在结合完整推演和当前价格...</p>
@@ -559,11 +696,21 @@ export default function WatchBoard() {
                   </div>
                 )}
               </div>
-            )}
+            ) : null}
           </div>
 
           <div className="watchboard-chat">
             <div className="watchboard-quick">
+              {selectedIntradayReviewQuestion ? (
+                <button
+                  className="is-intraday-review"
+                  type="button"
+                  onClick={runIntradayReview}
+                  disabled={chatLoading}
+                >
+                  {selectedIntradayReviewLabel || '1m区间复核'}
+                </button>
+              ) : null}
               {QUICK_QUESTIONS.map((question) => (
                 <button key={question} type="button" onClick={() => sendQuestion(question)} disabled={chatLoading}>
                   {question}
@@ -586,9 +733,17 @@ export default function WatchBoard() {
               <input
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                placeholder={chatLoading ? '推演中，请稍等...' : '问这只票接下来怎么看'}
+                placeholder={chatLoading ? (thinkingEnabled ? '深度推演中，请稍等...' : '推演中，请稍等...') : '问这只票接下来怎么看'}
                 disabled={chatLoading}
               />
+              <button
+                type="button"
+                className={`think-toggle${thinkingEnabled ? ' is-active' : ''}`}
+                onClick={() => setThinkingEnabled((v) => !v)}
+                title={thinkingEnabled ? '深度推演模式（DeepSeek-R1）— 点击关闭' : '开启深度推演模式（DeepSeek-R1）'}
+              >
+                🧠
+              </button>
               <button type="submit" disabled={chatLoading || !chatInput.trim()}>
                 {chatLoading ? '...' : '发送'}
               </button>

@@ -140,6 +140,15 @@ def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
             ],
         },
     )
+    monkeypatch.setattr(
+        service,
+        "_index_sector_context",
+        lambda symbol: {
+            "version": "index_sector_context.v0_test",
+            "usage": "background_evidence_only",
+            "relative_strength": {"vs_benchmark": "stronger_than_benchmark"},
+        },
+    )
 
     payload = service.build_unified_reasoning_input(user_id=1, symbol="sh600519", levels=["day", "5", "week"])
     data = payload["input"]
@@ -164,6 +173,9 @@ def test_build_unified_reasoning_input_includes_enhanced_payload(monkeypatch):
     assert data["market_task_context"]["version"] == "market_task_context.v1"
     assert "task_candidates" in data["market_task_context"]
     assert "small_to_large_turn" in data["market_task_context"]
+    assert data["index_sector_context"]["version"] == "index_sector_context.v0_test"
+    assert data["index_sector_context"]["usage"] == "background_evidence_only"
+    assert data["index_sector_context"]["relative_strength"]["vs_benchmark"] == "stronger_than_benchmark"
     assert "bi_completion" in data["practical_evidence"]["by_level"]["日线"]
     assert "level_interaction" in data["practical_evidence"]
     assert data["chan_signal_digest"]["version"] == "chan_signal_digest.v1"
@@ -212,7 +224,15 @@ def test_resonance_evidence_marks_boundary_cluster_overlap():
 
 
 def test_unified_prompt_treats_chan_digest_as_auxiliary_evidence():
+    assert "不要用 JSON，不要机械分条" in service.SYSTEM_PROMPT
+    assert "买卖点成立后会推进成什么结构，失败后会转化成什么结构" in service.SYSTEM_PROMPT
+    assert "最后单独输出两行卡片文案" in service.SYSTEM_PROMPT
+    assert "不要混用旧支撑和当前主战场中枢" in service.SYSTEM_PROMPT
     assert "chan_signal_digest 是 CZSC 原生辅助证据，不是最终裁决" in service.SYSTEM_PROMPT
     assert "intraday_observation 是盘中观察层，不是正式结构确认" in service.SYSTEM_PROMPT
     assert "reasoning_continuity_context 是上一轮推演" in service.SYSTEM_PROMPT
     assert "market_task_context 是走势任务" in service.SYSTEM_PROMPT
+    assert "index_sector_context 是市场指数和主板块相对强弱背景，不是规则" in service.SYSTEM_PROMPT
+    assert "index_sector_context.concept_context 是题材概念背景" in service.SYSTEM_PROMPT
+    assert "最后两行卡片文案" in service.WATCHBOARD_EXTRACT_PROMPT
+    assert "card_secondary" in service.WATCHBOARD_EXTRACT_PROMPT

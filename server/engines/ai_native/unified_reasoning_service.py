@@ -24,6 +24,7 @@ from server.engines.ai_native.czsc_snapshot_service import (
     stable_hash,
 )
 from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
+from server.engines.ai_native.index_sector_context_hydrator import hydrate_index_sector_context
 from server.engines.ai_native.market_task_context_hydrator import hydrate_market_task_context
 from server.engines.ai_native.practical_evidence_hydrator import hydrate_practical_evidence
 from server.engines.ai_native.reasoning_continuity_service import build_reasoning_continuity_context
@@ -61,65 +62,75 @@ CHAN_SIGNAL_MARKERS = (
     "BE辅助",
 )
 
-SYSTEM_PROMPT = """你是用户的缠论盯盘搭档。
+SYSTEM_PROMPT = """你是用户的盘中盯盘搭档，熟悉缠论、多级别联立、买卖点转化和实盘节奏。
 
-先理解第一阶段结构推演，再结合多级别结构几何、动力状态、实盘证据、盘中观察、附近压力支撑和持仓背景，做第二阶段综合推演。
+请基于第一阶段完整推演、当前盘中数据、压力支撑、动力学指标、市场/板块背景和用户持仓，重新推演当下走势。
 
-重点说明：
-当前走势在做什么；
-第一阶段主线是否被动力和关口支持；
-哪些价格和结构变化会让推演切换；
-接下来最需要盯住什么。
+不要用 JSON，不要机械分条，也不要只罗列支撑压力。请用自然短段落，像盘中高手在解释走势一样，把以下内容自然融入推演中：
+大盘、板块、概念是否形成背景共振；
+当前这一笔在什么级别、什么方向，可能先走到哪里；
+到目标区后，回调或反抽要看哪里；
+当前是否已经形成可参与的买点或卖点；
+如果还没有，差哪个低级别买卖点确认；
+低级别买卖点对上一级别结构意味着什么；
+买卖点成立后会推进成什么结构，失败后会转化成什么结构；
+结合用户持仓成本，说明此刻最该盯什么。
+
+如果引用中枢、压力、支撑或目标点位，必须说明这个点位属于哪个级别、什么角色；不要混用旧支撑和当前主战场中枢。
+卡片文案要具体到关键转化条件，不要只写“失败则震荡或再探支撑”。
+
+最后单独输出两行卡片文案：
+第一行：现在在验证什么。
+第二行：成立怎样，失败怎样。
 
 chan_signal_digest 是 CZSC 原生辅助证据，不是最终裁决；若它与笔序列、动力状态、压力支撑冲突，需要说明冲突点。
 intraday_observation 是盘中观察层，不是正式结构确认；数据里的 source、as_of、coverage、bar_status 表示事实来源和新鲜度，请自行权衡。
 reasoning_continuity_context 是上一轮推演、触发状态、用户近期观察和历史结果的事实集合，不是规则；请结合当前结构与盘中观察自行判断原推演是延续、触发、增强、减弱还是失效。
 market_task_context 是走势任务、压力语义、量能阶段和小转大观察事实，不是规则；请用它理解当前走势正在完成什么任务，但不要被它替代你的综合判断。
 market_task_context.macro_phase 是大级别阶段背景；practical_evidence.divergence_evidence.impulse_exhaustion_context 是当前同向笔的动能释放上下文。二者都是事实参考，不是结论规则。
+index_sector_context 是市场指数和主板块相对强弱背景，不是规则；请只把它作为判断个股走势是否有市场/板块共振的证据。
+index_sector_context.concept_context 是题材概念背景，只用于判断市场活跃方向和合力来源，不要把概念标签当作结构结论或交易依据。
 
 仅供参考，不构成投资建议。"""
 
-WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘计划，返回 JSON：
+WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘状态机，返回 JSON：
 {
-  "watch_plan": {
-    "main_task": "当前走势正在完成什么任务，不超过40个中文字符",
-    "card": {
-      "summary": "关键价格+关键形态，不超过28个中文字符",
-      "action": "结合当前持仓状态给出的短标签，不超过6个中文字符"
+  "card_summary": "优先使用完整推演最后两行卡片文案的第一行，不超过28个中文字符",
+  "card_secondary": "优先使用完整推演最后两行卡片文案的第二行，不超过46个中文字符",
+  "card_action": "结合持仓状态的短标签，不超过6个中文字符",
+  "watch_state_machine": {
+    "version": "watch_state_machine.v1",
+    "current_state": {
+      "name": "当前结构状态，不超过18个中文字符",
+      "level": "主要观察级别，例如5分钟/30分钟",
+      "range": [下沿价格, 上沿价格] 或 null,
+      "display": "卡片默认显示，不超过28个中文字符"
     },
-    "key_levels": [
+    "transitions": [
       {
-        "price": 数字,
-        "side": "up|down",
-        "type": "pressure|support|confirm|invalidate|t_watch|reentry",
-        "shape_to_watch": "要盯的关键形态，不超过24个中文字符",
-        "meaning": "这个价位的盘中含义，不超过30个中文字符",
-        "trigger": "price_above|price_below",
-        "ai_review_when": "什么盘中变化值得AI复核，不超过36个中文字符"
+        "id": "up_break|down_break|pressure_test|support_test|pullback|rebound",
+        "trigger": {"type": "price_above|price_below", "level": 价格数字},
+        "next_state": "触发后进入的状态，不超过18个中文字符",
+        "observe": "触发后当下看什么，不超过30个中文字符",
+        "success": "如果这个连续动作成功，下一步看什么，不超过34个中文字符",
+        "failure": "如果这个连续动作失败，下一步看什么，不超过34个中文字符",
+        "next_watch": "后续继续盯什么，不超过34个中文字符"
       }
-    ],
-    "t_plan": {
-      "enabled": true,
-      "condition": "有底仓时是否支持考虑做T的条件",
-      "watch_price": 数字或null,
-      "reentry_area": "接回观察区，没有则空字符串",
-      "risk": "做T主要风险，没有则空字符串"
-    },
-    "recheck_policy": {
-      "no_touch": "不触及关键位时怎么处理",
-      "near_key_level": "接近关键位时怎么处理",
-      "touched_with_momentum_change": "触及且动能变化时怎么处理"
-    }
+    ]
   }
 }
 要求：
-- card.summary 只写“关键价格 + 关键形态”，适合盯盘卡片扫一眼，不写解释。
-- card.action 必须结合当前持仓状态；空仓看观察/考虑建仓，持仓看持仓观察/考虑加仓/考虑减仓/考虑做T/等待接回/风险收缩；只输出短标签，不带价格。
-- key_levels 最多 4 个，只取推演中明确提到的关键价格；没有明确价格就少给，不要编。
-- key_levels 是盘中监控计划：不触及关键位时不需要重推；触及关键位且动能/形态发生变化时才值得 AI 复核。
-- t_plan 只在完整推演明确支持“有底仓 + 压力区/支撑区 + 小级别动能条件”时 enabled=true，否则 false。
-- 不要输出买入、卖出、清仓这类下单命令，用“考虑/观察/关注/防守”语气。
+- 只抽完整推演已经明确给出的结构、价格和连续动作，不要编价格。
+- 优先从完整推演最后“两行卡片文案”抽 card_summary、当前状态和关键转化条件。
+- transitions 最多 6 个；状态不限制为三买/三卖，也可以是一买、二买、类买卖点、中枢震荡、离开段、回拉、反抽等。
+- trigger.level 必须是价格，不是级别数字；严禁把“5分钟/30分钟”里的 5 或 30 当成价格。
+- card_summary 和 transitions 都要围绕“触发什么后显示什么、成功/失败后继续看什么”，不要写“关注”这种空话。
+- 如果完整推演说明某个价位属于旧支撑、当前主战场中枢、目标区、回调确认位或失败位，抽取时必须保留这个角色语义，不能改写成泛泛的“压力/支撑”。
+- 不要输出买入、卖出、加仓、减仓、清仓、止损等下单命令；可以使用观察、确认、转弱、失效、防守等描述。
 - 只返回 JSON。"""
+
+WATCH_STATE_MACHINE_VERSION = "watch_state_machine.v1"
+WATCH_STATE_TRADING_WORDS = ("买入", "卖出", "加仓", "减仓", "清仓", "止损", "满仓", "重仓")
 
 
 async def trigger_unified_reasoning(
@@ -240,6 +251,7 @@ def build_unified_reasoning_input(
         nearby_pressure_support=nearby_pressure_support,
         reasoning_continuity_context=reasoning_continuity_context,
     )
+    index_sector_context = _index_sector_context(canonical)
     chan_signal_digest = build_chan_signal_digest(snapshots, level_names=level_names)
     chan_signals = _collect_chan_signals(snapshots, level_names)
     position_context = _position_context(user_id=user_id, symbol=canonical, current_price=current_price)
@@ -256,6 +268,7 @@ def build_unified_reasoning_input(
         "intraday_observation": intraday_observation,
         "reasoning_continuity_context": reasoning_continuity_context,
         "market_task_context": market_task_context,
+        "index_sector_context": index_sector_context,
         "chan_signal_digest": chan_signal_digest,
         "chan_signals": chan_signals,
         "position_context": position_context,
@@ -273,6 +286,14 @@ def build_unified_reasoning_input(
         "snapshots": rows,
         "input": full_input,
     }
+
+
+def _index_sector_context(symbol: str) -> dict[str, Any]:
+    """Best-effort market / sector background; never required for formal reasoning."""
+    try:
+        return hydrate_index_sector_context(symbol)
+    except Exception:
+        return {}
 
 
 def _intraday_observation(symbol: str) -> dict[str, Any]:
@@ -315,7 +336,11 @@ def save_unified_reasoning_result(
     summary_payload = {
         "coach_summary": summary,
         "card_summary": normalized_watchboard["card_summary"],
+        "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "extract_status": normalized_watchboard["extract_status"],
+        "extract_error": normalized_watchboard["extract_error"],
+        "watch_state_machine": normalized_watchboard["watch_state_machine"],
         "watch_plan": normalized_watchboard["watch_plan"],
         "version": UNIFIED_REASONING_VERSION,
         "monitor_conditions": normalized_watchboard["monitor_conditions"],
@@ -341,7 +366,11 @@ def save_unified_reasoning_result(
         "coach_summary": summary,
         "front_panel_text": normalized_watchboard["card_summary"] or summary,
         "card_summary": normalized_watchboard["card_summary"],
+        "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "extract_status": normalized_watchboard["extract_status"],
+        "extract_error": normalized_watchboard["extract_error"],
+        "watch_state_machine": normalized_watchboard["watch_state_machine"],
         "watch_plan": normalized_watchboard["watch_plan"],
         "pressure_support": (payload.get("input") or {}).get("nearby_pressure_support")
         or (payload.get("input") or {}).get("pressure_support")
@@ -394,7 +423,11 @@ def save_unified_reasoning_result(
         "run_id": run["run_id"],
         "summary": summary,
         "card_summary": normalized_watchboard["card_summary"],
+        "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "extract_status": normalized_watchboard["extract_status"],
+        "extract_error": normalized_watchboard["extract_error"],
+        "watch_state_machine": normalized_watchboard["watch_state_machine"],
         "watch_plan": normalized_watchboard["watch_plan"],
         "monitor_conditions": summary_payload["monitor_conditions"],
         "full_text": full_text,
@@ -420,7 +453,7 @@ async def extract_watchboard_payload(
         thinking_enabled=False,
         reasoning_effort="",
         timeout_seconds=45,
-        max_tokens=900,
+        max_tokens=2200,
     )
     user_message = json.dumps(
         {
@@ -436,9 +469,24 @@ async def extract_watchboard_payload(
             user_id=user_id,
             model_route=route,
         )
-    except Exception:
-        return {"card_summary": "", "card_action": "", "triggers": []}
-    return payload if isinstance(payload, dict) else {"card_summary": "", "card_action": "", "triggers": []}
+    except Exception as exc:
+        return {
+            "card_summary": "",
+            "card_action": "",
+            "triggers": [],
+            "extract_status": "failed",
+            "extract_error": str(exc)[:240],
+        }
+    if isinstance(payload, dict):
+        payload.setdefault("extract_status", "success")
+        return payload
+    return {
+        "card_summary": "",
+        "card_action": "",
+        "triggers": [],
+        "extract_status": "failed",
+        "extract_error": "LLM returned non-object watchboard payload",
+    }
 
 
 async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) -> dict[str, Any]:
@@ -450,7 +498,14 @@ async def extract_monitor_conditions(full_reasoning_text: str, *, user_id: int) 
 def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_summary: str = "") -> dict[str, Any]:
     """Normalize AI-extracted card fields without turning the card into a rule engine."""
     raw = payload or {}
-    watch_plan = normalize_watch_plan(raw, fallback_summary=fallback_summary)
+    watch_state_machine = normalize_watch_state_machine(raw)
+    extract_status = _normalize_extract_status(raw, watch_state_machine)
+    watch_plan = normalize_watch_plan(
+        raw,
+        fallback_summary=fallback_summary,
+        watch_state_machine=watch_state_machine,
+        extract_status=extract_status,
+    )
     card_summary = re.sub(
         r"\s+",
         "",
@@ -458,6 +513,15 @@ def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_sum
     ).strip()
     if not card_summary:
         card_summary = str(fallback_summary or "").strip()
+    card_secondary = re.sub(
+        r"\s+",
+        "",
+        str(
+            raw.get("card_secondary")
+            or ((watch_plan.get("card") or {}).get("secondary") if isinstance(watch_plan.get("card"), dict) else "")
+            or "",
+        ),
+    ).strip()
     card_action = re.sub(
         r"\s+",
         "",
@@ -466,13 +530,94 @@ def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_sum
     card_action = _normalize_watchboard_action(card_action)
     return {
         "card_summary": card_summary[:42],
+        "card_secondary": card_secondary[:64],
         "card_action": card_action[:8],
+        "extract_status": extract_status,
+        "extract_error": str(raw.get("extract_error") or "").strip()[:240],
+        "watch_state_machine": watch_state_machine,
         "monitor_conditions": normalize_monitor_conditions(raw),
         "watch_plan": watch_plan,
     }
 
 
-def normalize_watch_plan(payload: dict[str, Any] | None, *, fallback_summary: str = "") -> dict[str, Any]:
+def normalize_watch_state_machine(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize the compact AI state machine used by watch cards."""
+    raw = payload or {}
+    machine = raw.get("watch_state_machine") if isinstance(raw.get("watch_state_machine"), dict) else {}
+    current = machine.get("current_state") if isinstance(machine.get("current_state"), dict) else {}
+    raw_range = current.get("range") if isinstance(current.get("range"), list) else []
+    state_range: list[float] | None = None
+    if len(raw_range) >= 2:
+        low = _num(raw_range[0])
+        high = _num(raw_range[1])
+        if low > 0 and high > 0 and low != high:
+            state_range = [round(min(low, high), 4), round(max(low, high), 4)]
+
+    transitions = []
+    raw_transitions = machine.get("transitions") if isinstance(machine.get("transitions"), list) else []
+    for item in raw_transitions:
+        if not isinstance(item, dict):
+            continue
+        raw_trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+        trigger_type = _watch_level_trigger_type(raw_trigger)
+        level = _num(raw_trigger.get("level"))
+        if trigger_type not in {"price_above", "price_below"} or level <= 0:
+            continue
+        normalized_item = {
+            "id": re.sub(r"[^a-zA-Z0-9_-]", "", str(item.get("id") or f"s{len(transitions) + 1}"))[:24],
+            "trigger": {"type": trigger_type, "level": round(level, 4)},
+            "next_state": _clean_watch_state_text(item.get("next_state"), 18),
+            "observe": _clean_watch_state_text(item.get("observe"), 30),
+            "success": _clean_watch_state_text(item.get("success"), 34),
+            "failure": _clean_watch_state_text(item.get("failure"), 34),
+            "next_watch": _clean_watch_state_text(item.get("next_watch"), 34),
+        }
+        if not any(normalized_item[field] for field in ("next_state", "observe", "success", "failure", "next_watch")):
+            continue
+        transitions.append(normalized_item)
+        if len(transitions) >= 6:
+            break
+
+    current_state = {
+        "name": _clean_watch_state_text(current.get("name"), 18),
+        "level": re.sub(r"\s+", "", str(current.get("level") or "")).strip()[:12],
+        "range": state_range,
+        "display": _clean_watch_state_text(current.get("display"), 48),
+    }
+    if not transitions and not any(value for value in current_state.values()):
+        return {}
+    return {
+        "version": WATCH_STATE_MACHINE_VERSION,
+        "current_state": current_state,
+        "transitions": transitions,
+    }
+
+
+def _clean_watch_state_text(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", "", str(value or "")).strip()
+    for word in WATCH_STATE_TRADING_WORDS:
+        text = text.replace(word, "")
+    return text[:limit]
+
+
+def _normalize_extract_status(raw: dict[str, Any], watch_state_machine: dict[str, Any]) -> str:
+    status = str(raw.get("extract_status") or "").strip().lower()
+    if status in {"failed", "empty"}:
+        return status
+    if watch_state_machine:
+        return "success"
+    if raw:
+        return "missing_state_machine"
+    return "empty"
+
+
+def normalize_watch_plan(
+    payload: dict[str, Any] | None,
+    *,
+    fallback_summary: str = "",
+    watch_state_machine: dict[str, Any] | None = None,
+    extract_status: str = "",
+) -> dict[str, Any]:
     """Normalize the AI watch plan while keeping it as observation data."""
     raw = payload or {}
     plan = raw.get("watch_plan") if isinstance(raw.get("watch_plan"), dict) else {}
@@ -482,6 +627,11 @@ def normalize_watch_plan(payload: dict[str, Any] | None, *, fallback_summary: st
         "",
         str(raw_card.get("summary") or raw.get("card_summary") or fallback_summary or ""),
     ).strip()[:42]
+    card_secondary = re.sub(
+        r"\s+",
+        "",
+        str(raw_card.get("secondary") or raw.get("card_secondary") or ""),
+    ).strip()[:64]
     card_action = _normalize_watchboard_action(str(raw_card.get("action") or raw.get("card_action") or "").strip())[:8]
     key_levels = _normalize_watch_key_levels(plan, raw)
     return {
@@ -489,13 +639,66 @@ def normalize_watch_plan(payload: dict[str, Any] | None, *, fallback_summary: st
         "main_task": re.sub(r"\s+", "", str(plan.get("main_task") or "")).strip()[:60],
         "card": {
             "summary": card_summary,
+            "secondary": card_secondary,
             "action": card_action,
         },
+        "watch_chain": _normalize_watch_chain(plan.get("watch_chain") if isinstance(plan.get("watch_chain"), dict) else {}),
+        "watch_state_machine": watch_state_machine or normalize_watch_state_machine(raw),
+        "extract_status": extract_status or _normalize_extract_status(raw, watch_state_machine or normalize_watch_state_machine(raw)),
         "key_levels": key_levels,
         "t_plan": _normalize_t_plan(plan.get("t_plan") if isinstance(plan.get("t_plan"), dict) else {}),
         "recheck_policy": _normalize_recheck_policy(
             plan.get("recheck_policy") if isinstance(plan.get("recheck_policy"), dict) else {}
         ),
+    }
+
+
+def _normalize_watch_chain(raw_chain: dict[str, Any]) -> dict[str, Any]:
+    steps = []
+    raw_steps = raw_chain.get("steps") if isinstance(raw_chain.get("steps"), list) else []
+    allowed_points = {
+        "一买",
+        "二买",
+        "三买",
+        "类二买",
+        "类三买",
+        "一卖",
+        "二卖",
+        "三卖",
+        "类二卖",
+        "类三卖",
+        "中枢震荡",
+        "无",
+    }
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            continue
+        raw_trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+        trigger_type = _watch_level_trigger_type(raw_trigger)
+        level = _num(raw_trigger.get("level"))
+        if trigger_type not in {"price_above", "price_below"} or level <= 0:
+            continue
+        buy_sell_point = re.sub(r"\s+", "", str(item.get("buy_sell_point") or "")).strip()
+        if buy_sell_point not in allowed_points:
+            buy_sell_point = ""
+        steps.append(
+            {
+                "id": re.sub(r"[^a-zA-Z0-9_-]", "", str(item.get("id") or f"s{len(steps) + 1}"))[:24],
+                "trigger": {"type": trigger_type, "level": round(level, 4)},
+                "display": re.sub(r"\s+", "", str(item.get("display") or "")).strip()[:42],
+                "then_watch": re.sub(r"\s+", "", str(item.get("then_watch") or "")).strip()[:48],
+                "fail_watch": re.sub(r"\s+", "", str(item.get("fail_watch") or "")).strip()[:48],
+                "buy_sell_point": buy_sell_point,
+            }
+        )
+        if len(steps) >= 4:
+            break
+    return {
+        "version": "watch_chain.v1",
+        "level": re.sub(r"\s+", "", str(raw_chain.get("level") or "5分钟")).strip()[:12],
+        "base_state": re.sub(r"\s+", "", str(raw_chain.get("base_state") or "")).strip()[:36],
+        "base_display": re.sub(r"\s+", "", str(raw_chain.get("base_display") or "")).strip()[:42],
+        "steps": steps,
     }
 
 
@@ -553,8 +756,46 @@ def _monitor_trigger_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]
     if isinstance(raw_triggers, list) and raw_triggers:
         return raw_triggers
     plan = payload.get("watch_plan") if isinstance(payload.get("watch_plan"), dict) else {}
+    machine = payload.get("watch_state_machine") if isinstance(payload.get("watch_state_machine"), dict) else {}
+    if not machine and isinstance(plan.get("watch_state_machine"), dict):
+        machine = plan.get("watch_state_machine") or {}
     levels = plan.get("key_levels") if isinstance(plan.get("key_levels"), list) else []
+    chain = plan.get("watch_chain") if isinstance(plan.get("watch_chain"), dict) else {}
     candidates = []
+    for item in machine.get("transitions") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+        trigger_type = _watch_level_trigger_type(raw_trigger)
+        price = _num(raw_trigger.get("level"))
+        if not trigger_type or price <= 0:
+            continue
+        message = str(item.get("observe") or item.get("next_watch") or item.get("next_state") or "结构触发")
+        candidates.append(
+            {
+                "type": trigger_type,
+                "level": price,
+                "message_on_trigger": message,
+                "action_on_trigger": "关注",
+            }
+        )
+    for item in chain.get("steps") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+        trigger_type = _watch_level_trigger_type(raw_trigger)
+        price = _num(raw_trigger.get("level"))
+        if not trigger_type or price <= 0:
+            continue
+        message = str(item.get("display") or item.get("then_watch") or "触发关键位")
+        candidates.append(
+            {
+                "type": trigger_type,
+                "level": price,
+                "message_on_trigger": message,
+                "action_on_trigger": item.get("action_on_trigger") or "关注",
+            }
+        )
     for item in levels:
         if not isinstance(item, dict):
             continue
@@ -675,7 +916,10 @@ def _is_semantically_invalid_monitor_trigger(trigger_type: str, action: str, mes
 
 def _normalize_monitor_action(action: str) -> str:
     """把交易动作统一成教练语气，避免前端显示成机械指令。"""
-    action = _normalize_watchboard_action(action)
+    raw_action = str(action or "").strip()
+    action = _normalize_watchboard_action(raw_action)
+    if action == "观望" and raw_action not in {"观望", "继续观望"}:
+        return "关注"
     if action in {"加仓", "考虑加仓"}:
         return "考虑加仓"
     if action in {"减仓", "考虑减仓"}:
@@ -688,8 +932,18 @@ def _normalize_monitor_action(action: str) -> str:
 def _normalize_watchboard_action(action: str) -> str:
     action = str(action or "").strip()
     action = re.split(r"[，,。；;：:\\s]", action, maxsplit=1)[0].strip()
+    if not action:
+        return ""
+    if re.search(r"\d|%|盈|亏|浮盈|浮亏|成本|仓位", action):
+        return "持仓观望"
     if action in {"买入", "开仓", "建仓"}:
         return "考虑建仓"
+    if action == "加仓":
+        return "考虑加仓"
+    if action == "减仓":
+        return "考虑减仓"
+    if action == "止损":
+        return "考虑止损"
     if action == "卖出":
         return "考虑减仓"
     if action == "清仓":
@@ -698,7 +952,26 @@ def _normalize_watchboard_action(action: str) -> str:
         return "继续持有"
     if action in {"持仓观望", "持仓观察"}:
         return "持仓观望"
-    return action
+    allowed = {
+        "观望",
+        "观察",
+        "关注",
+        "继续观望",
+        "重点跟踪",
+        "等待确认",
+        "等待回踩",
+        "考虑建仓",
+        "继续持有",
+        "持仓观望",
+        "考虑加仓",
+        "考虑减仓",
+        "考虑止损",
+        "考虑做T",
+        "等待接回",
+        "风险收缩",
+        "收紧防守",
+    }
+    return action if action in allowed else "观望"
 
 
 def get_latest_unified_reasoning(*, user_id: int, symbol: str) -> dict[str, Any] | None:

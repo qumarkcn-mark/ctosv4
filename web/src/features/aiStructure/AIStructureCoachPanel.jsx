@@ -43,6 +43,7 @@ export default function AIStructureCoachPanel({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false)
   const [reminders, setReminders] = useState([])
   const [activeSessionId, setActiveSessionId] = useState('')
+  const [unifiedReasoning, setUnifiedReasoning] = useState(null)
   const mountedRef = useRef(true)
   const symbolRef = useRef(symbol)
   const messagesRef = useRef(null)
@@ -50,6 +51,7 @@ export default function AIStructureCoachPanel({
   const displayName = symbolName || symbol
   const pollingActive = pollUntil > Date.now() && shouldPollContextStatus(status)
   const reasoningContext = status?.context || null
+  const detailReasoningContext = unifiedReasoning
   const aiReasoningReady = isAiReasoningReady(status)
   const canAsk = Boolean(status?.context && aiReasoningReady)
   const displayStatus = status?.context && !aiReasoningReady
@@ -72,6 +74,37 @@ export default function AIStructureCoachPanel({
       if (mountedRef.current) setStatus(json.data)
     } catch (err) {
       if (mountedRef.current) setError(err?.message || 'AI 结构状态读取失败')
+    }
+  }, [symbol])
+
+  const loadUnifiedReasoning = useCallback(async () => {
+    if (!symbol) return null
+    try {
+      const json = await apiJson(`${API_BASE}/ai-structure/unified-reasoning/full/${encodeURIComponent(symbol)}`)
+      const data = json.data || {}
+      const summary = data.summary || {}
+      const next = {
+        context_id: data.context_id || '',
+        prompt_version: 'unified_reasoning.v2.full_text',
+        updated_at: data.updated_at || '',
+        summary_text: summary.coach_summary || summary.card_summary || '',
+        main_level: summary.main_level || '',
+        reasoning: {
+          ...summary,
+          version: 'unified_reasoning.v2.full_text',
+          reasoning_meta: { provider: 'llm', llm_status: 'success' },
+          full_text: data.full_text || '',
+        },
+      }
+      if (mountedRef.current && sameSymbol(data.symbol || symbol, symbolRef.current)) {
+        setUnifiedReasoning(next)
+      }
+      return next
+    } catch {
+      if (mountedRef.current && sameSymbol(symbol, symbolRef.current)) {
+        setUnifiedReasoning(null)
+      }
+      return null
     }
   }, [symbol])
 
@@ -98,6 +131,22 @@ export default function AIStructureCoachPanel({
       onEvidenceContext?.(json.data)
     }
   }, [symbol, onEvidenceContext])
+
+  const loadCurrentQuote = useCallback(async () => {
+    if (!symbol) return {}
+    try {
+      const quote = await apiJson(`${API_BASE}/data/price/${encodeURIComponent(symbol)}`)
+      const price = Number(quote?.price || 0)
+      return {
+        current_price: price > 0 ? price : undefined,
+        quote_time: quote?.quote_time || undefined,
+        change_pct: quote?.change_pct,
+        price_source: price > 0 ? 'ai_workspace_quote' : undefined,
+      }
+    } catch {
+      return {}
+    }
+  }, [symbol])
 
   const loadChatHistory = useCallback(async () => {
     if (!symbol) return
@@ -152,11 +201,13 @@ export default function AIStructureCoachPanel({
     setSuggestionsOpen(false)
     setReminders([])
     setActiveSessionId('')
+    setUnifiedReasoning(null)
     onEvidenceContext?.(null)
     if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
       applyWorkspaceSymbolState(workspaceSymbolState)
     }
     loadStatus()
+    loadUnifiedReasoning()
     loadReminders()
     loadChatHistory()
     return () => {
@@ -165,6 +216,7 @@ export default function AIStructureCoachPanel({
   }, [
     symbol,
     loadStatus,
+    loadUnifiedReasoning,
     loadReminders,
     loadChatHistory,
     onEvidenceContext,
@@ -217,29 +269,28 @@ export default function AIStructureCoachPanel({
   }, [symbol, booting, pollingActive, loadStatus, onWorkspaceRefresh])
 
   const regenerateReasoning = useCallback(async () => {
-    if (!symbol || regenerating || pollingActive) return
+    if (!symbol || regenerating) return
     setRegenerating(true)
     setError('')
     try {
-      await apiJson(`${API_BASE}/ai-structure/contexts/regenerate`, {
+      await apiJson(`${API_BASE}/ai-structure/unified-reasoning/trigger`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbols: [symbol],
           levels: CONTEXT_LEVELS,
-          reason: 'web_ai_structure_regenerate',
-          force_rebuild: true,
-          priority: 100,
+          trigger_reason: 'manual_full_reasoning',
+          force: true,
         }),
       })
-      setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
+      await loadUnifiedReasoning()
       await loadStatus()
     } catch (err) {
       setError(err?.message || '重新生成推演失败')
     } finally {
       setRegenerating(false)
     }
-  }, [symbol, regenerating, pollingActive, loadStatus])
+  }, [symbol, regenerating, loadStatus, loadUnifiedReasoning])
 
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
@@ -264,10 +315,16 @@ export default function AIStructureCoachPanel({
     setError('')
     setInput('')
     try {
+      const quotePayload = await loadCurrentQuote()
       const json = await apiJson(`${API_BASE}/ai-structure/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, question, session_id: activeSessionId || undefined }),
+        body: JSON.stringify({
+          symbol,
+          question,
+          session_id: activeSessionId || undefined,
+          ...quotePayload,
+        }),
       })
       const answer = json.data
       setActiveSessionId(answer.session_id || activeSessionId)
@@ -285,7 +342,7 @@ export default function AIStructureCoachPanel({
       setLoading(false)
       setActiveQuestion('')
     }
-  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence, activeSessionId])
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, loadChartEvidence, activeSessionId, loadCurrentQuote])
 
   useEffect(() => {
     if (!pendingQuestion || loading || !canAsk) return
@@ -385,13 +442,13 @@ export default function AIStructureCoachPanel({
           <h3>{displayName}</h3>
         </div>
         <div className="ai-structure-head-actions">
-          {status?.context && (
+          {symbol && (
             <button
               type="button"
               onClick={regenerateReasoning}
-              disabled={regenerating || pollingActive || !symbol}
+              disabled={regenerating || !symbol}
             >
-              {regenerating || pollingActive ? '生成中' : '重新生成'}
+              {regenerating ? '生成中' : '重新生成'}
             </button>
           )}
           <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
@@ -408,15 +465,22 @@ export default function AIStructureCoachPanel({
         context={reasoningContext}
       />
 
+      <DataLineageStrip
+        status={status}
+        context={detailReasoningContext || reasoningContext}
+        messages={messages}
+      />
+
       <StatusNotice
         status={status}
         pollingActive={pollingActive}
         onRetry={regenerateReasoning}
         retrying={regenerating}
+        hasUnifiedReasoning={Boolean(detailReasoningContext)}
       />
 
-      <ReasoningBrief context={reasoningContext} status={status} />
-      <WatchPlanPanel context={reasoningContext} />
+      <ReasoningBrief context={detailReasoningContext} status={status} />
+      <WatchPlanPanel context={detailReasoningContext} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
@@ -509,7 +573,6 @@ function ReasoningBrief({ context, status }) {
         <strong>当前推演</strong>
         <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
       </div>
-      <DataFreshnessStrip status={status} context={context} />
       {summary && <p className={isUnified ? 'is-one-line' : ''}>{summary}</p>}
       {growthText && (
         <div className="ai-reasoning-growth">
@@ -640,7 +703,6 @@ function fallbackTextWatchLevels(reasoning = {}) {
     const before = text.slice(Math.max(0, start - 10), start)
     const after = text.slice(end, Math.min(text.length, end + 14))
     if (isTimeframeNumber(before, after)) return
-    const nearby = `${before}${match[1]}${after}`
     const type = inferWatchLevelType(before, after)
     if (!type) return
     seen.add(key)
@@ -692,18 +754,77 @@ function formatPlanPrice(value) {
   return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
 }
 
-function DataFreshnessStrip({ status, context }) {
-  const rows = buildFreshnessRows(status, context)
-  if (!rows.length) return null
+function DataLineageStrip({ status, context, messages }) {
+  const items = buildDataLineageItems(status, context, messages)
+  if (!items.length) return null
   return (
-    <div className="ai-data-freshness" aria-label="推演数据截止时间">
-      {rows.map((item) => (
-        <span key={item.level} className={item.stale ? 'is-stale' : ''}>
-          {formatLevel(item.level)} {formatAsOf(item.data_as_of)}
+    <div className="ai-data-lineage" aria-label="推演、结构图和盘中观察的数据状态">
+      {items.map((item) => (
+        <span key={item.key} className={`ai-data-lineage-pill ai-data-lineage-pill--${item.tone}`}>
+          <em>{item.label}</em>
+          <strong>{item.value}</strong>
         </span>
       ))}
     </div>
   )
+}
+
+function buildDataLineageItems(status, context, messages = []) {
+  const items = []
+  const freshness = primaryFreshness(status, context)
+  const ai = aiReasoning(status)
+  if (!context) {
+    items.push({ key: 'reasoning', label: '推演', value: '待生成', tone: 'muted' })
+  } else if (!ai.ready) {
+    items.push({ key: 'reasoning', label: '推演', value: ai.status === 'failed' ? '失败' : '生成中', tone: ai.status === 'failed' ? 'error' : 'warn' })
+  } else {
+    items.push({
+      key: 'reasoning',
+      label: '推演',
+      value: freshness.label === '待生成' ? formatAsOf(context.updated_at) || '已生成' : freshness.label,
+      tone: freshness.stale || status?.status === 'stale' ? 'warn' : 'ready',
+    })
+  }
+
+  const latestRows = status?.level_freshness || []
+  const latestPrimary = primaryFreshness(
+    { ...status, stale_levels: [], status: latestRows.length ? 'fresh' : status?.status },
+    { snapshots: latestRows },
+  )
+  const snapshotValue = latestPrimary.label && latestPrimary.label !== '待生成'
+    ? latestPrimary.label
+    : status?.missing_levels?.length
+      ? `缺${formatLevels(status.missing_levels)}`
+      : '待生成'
+  items.push({
+    key: 'snapshot',
+    label: '快照',
+    value: snapshotValue,
+    tone: status?.missing_levels?.length ? 'warn' : 'muted',
+  })
+  items.push({
+    key: 'preview',
+    label: '图',
+    value: 'preview',
+    tone: 'muted',
+  })
+
+  const coverage = latestIntradayCoverage(messages)
+  if (coverage) {
+    items.push({
+      key: 'intraday',
+      label: '盘中',
+      value: coverage,
+      tone: coverage === 'full' ? 'ready' : coverage === 'none' ? 'muted' : 'warn',
+    })
+  }
+  return items
+}
+
+function latestIntradayCoverage(messages = []) {
+  const assistant = [...messages].reverse().find((item) => item?.role === 'assistant' && item.answer)
+  const quality = assistant?.answer?.intraday_observation?.coverage?.quality
+  return quality ? String(quality) : ''
 }
 
 function buildFreshnessRows(status, context) {
@@ -845,8 +966,8 @@ function ThinkingStatusBar({ phase, elapsedSeconds }) {
   )
 }
 
-function StatusNotice({ status, pollingActive, onRetry, retrying }) {
-  const notice = statusNotice(status, pollingActive)
+function StatusNotice({ status, pollingActive, onRetry, retrying, hasUnifiedReasoning = false }) {
+  const notice = statusNotice(status, pollingActive, { hasUnifiedReasoning })
   if (!notice) return null
   return (
     <div className={`ai-status-notice ai-status-notice--${notice.tone}`}>
@@ -855,8 +976,8 @@ function StatusNotice({ status, pollingActive, onRetry, retrying }) {
         <span>{notice.text}</span>
       </div>
       {notice.retryable && (
-        <button type="button" onClick={onRetry} disabled={retrying || pollingActive}>
-          {retrying || pollingActive ? '生成中' : '重新生成'}
+        <button type="button" onClick={onRetry} disabled={retrying}>
+          {retrying ? '生成中' : '重新生成'}
         </button>
       )}
     </div>
@@ -1100,7 +1221,8 @@ function emptyText(status, pollingActive) {
   return '还没有结构上下文。可以直接提问，我会先生成再回答。'
 }
 
-function statusNotice(status, pollingActive) {
+function statusNotice(status, pollingActive, options = {}) {
+  const hasUnifiedReasoning = Boolean(options.hasUnifiedReasoning)
   if (!status && !pollingActive) return null
   const reason = statusReason(status)
   const ai = aiReasoning(status)
@@ -1141,6 +1263,7 @@ function statusNotice(status, pollingActive) {
         text: `${formatLevels(status.stale_levels)} 结构还没追上最新 K 线，当前推演先按旧快照展示；刷新完成后会重跑上下文。`,
       }
     }
+    if (hasUnifiedReasoning) return null
     return {
       tone: 'warn',
       title: '基于上一版结构',

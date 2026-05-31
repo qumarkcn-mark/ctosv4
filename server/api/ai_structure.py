@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from server import config
@@ -19,6 +20,7 @@ from server.engines.ai_native.structure_chat_service import (
     answer_structure_question,
     list_chat_messages,
     list_chat_sessions,
+    stream_structure_question,
 )
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
@@ -50,6 +52,7 @@ from server.engines.ai_native.structure_reminder_service import (
     list_structure_reminders,
 )
 from server.engines.ai_native.intraday_event_service import build_intraday_event_state
+from server.engines.ai_native.intraday_snapshot_hydrator import hydrate_intraday_snapshot
 from server.engines.ai_native.unified_reasoning_service import (
     ALL_UNIFIED_FULL_TEXT_VERSIONS,
     ALL_UNIFIED_REASONING_VERSIONS,
@@ -111,6 +114,11 @@ class StructureChatRequest(BaseModel):
     symbol: str
     question: str = Field(min_length=1, max_length=500)
     session_id: Optional[str] = None
+    current_price: Optional[float] = None
+    quote_time: Optional[str] = None
+    change_pct: Optional[float] = None
+    price_source: Optional[str] = None
+    thinking_enabled: bool = False  # 深度推演模式（DeepSeek-R1 + thinking）
 
 
 class UnifiedReasoningRequest(BaseModel):
@@ -441,12 +449,41 @@ def chat(request: StructureChatRequest, current_user_id: int = Depends(get_curre
             symbol=normalize_symbol(request.symbol),
             question=request.question,
             session_id=request.session_id,
+            current_price=request.current_price,
+            quote_time=request.quote_time,
+            change_pct=request.change_pct,
+            price_source=request.price_source,
+            thinking_enabled=request.thinking_enabled,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="context not found")
     return {"status": "success", "data": result}
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: StructureChatRequest, current_user_id: int = Depends(get_current_user_id)):
+    async def event_stream():
+        try:
+            async for event in stream_structure_question(
+                user_id=current_user_id,
+                symbol=normalize_symbol(request.symbol),
+                question=request.question,
+                session_id=request.session_id,
+                current_price=request.current_price,
+                quote_time=request.quote_time,
+                change_pct=request.change_pct,
+                price_source=request.price_source,
+                thinking_enabled=request.thinking_enabled,
+            ):
+                event_name = str(event.get("event") or "message")
+                data = {key: value for key, value in event.items() if key != "event"}
+                yield f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        except ValueError as exc:
+            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/chat/sessions/{symbol}")
@@ -549,6 +586,22 @@ def momentum_context(
     )
     if not result:
         raise HTTPException(status_code=404, detail="momentum context not found")
+    return {"status": "success", "data": result}
+
+
+@router.get("/intraday-snapshot/{symbol}")
+def intraday_snapshot(
+    symbol: str,
+    trade_date: Optional[str] = Query(default=None, description="YYYY-MM-DD；不填则使用今天"),
+    recent_bar_count: int = Query(default=80, ge=0, le=120),
+):
+    """Return today's read-only 1m intraday facts for plan validation."""
+    result = hydrate_intraday_snapshot(
+        normalize_symbol(symbol),
+        trade_date=trade_date,
+        include_recent_bars=recent_bar_count > 0,
+        recent_bar_count=recent_bar_count,
+    )
     return {"status": "success", "data": result}
 
 
