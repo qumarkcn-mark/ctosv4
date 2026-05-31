@@ -45,8 +45,8 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
   const summary = item.reasoning_summary || {}
   const message = machine.available ? (machine.displayLine || summary.one_liner || '等待关键位') : '暂无状态机数据'
   const rawAction = summary.action || machine.actionLabel || '观望'
-  const triggerLine = machine.available ? (summary.card_secondary || machine.nextWatchLine) : ''
-  const triggerLabel = summary.card_secondary ? '转化' : (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '状态') : '后续')
+  const triggerLine = machine.available ? machine.nextWatchLine : ''
+  const triggerLabel = machine.nextWatchLabel || (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '已越过') : '等待')
   const position = item.position
   const action = normalizeCurrentAction(rawAction, Boolean(position?.shares))
   const quoteTime = item.price_data?.quote_time || ''

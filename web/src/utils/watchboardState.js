@@ -87,6 +87,13 @@ function stateMachineTransitionLine(transition, fallback = '') {
   return String(transition.observe || transition.next_state || transition.next_watch || fallback || '').trim()
 }
 
+function stateMachineTriggerLabel(transition) {
+  const trigger = transition?.trigger || {}
+  if (!trigger?.level) return ''
+  const verb = trigger.type === 'price_below' ? '跌破' : '站上'
+  return `${verb}${formatWatchPrice(trigger.level)}`
+}
+
 function stateMachineKind(transition) {
   const id = String(transition?.id || '')
   const state = String(transition?.next_state || '')
@@ -110,6 +117,7 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
   let activeTransition = active
   let displayLine = stateMachineBaseLine(machine) || item?.reasoning_summary?.one_liner || '等待关键位'
   let nextWatchLine = ''
+  let nextWatchLabel = ''
   let actionLabel = item?.reasoning_summary?.action || '观察'
   let isFreshTrigger = false
 
@@ -119,7 +127,13 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
     state = kind === 'down' ? 'alert' : 'confirmed'
     priority = kind === 'down' ? 2 : 1
     displayLine = stateMachineTransitionLine(active, displayLine)
-    nextWatchLine = isFreshTrigger ? (active.success || active.failure || active.next_watch || '') : ''
+    nextWatchLabel = isFreshTrigger ? '触发' : '已越过'
+    nextWatchLine = active.success || active.failure || active.next_watch || active.observe || ''
+  } else if (nearest) {
+    nextWatchLabel = '等待'
+    const triggerLabel = stateMachineTriggerLabel(nearest)
+    const line = stateMachineTransitionLine(nearest, nearest.then_watch || nearest.next_watch || '')
+    nextWatchLine = [triggerLabel, line].filter(Boolean).join('：')
   }
 
   return {
@@ -131,6 +145,7 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
     distancePct: nearest?.distancePct ?? null,
     displayLine,
     nextWatchLine,
+    nextWatchLabel,
     actionLabel,
     range,
     currentState: current,
