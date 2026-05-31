@@ -51,7 +51,6 @@ from server.engines.ai_native.structure_reminder_service import (
     create_reminder_from_chat_evidence,
     list_structure_reminders,
 )
-from server.engines.ai_native.intraday_event_service import build_intraday_event_state
 from server.engines.ai_native.intraday_snapshot_hydrator import hydrate_intraday_snapshot
 from server.engines.ai_native.unified_reasoning_service import (
     ALL_UNIFIED_FULL_TEXT_VERSIONS,
@@ -181,8 +180,6 @@ async def watchboard(current_user_id: int = Depends(get_current_user_id)):
                 cost = _num(item["position"].get("cost"))
                 if cost > 0:
                     item["position"]["pnl_pct"] = round((_num(item["price"]) - cost) / cost * 100, 2)
-            _apply_nearest_watch_levels(item)
-            item["intraday_event_state"] = build_intraday_event_state(item)
     return {
         "status": "success",
         "data": {
@@ -920,8 +917,6 @@ def _attach_watchboard_reasoning(item: dict, reasoning: dict | None, *, conn=Non
     summary = (reasoning or {}).get("summary") or {}
     safe_summary = dict(summary)
     safe_summary["monitor_conditions"] = normalize_monitor_conditions(summary.get("monitor_conditions") or {})
-    if not safe_summary["monitor_conditions"]["triggers"]:
-        safe_summary["monitor_conditions"] = _fallback_monitor_conditions_from_key_boundaries(summary)
     enriched["reasoning_summary"] = _watchboard_summary(safe_summary, reasoning or {})
     enriched["reasoning_freshness"] = _watchboard_reasoning_freshness(enriched, reasoning or {}, conn=conn)
     enriched["monitor_conditions"] = safe_summary["monitor_conditions"]
@@ -947,6 +942,8 @@ def _watchboard_summary(summary: dict, reasoning: dict) -> dict:
         "one_liner": card_summary[:42] if card_summary else _compact_watchboard_line(one_liner, (reasoning or {}).get("full_reasoning_text") or ""),
         "action": summary.get("card_action") or summary.get("action") or "",
         "action_detail": summary.get("action_detail") or "",
+        "card_secondary": summary.get("card_secondary") or "",
+        "watch_state_machine": summary.get("watch_state_machine") or (summary.get("watch_plan") or {}).get("watch_state_machine") or {},
         "key_level_down": key_down,
         "key_level_down_meaning": summary.get("key_level_down_meaning") or "下方关键位",
         "key_level_up": key_up,

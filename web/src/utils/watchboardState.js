@@ -6,182 +6,183 @@ export function formatWatchPrice(value, options = {}) {
   return fixed.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
 }
 
-export function findActiveTrigger(item, currentPrice) {
-  const price = Number(currentPrice || 0)
-  if (!price) return null
-  const triggers = item?.monitor_conditions?.triggers || []
-  const active = []
-  for (const trigger of triggers) {
-    const level = Number(trigger.level || 0)
-    if (!level) continue
-    if (trigger.type === 'price_below' && price <= level) active.push({ trigger, level })
-    if (trigger.type === 'price_above' && price >= level) active.push({ trigger, level })
-  }
-  if (!active.length) return null
-  const invalid = active
-    .filter((item) => isInvalidTrigger(item.trigger))
-    .sort((a, b) => Math.abs(price - a.level) - Math.abs(price - b.level))
-  if (invalid.length) return invalid[0].trigger
-  const confirmed = active
-    .filter((item) => item.trigger.type === 'price_above')
-    .sort((a, b) => Math.abs(price - a.level) - Math.abs(price - b.level))
-  if (confirmed.length) return confirmed[0].trigger
-  return active.sort((a, b) => Math.abs(price - a.level) - Math.abs(price - b.level))[0].trigger
-}
-
-function triggerMessage(trigger) {
-  return String(trigger?.message_on_trigger || '')
-}
-
-function triggerDisplayLine(trigger, fallback) {
-  return triggerMessage(trigger) || fallback
-}
-
-function isInvalidTrigger(trigger) {
-  if (!trigger || trigger.type !== 'price_below') return false
-  const action = String(trigger.action_on_trigger || '')
-  const message = triggerMessage(trigger)
-  return /止损/.test(action) || /失效|止损|破位/.test(message)
-}
-
-function collectWatchLevels(item) {
+export function extractWatchStateMachine(item) {
   const summary = item?.reasoning_summary || {}
-  const triggers = item?.monitor_conditions?.triggers || []
-  const levels = []
+  const direct = summary.watch_state_machine || {}
+  const nested = summary.watch_plan?.watch_state_machine || {}
+  const machine = direct?.version ? direct : nested
+  if (!machine || typeof machine !== 'object') return null
+  const transitions = Array.isArray(machine.transitions) ? machine.transitions : []
+  if (!transitions.length && !machine.current_state?.display && !machine.current_state?.name) return null
+  return machine
+}
 
-  for (const trigger of triggers) {
-    const level = Number(trigger.level || 0)
-    if (!level) continue
-    levels.push({
-      level,
-      type: trigger.type,
-      trigger,
-      direction: trigger.type === 'price_above' ? 'above' : 'below',
+function collectStateMachineTransitions(machine) {
+  return (Array.isArray(machine?.transitions) ? machine.transitions : [])
+    .map((transition) => {
+      const trigger = transition?.trigger || {}
+      const type = String(trigger.type || '')
+      const level = Number(trigger.level || 0)
+      if (!level || !['price_above', 'price_below'].includes(type)) return null
+      return {
+        ...transition,
+        trigger: { type, level },
+        direction: type === 'price_above' ? 'above' : 'below',
+      }
     })
-  }
-
-  const down = Number(summary.key_level_down || 0)
-  if (down) levels.push({ level: down, type: 'price_below', direction: 'below' })
-  const up = Number(summary.key_level_up || 0)
-  if (up) levels.push({ level: up, type: 'price_above', direction: 'above' })
-
-  return levels
-    .filter((item, index, self) => self.findIndex((other) => other.level === item.level && other.type === item.type) === index)
-    .sort((a, b) => a.level - b.level)
+    .filter(Boolean)
 }
 
-function nearestWatchLevel(item, price) {
-  const levels = collectWatchLevels(item)
-  if (!price || !levels.length) return null
-  let nearest = null
-  for (const level of levels) {
-    const distancePct = Math.abs(price - level.level) / price
-    if (!nearest || distancePct < nearest.distancePct) {
-      nearest = { ...level, distancePct }
-    }
-  }
-  return nearest
+function crossedStateMachineTransition(machine, price, previousPrice) {
+  const transitions = collectStateMachineTransitions(machine)
+  const prev = Number(previousPrice || 0)
+  if (!price || !prev || !transitions.length) return null
+  const crossed = transitions
+    .filter((transition) => (
+      transition.trigger.type === 'price_above'
+        ? prev < transition.trigger.level && price >= transition.trigger.level
+        : prev > transition.trigger.level && price <= transition.trigger.level
+    ))
+    .sort((a, b) => Math.abs(price - a.trigger.level) - Math.abs(price - b.trigger.level))
+  return crossed[0] || null
 }
 
-function formatLevelPair(summary) {
-  const down = Number(summary.key_level_down || 0)
-  const up = Number(summary.key_level_up || 0)
-  if (down && up) return `${formatWatchPrice(down)} / ${formatWatchPrice(up)}`
-  if (down) return formatWatchPrice(down)
-  if (up) return formatWatchPrice(up)
-  return ''
+function activeStateMachineTransition(machine, price) {
+  const transitions = collectStateMachineTransitions(machine)
+  if (!price || !transitions.length) return null
+  const active = transitions
+    .filter((transition) => (
+      transition.trigger.type === 'price_above'
+        ? price >= transition.trigger.level
+        : price <= transition.trigger.level
+    ))
+    .sort((a, b) => Math.abs(price - a.trigger.level) - Math.abs(price - b.trigger.level))
+  return active[0] || null
 }
 
-export function computeTacticalState(item, currentPrice, options = {}) {
+function nearestStateMachineTransition(machine, price) {
+  const transitions = collectStateMachineTransitions(machine)
+  if (!price || !transitions.length) return null
+  return transitions
+    .map((transition) => ({ ...transition, distancePct: Math.abs(price - transition.trigger.level) / price }))
+    .sort((a, b) => a.distancePct - b.distancePct)[0] || null
+}
+
+function stateMachineBaseLine(machine) {
+  const current = machine?.current_state || {}
+  return String(current.display || current.name || '').trim()
+}
+
+function stateMachineRange(machine) {
+  const range = machine?.current_state?.range
+  if (!Array.isArray(range) || range.length < 2) return null
+  const low = Number(range[0] || 0)
+  const high = Number(range[1] || 0)
+  if (!low || !high || low === high) return null
+  return { low: Math.min(low, high), high: Math.max(low, high) }
+}
+
+function stateMachineTransitionLine(transition, fallback = '') {
+  if (!transition) return fallback
+  return String(transition.observe || transition.next_state || transition.next_watch || fallback || '').trim()
+}
+
+function stateMachineKind(transition) {
+  const id = String(transition?.id || '')
+  const state = String(transition?.next_state || '')
+  if (/down|下|跌|破|支撑|转弱/.test(`${id}${state}`)) return 'down'
+  if (/pressure|冲|上|突破|离开|增强/.test(`${id}${state}`)) return 'up'
+  return transition?.trigger?.type === 'price_below' ? 'down' : 'up'
+}
+
+export function computeStateMachineState(item, currentPrice, previousPrice) {
   const price = Number(currentPrice || item?.price || 0)
-  const summary = item?.reasoning_summary || {}
-  const nearThreshold = Number(options.nearThreshold ?? 0.02)
-  const activeTrigger = findActiveTrigger(item, price)
-  const nearest = nearestWatchLevel(item, price)
-  const distancePct = nearest?.distancePct ?? null
-  const baseAction = summary.action || '观望'
+  const prevPrice = Number(previousPrice || item?.previous_price || 0)
+  const machine = extractWatchStateMachine(item)
+  if (!machine || !price) return { available: false }
 
-  if (!price) {
-    return {
-      state: 'idle',
-      priority: 0,
-      activeTrigger: null,
-      nearestLevel: nearest,
-      distancePct,
-      displayLine: summary.one_liner || '等待价格数据',
-      actionLabel: baseAction,
-    }
+  const current = machine.current_state || {}
+  const active = activeStateMachineTransition(machine, price)
+  const nearest = nearestStateMachineTransition(machine, price)
+  const range = stateMachineRange(machine)
+  let state = 'idle'
+  let priority = 0
+  let activeTransition = active
+  let displayLine = stateMachineBaseLine(machine) || item?.reasoning_summary?.one_liner || '等待关键位'
+  let nextWatchLine = ''
+  let actionLabel = item?.reasoning_summary?.action || '观察'
+  let isFreshTrigger = false
+
+  if (active) {
+    isFreshTrigger = crossedStateMachineTransition(machine, price, prevPrice)?.id === active.id
+    const kind = stateMachineKind(active)
+    state = kind === 'down' ? 'alert' : 'confirmed'
+    priority = kind === 'down' ? 2 : 1
+    displayLine = stateMachineTransitionLine(active, displayLine)
+    nextWatchLine = isFreshTrigger ? (active.success || active.failure || active.next_watch || '') : ''
   }
 
-  if (isInvalidTrigger(activeTrigger)) {
-    return {
-      state: 'invalid',
-      priority: 3,
-      activeTrigger,
-      nearestLevel: nearest,
-      distancePct: 0,
-      displayLine: triggerDisplayLine(activeTrigger, `跌破 ${formatWatchPrice(activeTrigger.level)}，路径失效`),
-      actionLabel: activeTrigger.action_on_trigger || '止损',
-    }
-  }
-
-  if (activeTrigger?.type === 'price_above') {
-    return {
-      state: 'confirmed',
-      priority: 1,
-      activeTrigger,
-      nearestLevel: nearest,
-      distancePct: 0,
-      displayLine: triggerDisplayLine(activeTrigger, `站上 ${formatWatchPrice(activeTrigger.level)}，确认增强`),
-      actionLabel: activeTrigger.action_on_trigger || baseAction,
-    }
-  }
-
-  if (activeTrigger?.type === 'price_below') {
-    return {
-      state: 'near',
-      priority: 2,
-      activeTrigger,
-      nearestLevel: nearest,
-      distancePct: 0,
-      displayLine: triggerDisplayLine(activeTrigger, `触及 ${formatWatchPrice(activeTrigger.level)}，观察承接`),
-      actionLabel: activeTrigger.action_on_trigger || '关注',
-    }
-  }
-
-  if (nearest && distancePct <= nearThreshold) {
-    const verb = nearest.direction === 'above' ? '接近压力' : '接近支撑'
-    const fallbackLine = `${verb} ${formatWatchPrice(nearest.level)}，观察反应`
-    return {
-      state: 'near',
-      priority: 2,
-      activeTrigger: nearest.trigger || null,
-      nearestLevel: nearest,
-      distancePct,
-      displayLine: nearest.trigger ? triggerDisplayLine(nearest.trigger, fallbackLine) : fallbackLine,
-      actionLabel: nearest.trigger?.action_on_trigger || '关注',
-    }
-  }
-
-  const levels = formatLevelPair(summary)
   return {
-    state: 'idle',
-    priority: 0,
-    activeTrigger: null,
-    nearestLevel: nearest,
-    distancePct,
-    displayLine: summary.one_liner || (levels ? `等待接近 ${levels}` : '等待关键位'),
-    actionLabel: baseAction,
+    available: true,
+    state,
+    priority,
+    activeTransition,
+    nearestTransition: nearest,
+    distancePct: nearest?.distancePct ?? null,
+    displayLine,
+    nextWatchLine,
+    actionLabel,
+    range,
+    currentState: current,
+    previousPrice: prevPrice || null,
+    isFreshTrigger,
   }
 }
 
-export function computeCardState(item, currentPrice) {
-  const tactical = computeTacticalState(item, currentPrice)
+export function computeCardState(item, currentPrice, previousPrice) {
+  const tactical = computeStateMachineState(item, currentPrice, previousPrice)
   const map = {
     idle: 'normal',
+    alert: 'alert',
     near: 'alert',
     invalid: 'danger',
     confirmed: 'confirm',
   }
   return map[tactical.state] || 'normal'
+}
+
+export function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
+  const price = Number(currentPrice || item?.price || 0)
+  const machine = computeStateMachineState(item, price, previousPrice)
+  if (!machine.available) return ''
+  const transition = machine.activeTransition || machine.nearestTransition || null
+  const trigger = transition.trigger || {}
+  const triggerText = trigger.type === 'price_below' ? '跌破' : '站上'
+  const level = trigger.level ? formatWatchPrice(trigger.level) : ''
+  const rangeText = machine.range
+    ? `当前状态区间${formatWatchPrice(machine.range.low)}-${formatWatchPrice(machine.range.high)}`
+    : ''
+  const modeText = machine.activeTransition
+    ? machine.isFreshTrigger
+      ? `当前价${formatWatchPrice(price, { fixed: true })}刚刚${triggerText}${level}`
+      : `当前价${formatWatchPrice(price, { fixed: true })}已经在${level}${trigger.type === 'price_below' ? '下方' : '上方'}，这是越过关键位后的状态复核`
+    : `当前价${formatWatchPrice(price, { fixed: true })}尚未触发状态机分支${level ? `，最近观察位是${triggerText}${level}` : ''}`
+  const parts = [
+    `请做盘中1分钟复核：${modeText}`,
+    rangeText,
+    machine.displayLine ? `当前状态：${machine.displayLine}` : '',
+    transition?.observe ? `接下来观察：${transition.observe}` : '',
+    transition?.success ? `如果确认成功，下一步看：${transition.success}` : '',
+    transition?.failure ? `如果确认失败，下一步看：${transition.failure}` : '',
+    transition?.next_watch ? `后续观察：${transition.next_watch}` : '',
+    '请优先结合当前价、5分钟/30分钟结构和上一版完整推演判断现在是承接、反抽、背驰、震荡延续，还是已经确认/失败；如果盘中1分钟K线、1分钟MACD和日内路径已经有足够数据，再作为细节复核；最后给出接下来最关键的观察点。',
+  ]
+  return parts.filter(Boolean).join('；')
+}
+
+export function intradayReviewLabel(item, currentPrice, previousPrice) {
+  const machine = computeStateMachineState(item, currentPrice, previousPrice)
+  if (!machine.available) return ''
+  if (!machine.activeTransition) return '1m区间复核'
+  return machine.isFreshTrigger ? '1m复核触发' : '1m状态复核'
 }
