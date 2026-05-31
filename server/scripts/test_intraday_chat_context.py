@@ -141,10 +141,11 @@ def _build_item(*, user_id: int, symbol: str, questions: list[str], mock_price: 
 
 
 def _mock_intraday_observation(symbol: str, price: float) -> dict[str, Any]:
+    now = datetime.now().replace(second=0, microsecond=0)
     quote = {
         "price": price,
-        "trade_datetime": "2026-05-22 14:30:00",
-        "quote_time": "14:30:00",
+        "trade_datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "quote_time": now.strftime("%H:%M:%S"),
         "source": "mock_intraday_quote",
     }
     return get_intraday_observation_snapshot(symbol, quote=quote)
