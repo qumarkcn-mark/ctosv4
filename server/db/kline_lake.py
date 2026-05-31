@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -492,6 +493,8 @@ def query_klines(
         }
         for row in reversed(rows)
     ]
+    if freq == "week":
+        result = _collapse_week_rows(result)
     return result
 
 
@@ -527,11 +530,15 @@ def upsert_klines(
     with _write_locks[source]:
         conn = get_lake_write_connection(source)
         try:
+            if freq == "week":
+                rows = _collapse_week_rows(rows)
             data = [
                 (symbol, freq, r["date"], r["open"], r["high"], r["low"],
                  r["close"], r.get("volume", 0), r.get("amount", 0), adjustflag)
                 for r in rows
             ]
+            if freq == "week":
+                _delete_same_week_rows(conn, symbol=symbol, adjustflag=adjustflag, rows=rows)
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO klines
@@ -556,6 +563,100 @@ def upsert_klines(
             return len(data)
         finally:
             conn.close()
+
+
+def _delete_same_week_rows(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    adjustflag: str,
+    rows: list[dict],
+) -> None:
+    """Remove stale rolling weekly bars before writing a new weekly aggregate.
+
+    A current week bar is dated with the latest available trading day. Without
+    this cleanup, Monday/Tuesday/Wednesday post-market syncs can leave multiple
+    bars for the same trading week because the date changes every day.
+    """
+    incoming_buckets = {
+        bucket
+        for bucket in (_week_bucket(row.get("date")) for row in rows)
+        if bucket
+    }
+    if not incoming_buckets:
+        return
+    existing = conn.execute(
+        """
+        SELECT date FROM klines
+         WHERE symbol = ? AND freq = 'week' AND adjustflag = ?
+        """,
+        (symbol, adjustflag),
+    ).fetchall()
+    stale_dates = [
+        row["date"]
+        for row in existing
+        if _week_bucket(row["date"]) in incoming_buckets
+    ]
+    if not stale_dates:
+        return
+    placeholders = ",".join("?" for _ in stale_dates)
+    conn.execute(
+        f"""
+        DELETE FROM klines
+         WHERE symbol = ? AND freq = 'week' AND adjustflag = ?
+           AND date IN ({placeholders})
+        """,
+        [symbol, adjustflag, *stale_dates],
+    )
+
+
+def _collapse_week_rows(rows: list[dict]) -> list[dict]:
+    """Collapse duplicate same-week rows into one OHLCV weekly bar.
+
+    Some upstream providers can return daily bars even when the request is
+    labelled as weekly. The data lake must still expose exactly one row per ISO
+    trading week for `freq=week`.
+    """
+    buckets: dict[tuple[int, int], list[dict]] = {}
+    passthrough: list[dict] = []
+    for row in sorted(rows or [], key=lambda item: str(item.get("date") or "")):
+        bucket = _week_bucket(row.get("date"))
+        if not bucket:
+            passthrough.append(row)
+            continue
+        buckets.setdefault(bucket, []).append(row)
+
+    collapsed = []
+    for bucket_rows in buckets.values():
+        first = bucket_rows[0]
+        last = bucket_rows[-1]
+        collapsed.append({
+            **last,
+            "date": last.get("date"),
+            "open": first.get("open"),
+            "high": max(_num(row.get("high")) for row in bucket_rows),
+            "low": min(_num(row.get("low")) for row in bucket_rows),
+            "close": last.get("close"),
+            "volume": sum(_num(row.get("volume")) for row in bucket_rows),
+            "amount": sum(_num(row.get("amount")) for row in bucket_rows),
+        })
+    return sorted([*passthrough, *collapsed], key=lambda item: str(item.get("date") or ""))
+
+
+def _week_bucket(value: object) -> tuple[int, int] | None:
+    try:
+        day = datetime.strptime(str(value or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    iso_year, iso_week, _ = day.isocalendar()
+    return iso_year, iso_week
+
+
+def _num(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def count_klines(symbol: str, freq: str, source: LakeSource = "baostock") -> int:

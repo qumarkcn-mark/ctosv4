@@ -556,7 +556,7 @@ export default function AIStructureCoachPanel({
       />
 
       <ReasoningBrief context={detailReasoningContext} status={status} />
-      <WatchPlanPanel context={detailReasoningContext} />
+      <WatchPlanPanel context={detailReasoningContext} status={status} />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
@@ -660,9 +660,10 @@ function ReasoningBrief({ context, status }) {
   )
 }
 
-function WatchPlanPanel({ context }) {
+function WatchPlanPanel({ context, status }) {
   if (!context) return null
   if (!isAiReasoningReady({ context })) return null
+  if (isStructureReasoningStale(status)) return null
   const reasoning = context.reasoning || context
   const plan = buildWatchPlan(reasoning, context)
   if (!plan.mainTask && !plan.levels.length && !plan.tPlan) return null
@@ -696,6 +697,15 @@ function WatchPlanPanel({ context }) {
   )
 }
 
+function isStructureReasoningStale(status) {
+  if (!status) return false
+  return (
+    status.status === 'stale' ||
+    Boolean(status.stale_levels?.length) ||
+    statusReason(status) === 'SOURCE_SNAPSHOT_CHANGED'
+  )
+}
+
 function buildWatchPlan(reasoning = {}, context = {}) {
   const watchPlan = reasoning.watch_plan || {}
   const monitorTriggers = (reasoning.monitor_conditions || {}).triggers || []
@@ -719,7 +729,7 @@ function buildWatchPlan(reasoning = {}, context = {}) {
         note: item.message_on_trigger,
         after: item.action_on_trigger,
       }))
-      : fallbackWatchLevels(reasoning, context)
+      : []
   return {
     mainTask,
     levels: keyLevels
@@ -728,85 +738,6 @@ function buildWatchPlan(reasoning = {}, context = {}) {
       .slice(0, 4),
     tPlan: watchPlan.t_plan?.enabled ? String(watchPlan.t_plan?.note || watchPlan.t_plan?.plan || '只在触发关键位后再结合分时确认').trim() : '',
   }
-}
-
-function fallbackWatchLevels(reasoning = {}, context = {}) {
-  const textLevels = fallbackTextWatchLevels(reasoning)
-  if (textLevels.length) return textLevels
-  const level = reasoning.main_level || context.main_level || context.boundary?.primary_level || ''
-  const center = (((context.boundary || {}).levels || {})[level] || {}).active_center || {}
-  const zg = Number(center.zg || 0)
-  const zd = Number(center.zd || 0)
-  const items = []
-  if (zg > 0) {
-    items.push({
-      type: 'pressure',
-      price: zg,
-      trigger: 'price_above',
-      note: `站上${formatLevel(level)}中枢上沿后再看增强确认`,
-    })
-  }
-  if (zd > 0) {
-    items.push({
-      type: 'support',
-      price: zd,
-      trigger: 'price_below',
-      note: `跌破${formatLevel(level)}中枢下沿后看结构是否转弱`,
-    })
-  }
-  return items
-}
-
-function fallbackTextWatchLevels(reasoning = {}) {
-  const growth = reasoning.trend_growth || {}
-  const text = [
-    growth.next_confirmation,
-    growth.growth_path,
-    growth.failure_path,
-    growth.current_state,
-  ].map((item) => String(item || '').trim()).filter(Boolean).join('。')
-  if (!text) return []
-  const matches = [...text.matchAll(/(?:^|[^\d])(\d{1,4}(?:\.\d{1,3})?)(?=[^\d]|$)/g)]
-  const items = []
-  const seen = new Set()
-  matches.forEach((match) => {
-    const price = Number(match[1])
-    if (!Number.isFinite(price) || price <= 0) return
-    const key = price.toFixed(3)
-    if (seen.has(key)) return
-    const start = (match.index || 0) + String(match[0] || '').lastIndexOf(match[1])
-    const end = start + match[1].length
-    const before = text.slice(Math.max(0, start - 10), start)
-    const after = text.slice(end, Math.min(text.length, end + 14))
-    if (isTimeframeNumber(before, after)) return
-    const type = inferWatchLevelType(before, after)
-    if (!type) return
-    seen.add(key)
-    items.push({
-      type,
-      price,
-      trigger: type === 'support' ? 'price_below' : 'price_above',
-      note: type === 'support'
-        ? `跌破 ${formatPlanPrice(price)} 后观察是否转弱`
-        : `站上 ${formatPlanPrice(price)} 后观察增强确认`,
-    })
-  })
-  return items.slice(0, 4)
-}
-
-function isTimeframeNumber(before, after) {
-  return /(?:^|[^A-Za-z])$/.test(before) && /^(f|分钟|分)/i.test(after)
-}
-
-function inferWatchLevelType(before, after) {
-  const local = `${before}${after}`
-  if (/跌破$|失守$|回踩$|支撑$|下沿$|防线$|承接$|考验$/.test(before)) return 'support'
-  if (/突破$|站稳$|站上$|攻击$|压力$|上沿$|冲击$|上破$|挑战$|受阻于$/.test(before)) return 'pressure'
-  if (/^(的突破|并站稳|后站稳|前高|压力|上沿)/.test(after)) return 'pressure'
-  if (/^(不破|确认走弱|支撑|下沿|后回落|附近回落)/.test(after)) return 'support'
-  if (/站稳|站上|突破|攻击|压力|上沿|冲击|上破|挑战|前高|受阻/.test(local)) return 'pressure'
-  if (/跌破|失守|支撑|下沿|回踩|防线|不破|承接|回拉|考验/.test(local)) return 'support'
-  return ''
 }
 
 function normalizeWatchLevel(item = {}) {

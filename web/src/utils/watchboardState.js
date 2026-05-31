@@ -47,19 +47,6 @@ function crossedStateMachineTransition(machine, price, previousPrice) {
   return crossed[0] || null
 }
 
-function activeStateMachineTransition(machine, price) {
-  const transitions = collectStateMachineTransitions(machine)
-  if (!price || !transitions.length) return null
-  const active = transitions
-    .filter((transition) => (
-      transition.trigger.type === 'price_above'
-        ? price >= transition.trigger.level
-        : price <= transition.trigger.level
-    ))
-    .sort((a, b) => Math.abs(price - a.trigger.level) - Math.abs(price - b.trigger.level))
-  return active[0] || null
-}
-
 function nearestStateMachineTransition(machine, price) {
   const transitions = collectStateMachineTransitions(machine)
   if (!price || !transitions.length) return null
@@ -109,7 +96,8 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
   if (!machine || !price) return { available: false }
 
   const current = machine.current_state || {}
-  const active = activeStateMachineTransition(machine, price)
+  const crossed = crossedStateMachineTransition(machine, price, prevPrice)
+  const active = crossed || null
   const nearest = nearestStateMachineTransition(machine, price)
   const range = stateMachineRange(machine)
   let state = 'idle'
@@ -122,18 +110,13 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
   let isFreshTrigger = false
 
   if (active) {
-    isFreshTrigger = crossedStateMachineTransition(machine, price, prevPrice)?.id === active.id
+    isFreshTrigger = true
     const kind = stateMachineKind(active)
     state = kind === 'down' ? 'alert' : 'confirmed'
     priority = kind === 'down' ? 2 : 1
     displayLine = stateMachineTransitionLine(active, displayLine)
-    nextWatchLabel = isFreshTrigger ? '触发' : '已越过'
+    nextWatchLabel = '触发'
     nextWatchLine = active.success || active.failure || active.next_watch || active.observe || ''
-  } else if (nearest) {
-    nextWatchLabel = '等待'
-    const triggerLabel = stateMachineTriggerLabel(nearest)
-    const line = stateMachineTransitionLine(nearest, nearest.then_watch || nearest.next_watch || '')
-    nextWatchLine = [triggerLabel, line].filter(Boolean).join('：')
   }
 
   return {
