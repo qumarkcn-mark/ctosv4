@@ -90,9 +90,18 @@ def reset_intraday_observation_cache(symbol: str | None = None) -> None:
 
 
 def _today_lake_1m_rows(symbol: str) -> list[dict[str, Any]]:
-    """Read today's closed 1m bars from realtime replay lakes if available."""
+    """Read today's 1m bars without letting partial preview rows hide TDX rows."""
     today = datetime.now().strftime("%Y-%m-%d")
-    for source, adjustflag in (("qmt", "3"), ("tdx", "3"), ("tdx", "2")):
+    rows_by_date: dict[str, dict[str, Any]] = {}
+
+    # Formal/post-market TDX rows win for the same minute because they carry the
+    # complete OHLCV bar. QMT preview rows are still appended for minutes that
+    # TDX has not written yet during the live session.
+    for source, adjustflag, replace_existing in (
+        ("tdx", "3", True),
+        ("tdx", "2", True),
+        ("qmt", "3", False),
+    ):
         try:
             rows = query_klines(
                 symbol,
@@ -106,9 +115,13 @@ def _today_lake_1m_rows(symbol: str) -> list[dict[str, Any]]:
             rows = []
         normalized = [_lake_1m_row(symbol, row, source=source, adjustflag=adjustflag) for row in rows]
         normalized = [row for row in normalized if row]
-        if normalized:
-            return normalized[-360:]
-    return []
+        for row in normalized:
+            date = row.get("date")
+            if not date:
+                continue
+            if replace_existing or date not in rows_by_date:
+                rows_by_date[date] = row
+    return [rows_by_date[key] for key in sorted(rows_by_date)][-360:]
 
 
 def _lake_1m_row(symbol: str, row: dict[str, Any], *, source: str, adjustflag: str) -> dict[str, Any]:
