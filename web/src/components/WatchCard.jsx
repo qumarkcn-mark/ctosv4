@@ -38,12 +38,27 @@ function normalizeCurrentAction(action, hasPosition = false) {
   return text
 }
 
+function missingStateMachineMessage(summary = {}) {
+  const status = String(summary.extract_status || '').trim()
+  if (!summary.one_liner && !summary.watch_plan) return '暂无推演数据'
+  if (status === 'failed') return '状态机提取失败'
+  return '暂无状态机数据'
+}
+
+function missingStateMachineMeta(summary = {}) {
+  const status = String(summary.extract_status || '').trim()
+  if (!summary.one_liner && !summary.watch_plan) return '无推演'
+  if (status === 'failed') return '提取失败'
+  if (status === 'missing_state_machine') return '无状态机'
+  return '无状态机'
+}
+
 export default function WatchCard({ item, currentPrice, previousPrice, onClick }) {
   const price = Number(currentPrice || item.price || 0)
   const machine = computeStateMachineState(item, price, previousPrice)
   const state = machine.available ? machine.state : 'idle'
   const summary = item.reasoning_summary || {}
-  const message = machine.available ? (machine.displayLine || summary.one_liner || '等待关键位') : '暂无状态机数据'
+  const message = machine.available ? (machine.displayLine || summary.one_liner || '等待关键位') : missingStateMachineMessage(summary)
   const rawAction = summary.action || machine.actionLabel || '观望'
   const triggerLine = machine.available ? machine.nextWatchLine : ''
   const triggerLabel = machine.nextWatchLabel || (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '已越过') : '等待')
@@ -112,7 +127,7 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
       <div className="watch-card-bottom">
         {!hasRangeLevels && (
           <div className="watch-card-levels">
-            <span className="watch-card-no-level">{machine.available ? '无区间数据' : '无状态机'}</span>
+            <span className="watch-card-no-level">{machine.available ? '无区间数据' : missingStateMachineMeta(summary)}</span>
           </div>
         )}
         <span className={`watch-action-badge action-${actionClass(action)}`}>当前：{action}</span>
