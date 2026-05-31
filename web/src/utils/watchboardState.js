@@ -169,7 +169,16 @@ export function computeCardState(item, currentPrice, previousPrice) {
 export function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
   const price = Number(currentPrice || item?.price || 0)
   const machine = computeStateMachineState(item, price, previousPrice)
-  if (!machine.available) return ''
+  if (!machine.available) {
+    const summary = item?.reasoning_summary || {}
+    const currentLine = String(summary.one_liner || '').trim()
+    const parts = [
+      `请做盘中1分钟复核：当前价${formatWatchPrice(price, { fixed: true })}`,
+      currentLine ? `上一版卡片主线：${currentLine}` : '',
+      '这只票当前没有卡片状态机数据，不要硬套触发分支；请直接结合上一版完整推演、当前价、盘中1分钟/5分钟/30分钟事实，判断当下走势是在承接、反抽、背驰、震荡延续，还是已经发生结构变化；最后给出接下来最关键的一两个观察点。',
+    ]
+    return parts.filter(Boolean).join('；')
+  }
   const transition = machine.activeTransition || machine.nearestTransition || null
   const trigger = transition.trigger || {}
   const triggerText = trigger.type === 'price_below' ? '跌破' : '站上'
@@ -197,7 +206,7 @@ export function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
 
 export function intradayReviewLabel(item, currentPrice, previousPrice) {
   const machine = computeStateMachineState(item, currentPrice, previousPrice)
-  if (!machine.available) return ''
+  if (!machine.available) return '1m盘中复核'
   if (!machine.activeTransition) return '1m区间复核'
   return machine.isFreshTrigger ? '1m复核触发' : '1m状态复核'
 }
