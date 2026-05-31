@@ -27,9 +27,15 @@ def hydrate_intraday_snapshot(
     """Return a compact 1m preview snapshot for intraday reasoning."""
     canonical = normalize_symbol(symbol)
     target_date, date_basis = _resolve_target_date(canonical, trade_date)
+    prefer_qmt_preview = bool(trade_date) or target_date == datetime.now().strftime("%Y-%m-%d")
     rows = [
         _normalize_1m_row(row, canonical)
-        for row in _read_1m_rows_for_date(canonical, target_date, limit=max(int(limit), 240))
+        for row in _read_1m_rows_for_date(
+            canonical,
+            target_date,
+            limit=max(int(limit), 240),
+            prefer_qmt_preview=prefer_qmt_preview,
+        )
     ]
     rows = [
         row
@@ -89,6 +95,15 @@ def _resolve_target_date(symbol: str, trade_date: str | None) -> tuple[str, str]
 
 
 def _latest_available_1m_date(symbol: str) -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        rows = query_klines(symbol, "1", limit=1, adjustflag="3", source="qmt")
+    except Exception:
+        rows = []
+    if rows:
+        date = str(rows[-1].get("date") or "")[:10]
+        if date == today:
+            return date
     for row in read_tdx_1m_klines(symbol, limit=1):
         date = str(row.get("date") or "")[:10]
         if date:
@@ -105,7 +120,28 @@ def _latest_available_1m_date(symbol: str) -> str:
     return ""
 
 
-def _read_1m_rows_for_date(symbol: str, target_date: str, *, limit: int) -> list[dict[str, Any]]:
+def _read_1m_rows_for_date(
+    symbol: str,
+    target_date: str,
+    *,
+    limit: int,
+    prefer_qmt_preview: bool = False,
+) -> list[dict[str, Any]]:
+    if prefer_qmt_preview:
+        try:
+            qmt_rows = query_klines(
+                symbol,
+                "1",
+                start_date=target_date,
+                end_date=f"{target_date} 15:00:00",
+                limit=limit,
+                adjustflag="3",
+                source="qmt",
+            )
+        except Exception:
+            qmt_rows = []
+        if qmt_rows:
+            return [dict(row, adjustflag="3", source="qmt_lake_1m_preview") for row in qmt_rows]
     rows = read_tdx_1m_klines(
         symbol,
         limit=limit,
