@@ -26,8 +26,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.db.database import DB_PATH
 from server.domain.symbols import normalize_symbol
-from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE, get_latest_snapshot
+from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE
 from server.engines.ai_native.structure_view_service import get_structure_view
+from server.engines.structure.canonical_structure_service import get_latest_structure
 
 
 DEFAULT_LEVELS = ["30", "day"]
@@ -50,7 +51,7 @@ def evaluate_next_gates(
     skipped = Counter()
 
     for pair in pairs:
-        row = get_latest_snapshot(symbol=pair["symbol"], level=pair["level"], compute_profile=DEFAULT_COMPUTE_PROFILE)
+        row = get_latest_structure(symbol=pair["symbol"], level=pair["level"], min_profile=DEFAULT_COMPUTE_PROFILE)
         view = get_structure_view(symbol=pair["symbol"], level=pair["level"], count=1200)
         if not row or not view:
             skipped["missing_view"] += 1
@@ -125,7 +126,7 @@ def current_gate_ladder(
 ) -> dict[str, Any] | None:
     """Build current upside / downside gate ladders for a symbol and level."""
     canonical = normalize_symbol(symbol)
-    row = get_latest_snapshot(symbol=canonical, level=level, compute_profile=DEFAULT_COMPUTE_PROFILE)
+    row = get_latest_structure(symbol=canonical, level=level, min_profile=DEFAULT_COMPUTE_PROFILE)
     view = get_structure_view(symbol=canonical, level=level, count=1200)
     if not row or not view:
         return None
@@ -191,7 +192,7 @@ def current_gate_focus(
         return None
 
     canonical = ladder["symbol"]
-    row = get_latest_snapshot(symbol=canonical, level=level, compute_profile=DEFAULT_COMPUTE_PROFILE)
+    row = get_latest_structure(symbol=canonical, level=level, min_profile=DEFAULT_COMPUTE_PROFILE)
     if not row:
         return None
     klines = list((row.get("snapshot") or {}).get("klines") or [])[-1200:]
@@ -292,7 +293,7 @@ def current_coach_gate_focus(
             _first_gate(structure.get("upside_gates")),
             side="upper",
             role="next_pressure",
-            reason="只有低一级重新转强后，才把上方压力区作为下一观察任务",
+            reason="只有低一级重新转强后，才把上方压力区作为下一关键分支",
         )
         task = "先观察低一级回落是否在下方支撑区承接；承接成立后，再观察上方压力区的试压与消化。"
         reason = "breakout_up_with_lower_level_pullback"
@@ -308,7 +309,7 @@ def current_coach_gate_focus(
             _first_gate(structure.get("downside_gates")),
             side="lower",
             role="next_support",
-            reason="只有低一级反抽失败后，才把下方支撑区作为下一观察任务",
+            reason="只有低一级反抽失败后，才把下方支撑区作为下一关键分支",
         )
         task = "先观察低一级反抽是否在上方压力区受阻；反抽失败后，再观察下方支撑区的止跌或跌破。"
         reason = "breakdown_down_with_lower_level_rebound"

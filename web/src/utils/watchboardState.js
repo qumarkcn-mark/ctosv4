@@ -158,7 +158,7 @@ export function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
     const parts = [
       `请做盘中1分钟复核：当前价${formatWatchPrice(price, { fixed: true })}`,
       currentLine ? `上一版卡片主线：${currentLine}` : '',
-      '这只票当前没有卡片状态机数据，不要硬套触发分支；请直接结合上一版完整推演、当前价、盘中1分钟/5分钟/30分钟事实，判断当下走势是在承接、反抽、背驰、震荡延续，还是已经发生结构变化；最后给出接下来最关键的一两个观察点。',
+      '这只票当前没有卡片关键分支数据，不要硬套触发分支；请直接结合上一版完整推演、当前价、盘中1分钟/5分钟/30分钟事实，判断当下走势是在承接、反抽、背驰、震荡延续，还是已经发生结构变化；最后给出接下来最关键的一两个观察点。',
     ]
     return parts.filter(Boolean).join('；')
   }
@@ -173,7 +173,7 @@ export function buildIntradayReviewQuestion(item, currentPrice, previousPrice) {
     ? machine.isFreshTrigger
       ? `当前价${formatWatchPrice(price, { fixed: true })}刚刚${triggerText}${level}`
       : `当前价${formatWatchPrice(price, { fixed: true })}已经在${level}${trigger.type === 'price_below' ? '下方' : '上方'}，这是越过关键位后的状态复核`
-    : `当前价${formatWatchPrice(price, { fixed: true })}尚未触发状态机分支${level ? `，最近观察位是${triggerText}${level}` : ''}`
+    : `当前价${formatWatchPrice(price, { fixed: true })}尚未触发关键分支${level ? `，最近观察位是${triggerText}${level}` : ''}`
   const parts = [
     `请做盘中1分钟复核：${modeText}`,
     rangeText,

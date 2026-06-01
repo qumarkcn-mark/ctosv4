@@ -23,7 +23,6 @@ from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
     JOB_ACTIVE_STATUSES,
-    get_latest_snapshot,
     get_snapshot_status,
     get_snapshot_status_batch,
     now_text,
@@ -1212,19 +1211,12 @@ def _has_configured_ai_native_key(user_id: int) -> bool:
 
 
 def _latest_snapshot_set(*, symbol: str, levels: list[str], compute_profile: str) -> dict[str, Any]:
-    snapshots = []
-    missing = []
-    for level in levels:
-        snapshot = get_latest_snapshot(symbol=symbol, level=level, compute_profile=compute_profile)
-        if snapshot:
-            snapshots.append(snapshot)
-        else:
-            missing.append(level)
-    return {
-        "snapshots": snapshots,
-        "snapshot_ids": [item["snapshot_id"] for item in snapshots],
-        "missing_levels": missing,
-    }
+    statuses = get_snapshot_status_batch(
+        symbols=[symbol],
+        levels=levels,
+        compute_profile=compute_profile,
+    ).get(normalize_symbol(symbol), {})
+    return _snapshot_set_from_statuses(levels=levels, status_items=statuses)
 
 
 def _snapshot_set_from_statuses(*, levels: list[str], status_items: dict[str, dict[str, Any]]) -> dict[str, Any]:

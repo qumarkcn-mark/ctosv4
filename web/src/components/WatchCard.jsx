@@ -41,16 +41,40 @@ function normalizeCurrentAction(action, hasPosition = false) {
 function missingStateMachineMessage(summary = {}) {
   const status = String(summary.extract_status || '').trim()
   if (!summary.one_liner && !summary.watch_plan) return '暂无推演数据'
-  if (status === 'failed') return '状态机提取失败'
-  return '暂无状态机数据'
+  if (status === 'failed') return '关键分支提取失败'
+  return '暂无关键分支数据'
 }
 
 function missingStateMachineMeta(summary = {}) {
   const status = String(summary.extract_status || '').trim()
   if (!summary.one_liner && !summary.watch_plan) return '无推演'
-  if (status === 'failed') return '提取失败'
-  if (status === 'missing_state_machine') return '无状态机'
-  return '无状态机'
+  if (status === 'failed') return '分支提取失败'
+  if (status === 'missing_state_machine') return '无关键分支'
+  return '无关键分支'
+}
+
+function formatMetaTime(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(5, 16)
+  return text.slice(0, 16)
+}
+
+function reasoningFreshnessMeta(item = {}, summary = {}) {
+  const freshness = item.reasoning_freshness || {}
+  const status = String(freshness.status || '').trim()
+  if (status === 'stale') {
+    return {
+      label: `旧推演${formatMetaTime(freshness.data_as_of) ? ` · ${formatMetaTime(freshness.data_as_of)}` : ''}`,
+      tone: 'stale',
+    }
+  }
+  if (status === 'ready') {
+    const value = formatMetaTime(freshness.data_as_of || summary.data_as_of || summary.generated_at)
+    return { label: value ? `同源 · ${value}` : '同源', tone: 'ready' }
+  }
+  if (status === 'missing') return { label: '无推演', tone: 'muted' }
+  return { label: '', tone: 'muted' }
 }
 
 export default function WatchCard({ item, currentPrice, previousPrice, onClick }) {
@@ -70,6 +94,7 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
   const hasPnlPct = position?.pnl_pct !== null && position?.pnl_pct !== undefined
   const hasNegativeCost = cost < 0
   const pnlLabel = pnlPct >= 0 ? '盈' : '亏'
+  const freshnessMeta = reasoningFreshnessMeta(item, summary)
 
   const minL = Number(machine.range?.low || 0)
   const maxL = Number(machine.range?.high || 0)
@@ -129,6 +154,9 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
           <div className="watch-card-levels">
             <span className="watch-card-no-level">{machine.available ? '无区间数据' : missingStateMachineMeta(summary)}</span>
           </div>
+        )}
+        {freshnessMeta.label && (
+          <span className={`watch-card-freshness is-${freshnessMeta.tone}`}>{freshnessMeta.label}</span>
         )}
         <span className={`watch-action-badge action-${actionClass(action)}`}>当前：{action}</span>
       </div>

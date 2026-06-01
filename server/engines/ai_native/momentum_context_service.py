@@ -11,9 +11,9 @@ from typing import Any
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
-    get_latest_snapshot,
 )
 from server.engines.ai_native.structure_view_service import get_structure_view
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -36,10 +36,10 @@ def get_momentum_context(
     if not structure_view:
         return None
 
-    snapshot_row = get_latest_snapshot(
+    snapshot_row = get_latest_structure(
         symbol=canonical,
         level=normalized_level,
-        compute_profile=compute_profile,
+        min_profile=compute_profile,
     )
     snapshot = (snapshot_row or {}).get("snapshot") or {}
     klines = list(snapshot.get("klines") or [])

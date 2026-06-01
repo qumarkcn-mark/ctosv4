@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE, DEFAULT_LEVELS, get_latest_snapshot
+from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE, DEFAULT_LEVELS
 from server.engines.ai_native.practical_evidence_hydrator import hydrate_practical_evidence
 from server.engines.ai_native.unified_reasoning_service import (
     _add_pressure_support_semantics,
@@ -24,6 +24,7 @@ from server.engines.ai_native.unified_reasoning_service import (
     _hydrate_structure_geometry,
     build_unified_reasoning_input,
 )
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -72,7 +73,7 @@ def _load_snapshots(symbol: str) -> dict[str, dict[str, Any]]:
     snapshots: dict[str, dict[str, Any]] = {}
     for level in DEFAULT_LEVELS:
         normalized = normalize_freq(level)
-        row = get_latest_snapshot(symbol=symbol, level=normalized, compute_profile=DEFAULT_COMPUTE_PROFILE)
+        row = get_latest_structure(symbol=symbol, level=normalized, min_profile=DEFAULT_COMPUTE_PROFILE)
         if row:
             snapshots[normalized] = row
     return snapshots

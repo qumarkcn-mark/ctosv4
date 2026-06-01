@@ -34,6 +34,7 @@ async def ensure_ai_structure_pipeline(
     compute_profile: str = DEFAULT_COMPUTE_PROFILE,
     priority: int = 85,
     reason: str = "ai_structure_pipeline_ensure",
+    allow_context_enqueue: bool = False,
 ) -> dict[str, Any]:
     """Ensure K-lines exist, then enqueue CZSC snapshots and AI contexts.
 
@@ -70,7 +71,7 @@ async def ensure_ai_structure_pipeline(
         compute_profile=compute_profile,
         priority=max(1, priority - 10),
         reason=reason,
-        allow_when_auto_disabled=False,
+        allow_when_auto_disabled=allow_context_enqueue,
     )
     if config.BAOSTOCK_AUTO_SYNC_ENABLED:
         _schedule_backfill_rewarm(

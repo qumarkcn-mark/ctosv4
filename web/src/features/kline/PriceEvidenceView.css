@@ -305,15 +305,6 @@
   pointer-events: none;
 }
 
-.base-kline__ai-evidence-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
 .base-kline__center {
   fill: rgba(200, 168, 50, 0.12);
   stroke: rgba(200, 168, 50, 0.58);
@@ -406,44 +397,6 @@
 
 .base-kline__momentum-leg.is-current text {
   fill: rgba(200, 168, 50, 0.98);
-}
-
-.base-kline__ai-evidence-center {
-  fill: rgba(59, 130, 246, 0.09);
-  stroke: rgba(96, 165, 250, 0.55);
-  stroke-width: 1.2;
-  stroke-dasharray: 6 4;
-}
-
-.base-kline__ai-evidence-line line {
-  stroke-width: 1.4;
-  vector-effect: non-scaling-stroke;
-}
-
-.base-kline__ai-evidence-line text {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
-  paint-order: stroke;
-  stroke: #08080a;
-  stroke-width: 3px;
-}
-
-.base-kline__ai-evidence-line.is-trigger line,
-.base-kline__ai-evidence-line.is-trigger text {
-  stroke: rgba(96, 165, 250, 0.88);
-  fill: rgba(96, 165, 250, 0.95);
-}
-
-.base-kline__ai-evidence-line.is-invalidation line,
-.base-kline__ai-evidence-line.is-invalidation text {
-  stroke: rgba(248, 113, 113, 0.88);
-  fill: rgba(248, 113, 113, 0.95);
-}
-
-.base-kline__ai-evidence-line.is-current_price line,
-.base-kline__ai-evidence-line.is-current_price text {
-  stroke: rgba(226, 232, 240, 0.58);
-  fill: rgba(226, 232, 240, 0.82);
 }
 
 .base-kline__loading,

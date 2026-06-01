@@ -37,7 +37,7 @@ const SUB_INDICATORS = [
   { value: 'NONE', label: '无' },
 ]
 
-export default function PriceEvidenceView({ symbol, symbolName, chartContext, onAddToWatchlist }) {
+export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist, onFirstPaint }) {
   const chartHostRef = useRef(null)
   const chartRef = useRef(null)
   const latestBarsRef = useRef([])
@@ -47,11 +47,11 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const structureViewRef = useRef(null)
   const momentumLayerRef = useRef(false)
   const momentumContextRef = useRef(null)
-  const aiEvidenceContextRef = useRef(null)
   const paneHeightRef = useRef(0)
   const requestRef = useRef(0)
   const structureRequestRef = useRef(0)
   const mountedRef = useRef(false)
+  const firstPaintNotifiedRef = useRef('')
   const initialPrefs = useMemo(() => readKlinePreferences(), [])
   const [period, setPeriod] = useState(() => normalizeKlinePeriod(initialPrefs.period))
   const [mainIndicator, setMainIndicator] = useState(() => normalizeIndicator(initialPrefs.mainIndicator, MAIN_INDICATORS, 'MA'))
@@ -67,14 +67,15 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
   const [structureOverlay, setStructureOverlay] = useState(null)
   const [momentumContext, setMomentumContext] = useState(null)
   const [momentumOverlay, setMomentumOverlay] = useState(null)
-  const [aiEvidenceOverlay, setAiEvidenceOverlay] = useState(null)
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 })
   const [structureStatus, setStructureStatus] = useState('idle')
   const [momentumStatus, setMomentumStatus] = useState('idle')
   const [addingToWatchlist, setAddingToWatchlist] = useState(false)
   const [watchlistMessage, setWatchlistMessage] = useState('')
+  const [barsReadyKey, setBarsReadyKey] = useState('')
   const activePeriod = useMemo(() => getKlinePeriod(period), [period])
   const supportsStructureLayers = activePeriod.supportsStructure !== false
+  const viewKey = `${symbol || ''}:${period}`
 
   const updatePaneHeights = useCallback(() => {
     const chart = chartRef.current
@@ -229,29 +230,6 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     setMomentumOverlay(legs.length ? { legs, verdict: context.verdict || {} } : null)
   }, [])
 
-  const updateAiEvidenceOverlay = useCallback(() => {
-    const chart = chartRef.current
-    const host = chartHostRef.current
-    const context = aiEvidenceContextRef.current
-    if (!chart || !host || !context || !chartContextMatchesPeriod(context, period)) {
-      setAiEvidenceOverlay(null)
-      return
-    }
-    const viewport = {
-      width: host.clientWidth,
-      height: host.clientHeight,
-      range: chart.getVisibleRange(),
-    }
-    const overlays = context.overlays || {}
-    const centerSource = overlays.active_center || null
-    const center = evidenceCenterToOverlay(chart, centerSource, viewport)
-    const lines = (Array.isArray(overlays.lines) ? overlays.lines : [])
-      .filter((item) => !isCenterBoundaryEvidence(item, centerSource))
-      .map((item) => evidenceLineToOverlay(chart, item, viewport))
-      .filter(Boolean)
-    setAiEvidenceOverlay(center || lines.length ? { center, lines, level: context.level } : null)
-  }, [period])
-
   const clampScrollBoundaries = useCallback(() => {
     const chart = chartRef.current
     const bars = latestBarsRef.current
@@ -271,8 +249,15 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     clampScrollBoundaries()
     updateStructureOverlay()
     updateMomentumOverlay()
-    updateAiEvidenceOverlay()
-  }, [clampScrollBoundaries, updateAiEvidenceOverlay, updateMomentumOverlay, updateStructureOverlay])
+  }, [clampScrollBoundaries, updateMomentumOverlay, updateStructureOverlay])
+
+  const notifyFirstPaint = useCallback((bars = []) => {
+    if (!symbol || !bars.length) return
+    const key = `${symbol}:${period}`
+    if (firstPaintNotifiedRef.current === key) return
+    firstPaintNotifiedRef.current = key
+    onFirstPaint?.({ symbol, period, barCount: bars.length })
+  }, [onFirstPaint, period, symbol])
 
   const loadQuote = useCallback(async () => {
     if (!symbol) return
@@ -295,12 +280,14 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
       if (requestRef.current !== requestId || !mountedRef.current) return []
       latestBarsRef.current = result.klines
       setBarCount(result.klines.length)
+      setBarsReadyKey(result.klines.length ? `${symbol}:${period}` : '')
       setError('')
       return result.klines
     } catch (err) {
       if (requestRef.current === requestId && mountedRef.current) {
         latestBarsRef.current = []
         setBarCount(0)
+        setBarsReadyKey('')
         setError(err?.message || 'K 线加载失败')
       }
       return []
@@ -323,6 +310,12 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     try {
       const view = await fetchStructureOverlay(symbol, period, KLINE_COUNT)
       if (structureRequestRef.current !== requestId || !mountedRef.current) return
+      if (view?.status === 'queued' || view?.status === 'missing_data') {
+        structureViewRef.current = null
+        setStructureView(null)
+        setStructureStatus(view.status)
+        return
+      }
       structureViewRef.current = view
       setStructureView(view)
       setStructureStatus('ready')
@@ -404,6 +397,12 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     if (!chart || !symbol) return
     chart.setSymbol({ ticker: symbol, name: symbolName || symbol, pricePrecision: 2, volumePrecision: 0 })
     chart.setPeriod({ type: activePeriod.chartType, span: activePeriod.chartSpan })
+    latestBarsRef.current = []
+    setBarsReadyKey('')
+    setStructureOverlay(null)
+    setMomentumOverlay(null)
+    setStructureStatus('idle')
+    setMomentumStatus('idle')
     chart.setDataLoader({
       getBars: async ({ callback }) => {
         const bars = await loadBars()
@@ -411,26 +410,36 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
         requestAnimationFrame(() => {
           chart.scrollToRealTime(0)
           handleChartViewportChange()
+          notifyFirstPaint(bars)
+          loadQuote()
         })
       },
     })
     chart.resetData()
-    loadQuote()
-  }, [activePeriod, handleChartViewportChange, loadBars, loadQuote, symbol, symbolName])
+  }, [activePeriod, handleChartViewportChange, loadBars, loadQuote, notifyFirstPaint, symbol, symbolName])
 
   useEffect(() => {
+    if (barsReadyKey !== viewKey) return undefined
     loadStructureOverlay()
     return () => {
       structureRequestRef.current += 1
     }
-  }, [loadStructureOverlay])
+  }, [barsReadyKey, loadStructureOverlay, viewKey])
+
+  useEffect(() => {
+    if (barsReadyKey !== viewKey || structureStatus !== 'queued') return undefined
+    const timer = window.setTimeout(() => {
+      loadStructureOverlay()
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [barsReadyKey, loadStructureOverlay, structureStatus, viewKey])
 
   useEffect(() => {
     let cancelled = false
     momentumContextRef.current = null
     setMomentumContext(null)
     setMomentumOverlay(null)
-    if (!symbol || !momentumLayer || !supportsStructureLayers) {
+    if (barsReadyKey !== viewKey || !symbol || !momentumLayer || !supportsStructureLayers) {
       setMomentumStatus('idle')
       return () => {
         cancelled = true
@@ -453,12 +462,7 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
     return () => {
       cancelled = true
     }
-  }, [momentumLayer, period, supportsStructureLayers, symbol, updateMomentumOverlay])
-
-  useEffect(() => {
-    aiEvidenceContextRef.current = chartContext || null
-    updateAiEvidenceOverlay()
-  }, [chartContext, updateAiEvidenceOverlay])
+  }, [barsReadyKey, momentumLayer, period, supportsStructureLayers, symbol, updateMomentumOverlay, viewKey])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -732,30 +736,6 @@ export default function PriceEvidenceView({ symbol, symbolName, chartContext, on
             ))}
           </svg>
         )}
-        {aiEvidenceOverlay && (
-          <svg
-            className="base-kline__ai-evidence-layer"
-            viewBox={`0 0 ${overlaySize.width || 1} ${overlaySize.height || 1}`}
-            aria-hidden="true"
-          >
-            {aiEvidenceOverlay.center && (
-              <rect
-                className="base-kline__ai-evidence-center"
-                x={aiEvidenceOverlay.center.x}
-                y={aiEvidenceOverlay.center.y}
-                width={aiEvidenceOverlay.center.width}
-                height={aiEvidenceOverlay.center.height}
-              />
-            )}
-            {aiEvidenceOverlay.lines.map((item) => (
-              <g key={item.key} className={`base-kline__ai-evidence-line is-${item.role}`}>
-                <line x1={item.x1} y1={item.y} x2={item.x2} y2={item.y} />
-                <text x={item.labelX} y={item.y - 7}>{item.label}</text>
-                <text x={item.labelX} y={item.y + 12}>{formatPrice(item.price)}</text>
-              </g>
-            ))}
-          </svg>
-        )}
         {loading && <div className="base-kline__loading">加载 K 线数据</div>}
         {error && <div className="base-kline__error">{error}</div>}
         {!loading && !error && barCount === 0 && (
@@ -916,85 +896,6 @@ function momentumLegToOverlay(chart, leg, viewport, kind) {
   }
 }
 
-function evidenceLineToOverlay(chart, item, viewport) {
-  const price = Number(item?.price)
-  if (!Number.isFinite(price) || price <= 0) return null
-  const point = chart.convertToPixel(
-    { dataIndex: Math.max(0, Math.floor((viewport.range.from + viewport.range.to) / 2)), value: price },
-    { paneId: CANDLE_PANE_ID, absolute: false }
-  )
-  if (!validPoint(point)) return null
-  const bounds = viewportBounds(viewport)
-  if (point.y < bounds.top || point.y > bounds.bottom) return null
-  const labelX = Math.max(12, Math.min(viewport.width - 76, viewport.width - 78))
-  return {
-    key: item.evidence_id || `${item.role}:${price}`,
-    role: item.role || 'default',
-    label: item.label || evidenceRoleLabel(item.role),
-    price,
-    y: point.y,
-    x1: 0,
-    x2: Math.max(0, viewport.width - 56),
-    labelX,
-  }
-}
-
-function isCenterBoundaryEvidence(item, center) {
-  if (!center) return false
-  const role = String(item?.role || '')
-  if (!['trigger', 'invalidation'].includes(role)) return false
-  const price = Number(item?.price)
-  const zg = Number(center?.zg)
-  const zd = Number(center?.zd)
-  if (!Number.isFinite(price)) return false
-  if (role === 'trigger' && Number.isFinite(zg)) return Math.abs(price - zg) < 0.0001
-  if (role === 'invalidation' && Number.isFinite(zd)) return Math.abs(price - zd) < 0.0001
-  return false
-}
-
-function evidenceCenterToOverlay(chart, item, viewport) {
-  const zd = Number(item?.zd)
-  const zg = Number(item?.zg)
-  if (!Number.isFinite(zd) || !Number.isFinite(zg) || zd <= 0 || zg <= 0) return null
-  const topPoint = chart.convertToPixel(
-    { dataIndex: Math.max(0, Math.floor((viewport.range.from + viewport.range.to) / 2)), value: Math.max(zd, zg) },
-    { paneId: CANDLE_PANE_ID, absolute: false }
-  )
-  const bottomPoint = chart.convertToPixel(
-    { dataIndex: Math.max(0, Math.floor((viewport.range.from + viewport.range.to) / 2)), value: Math.min(zd, zg) },
-    { paneId: CANDLE_PANE_ID, absolute: false }
-  )
-  if (!validPoint(topPoint) || !validPoint(bottomPoint)) return null
-  return clipRectToViewport({
-    x: 0,
-    y: Math.min(topPoint.y, bottomPoint.y),
-    width: Math.max(0, viewport.width - 56),
-    height: Math.abs(bottomPoint.y - topPoint.y) || 3,
-  }, viewport)
-}
-
-function chartContextMatchesPeriod(context, period) {
-  const level = String(context?.level || '')
-  const current = getKlinePeriod(period)?.apiInterval
-  if (!level || !current) return false
-  const aliases = {
-    m5: ['m5', '5', '5m'],
-    m15: ['m15', '15', '15m'],
-    m30: ['m30', '30', '30m'],
-    m60: ['m60', '60', '60m', '1h'],
-    day: ['day', 'd', '1d'],
-    week: ['week', 'w', '1w'],
-  }
-  return (aliases[current] || [current]).includes(level)
-}
-
-function evidenceRoleLabel(role) {
-  if (role === 'trigger') return '触发线'
-  if (role === 'invalidation') return '失败线'
-  if (role === 'current_price') return '当前价'
-  return 'AI证据'
-}
-
 function structureStatusLabel(status, view) {
   if (status === 'ready') {
     const biCount = view?.bis?.length || 0
@@ -1005,6 +906,8 @@ function structureStatusLabel(status, view) {
     return `${sourceLabel} · ${biCount} 笔`
   }
   if (status === 'loading') return '结构加载'
+  if (status === 'queued') return '结构生成中'
+  if (status === 'missing_data') return '结构数据未就绪'
   if (status === 'missing') return '实时结构失败'
   return ''
 }

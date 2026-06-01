@@ -17,8 +17,15 @@ from server.config import STRUCTURE_JOB_TIMEOUT_SECONDS
 from server.db.database import get_connection
 from server.domain.symbols import normalize_symbol
 from server.engines.structure import czsc_adapter
-from server.engines.structure.source_policy import resolve_structure_source_policy, structure_signature_for_policy
-from server.engines.structure.structure_key import COMPUTE_PROFILES, FORMAL_ADJUSTFLAG, FORMAL_SOURCE, normalize_freq, resolve_compute_bars
+from server.engines.structure.canonical_structure_service import (
+    CanonicalStructureError,
+    compute_and_persist_structure,
+    get_latest_structure,
+    save_canonical_snapshot,
+    signature_for_level,
+)
+from server.engines.structure.source_policy import structure_signature_for_policy
+from server.engines.structure.structure_key import COMPUTE_PROFILES, FORMAL_ADJUSTFLAG, FORMAL_SOURCE, normalize_freq
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))
@@ -615,50 +622,11 @@ async def run_snapshot_job(job: dict[str, Any]) -> dict[str, Any]:
 def run_snapshot_job_sync(job: dict[str, Any]) -> dict[str, Any]:
     job_id = job["job_id"]
     try:
-        current_signature = _signature_for_level(
+        snapshot = compute_and_persist_structure(
             symbol=job["symbol"],
             level=job["level"],
             compute_profile=job["compute_profile"],
-        )
-        if not current_signature.get("signature"):
-            _fail_job(job_id, code="NO_DATA", message="No CZSC input bars", retryable=False)
-            return {"status": "failed", "error_code": "NO_DATA"}
-        if current_signature["signature"] != job["data_signature"]:
-            _skip_job(job_id, reason="STALE_INPUT")
-            return {"status": "skipped", "reason": "STALE_INPUT"}
-
-        result = czsc_adapter.analyze_czsc_structure_sync(
-            job["symbol"],
-            levels=[job["level"]],
-            count=resolve_compute_bars(job["compute_profile"], job["level"]),
-            compute_profile=job["compute_profile"],
-        )
-        if result.get("error") == "CZSC_UNAVAILABLE":
-            _fail_job(job_id, code="CZSC_UNAVAILABLE", message="CZSC dependency unavailable", retryable=False)
-            return {"status": "failed", "error_code": "CZSC_UNAVAILABLE"}
-        level_payload = (result.get("levels") or {}).get(job["level"]) or {}
-        if level_payload.get("error"):
-            _fail_job(job_id, code=str(level_payload.get("error")), message=str(level_payload.get("message") or ""), retryable=True)
-            return {"status": "failed", "error_code": level_payload.get("error")}
-
-        raw_context = czsc_adapter.export_czsc_raw_bi_context_sync(
-            job["symbol"],
-            levels=[job["level"]],
-            count=resolve_compute_bars(job["compute_profile"], job["level"]),
-            compute_profile=job["compute_profile"],
-            precomputed_result=result,
-        )
-        snapshot = save_snapshot(
-            symbol=job["symbol"],
-            level=job["level"],
-            compute_profile=job["compute_profile"],
-            data_signature=job["data_signature"],
-            data_as_of=current_signature.get("last_date") or "",
-            snapshot_payload=level_payload,
-            raw_bi_context=raw_context,
-            engine_version=czsc_adapter.get_czsc_engine_version(),
-            adapter_version=czsc_adapter.ADAPTER_VERSION,
-            status="fresh",
+            expected_data_signature=job["data_signature"],
         )
         followup_context = _enqueue_followup_context_job(job)
         _complete_job(job_id, snapshot_id=snapshot["snapshot_id"])
@@ -667,6 +635,18 @@ def run_snapshot_job_sync(job: dict[str, Any]) -> dict[str, Any]:
             "snapshot_id": snapshot["snapshot_id"],
             "context_job": followup_context,
         }
+    except CanonicalStructureError as exc:
+        if exc.code == "NO_DATA":
+            _fail_job(job_id, code="NO_DATA", message=exc.message, retryable=False)
+            return {"status": "failed", "error_code": "NO_DATA"}
+        if exc.code == "STALE_INPUT":
+            _skip_job(job_id, reason="STALE_INPUT")
+            return {"status": "skipped", "reason": "STALE_INPUT"}
+        if exc.code == "CZSC_UNAVAILABLE":
+            _fail_job(job_id, code="CZSC_UNAVAILABLE", message=exc.message, retryable=False)
+            return {"status": "failed", "error_code": "CZSC_UNAVAILABLE"}
+        _fail_job(job_id, code=exc.code, message=exc.message[:300], retryable=True)
+        return {"status": "failed", "error_code": exc.code, "error_message": exc.message[:300]}
     except Exception as exc:
         _fail_job(job_id, code="ENGINE_ERROR", message=str(exc)[:300], retryable=True)
         return {"status": "failed", "error_code": "ENGINE_ERROR", "error_message": str(exc)[:300]}
@@ -687,83 +667,24 @@ def save_snapshot(
     error_code: str = "",
     error_message: str = "",
 ) -> dict[str, Any]:
-    canonical = normalize_symbol(symbol)
-    normalized_level = normalize_freq(level)
-    payload_json = json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    raw_json = json.dumps(raw_bi_context or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    fingerprint = stable_hash({
-        "engine": ENGINE,
-        "engine_version": engine_version,
-        "adapter_version": adapter_version,
-        "symbol": canonical,
-        "level": normalized_level,
-        "compute_profile": compute_profile,
-        "data_signature": data_signature,
-        "snapshot": snapshot_payload,
-    })
-    snapshot_id = f"czsc_snapshot_{fingerprint[:16]}"
-    now = now_text()
-    conn = get_connection()
-    try:
-        conn.execute(
-            """
-            INSERT INTO structure_snapshots (
-                snapshot_id, symbol, level, engine, engine_version, adapter_version,
-                compute_profile, data_signature, data_as_of, snapshot_json,
-                raw_bi_context_json, structure_fingerprint, status, error_code,
-                error_message, created_at, updated_at
-            )
-            VALUES (?, ?, ?, 'czsc', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol, level, engine, compute_profile, data_signature)
-            DO UPDATE SET
-                snapshot_id = excluded.snapshot_id,
-                engine_version = excluded.engine_version,
-                adapter_version = excluded.adapter_version,
-                data_as_of = excluded.data_as_of,
-                snapshot_json = excluded.snapshot_json,
-                raw_bi_context_json = excluded.raw_bi_context_json,
-                structure_fingerprint = excluded.structure_fingerprint,
-                status = excluded.status,
-                error_code = excluded.error_code,
-                error_message = excluded.error_message,
-                updated_at = excluded.updated_at
-            """,
-            (
-                snapshot_id,
-                canonical,
-                normalized_level,
-                engine_version,
-                adapter_version,
-                compute_profile,
-                data_signature,
-                data_as_of or "",
-                payload_json,
-                raw_json,
-                fingerprint,
-                status,
-                error_code,
-                error_message,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM structure_snapshots WHERE snapshot_id = ?", (snapshot_id,)).fetchone()
-        return _snapshot_row(row)
-    finally:
-        conn.close()
+    return save_canonical_snapshot(
+        symbol=symbol,
+        level=level,
+        compute_profile=compute_profile,
+        data_signature=data_signature,
+        data_as_of=data_as_of,
+        snapshot_payload=snapshot_payload,
+        raw_bi_context=raw_bi_context,
+        engine_version=engine_version,
+        adapter_version=adapter_version,
+        status=status,
+        error_code=error_code,
+        error_message=error_message,
+    )
 
 
 def _signature_for_level(*, symbol: str, level: str, compute_profile: str) -> dict[str, Any]:
-    compute_bars = resolve_compute_bars(compute_profile, level)
-    policy = resolve_structure_source_policy(
-        symbol=symbol,
-        level=level,
-        limit=compute_bars,
-    )
-    signature = get_kline_window_signature(symbol, level, limit=compute_bars, policy=policy)
-    signature["source_policy"] = policy
-    return signature
+    return signature_for_level(symbol=symbol, level=level, compute_profile=compute_profile)
 
 
 def get_kline_window_signature(
@@ -1007,7 +928,7 @@ def _dedupe_user_ids(raw_user_ids: list[Any]) -> list[int]:
 def _latest_snapshot_ids_for_context(*, symbol: str, compute_profile: str) -> list[str]:
     ids = []
     for level in DEFAULT_LEVELS:
-        snapshot = get_latest_snapshot(symbol=symbol, level=level, compute_profile=compute_profile)
+        snapshot = get_latest_structure(symbol=symbol, level=level, min_profile=compute_profile)
         if snapshot:
             ids.append(snapshot["snapshot_id"])
     return ids

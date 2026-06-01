@@ -1,7 +1,7 @@
 """Public CZSC structure view for Kline overlays.
 
-This service is read-only. Snapshot views consume persisted V5 CZSC snapshots;
-preview views can pass a live CZSC payload without persisting it.
+This service is read-only. Snapshot views consume canonical V5 CZSC snapshots;
+preview views can pass a snapshot-like payload that was warmed by read-through.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from typing import Any
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
-    get_latest_snapshot,
 )
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -27,10 +27,10 @@ def get_structure_view(
     """Return CZSC bi / segment / center geometry for chart display."""
     canonical = normalize_symbol(symbol)
     normalized_level = normalize_freq(level)
-    snapshot_row = get_latest_snapshot(
+    snapshot_row = get_latest_structure(
         symbol=canonical,
         level=normalized_level,
-        compute_profile=compute_profile,
+        min_profile=compute_profile,
     )
     if not snapshot_row:
         return None

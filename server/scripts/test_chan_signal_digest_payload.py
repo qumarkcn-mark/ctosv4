@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from server.engines.ai_native.chan_signal_digest import build_chan_signal_digest
-from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE, DEFAULT_LEVELS, get_latest_snapshot
+from server.engines.ai_native.czsc_snapshot_service import DEFAULT_COMPUTE_PROFILE, DEFAULT_LEVELS
 from server.engines.ai_native.unified_reasoning_service import build_unified_reasoning_input
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -61,7 +62,7 @@ def _load_snapshots(symbol: str) -> dict[str, dict[str, Any]]:
     snapshots = {}
     for level in DEFAULT_LEVELS:
         normalized = normalize_freq(level)
-        row = get_latest_snapshot(symbol=symbol, level=normalized, compute_profile=DEFAULT_COMPUTE_PROFILE)
+        row = get_latest_structure(symbol=symbol, level=normalized, min_profile=DEFAULT_COMPUTE_PROFILE)
         if row:
             snapshots[normalized] = row
     return snapshots

@@ -32,7 +32,7 @@ from server.services.tdx_minute_service import (
     read_tdx_derived_minute_klines,
     tdx_minute_status,
 )
-from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines
+from server.services.tdx_bridge_client import append_live_quote_1m_bar, fetch_tdx_klines, is_tdx_bridge_enabled
 from server.services.tdx_daily_sync_service import (
     get_sync_job,
     latest_sync_job,
@@ -287,6 +287,54 @@ def _query_tdx_display_klines(symbol: str, freq: str, count: int) -> list[dict]:
     return qfq_rows or raw_rows
 
 
+def _should_backfill_tdx_display_klines(rows: list[dict], count: int) -> bool:
+    """Treat tiny partial rows as a cache miss so local TDX can refill the chart."""
+    if not rows:
+        return True
+    requested = max(10, min(int(count or 0), 2000))
+    expected_floor = min(requested, 200)
+    return requested > 10 and len(rows) < expected_floor
+
+
+def _read_local_tdx_display_klines(symbol: str, freq: str, count: int) -> list[dict]:
+    """Read local TDX files for display only; never writes into the data lake."""
+    limit = max(10, min(int(count or 0), 5000))
+    if freq == "week":
+        return _tdx_week_rows_with_minute_day(symbol, limit=min(limit, 1200))
+    if freq == "day":
+        return _tdx_day_rows_with_minute_fallback(symbol, limit=limit)
+    if freq == "1":
+        return read_tdx_1m_klines(symbol, limit)
+    if freq in {"5", "15", "30", "60"}:
+        return read_tdx_derived_minute_klines(symbol, freq, limit=limit)
+    return []
+
+
+def _display_quality(
+    *,
+    source: str,
+    rows: list[dict],
+    requested_count: int,
+    fallback_used: bool = False,
+    warning: str = "",
+) -> dict:
+    status = "ok"
+    if not rows:
+        status = "missing"
+    elif _should_backfill_tdx_display_klines(rows, requested_count):
+        status = "partial"
+    return {
+        "status": status,
+        "source": source,
+        "row_count": len(rows or []),
+        "requested_count": int(requested_count or 0),
+        "fallback_used": bool(fallback_used),
+        "warning": warning,
+        "first": rows[0].get("date") if rows else "",
+        "last": rows[-1].get("date") if rows else "",
+    }
+
+
 def _query_qmt_today_1m_display_klines(symbol: str, count: int) -> list[dict]:
     """Read today's intraday preview 1m rows from qmt_lake for display only."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -441,13 +489,20 @@ async def query_klines(
     normalized_interval = _normalize_kline_query_interval(interval)
     canonical_symbol = normalize_symbol(symbol)
     freq = _interval_to_freq(normalized_interval)
+    data_quality = {}
     if normalized_interval == "m1":
         klines = await run_in_threadpool(_query_tdx_display_klines, canonical_symbol, freq, count)
-        if not klines:
-            klines = await fetch_tdx_klines(symbol, period="1m", count=count)
-        if not klines:
-            klines = await run_in_threadpool(read_tdx_1m_klines, symbol, count)
+        source = "tdx_lake"
+        fallback_used = False
+        if _should_backfill_tdx_display_klines(klines, count):
+            local_rows = await run_in_threadpool(_read_local_tdx_display_klines, canonical_symbol, freq, count)
+            if local_rows and len(local_rows) >= len(klines):
+                klines = local_rows
+                source = "tdx_local_display"
+                fallback_used = True
         qmt_preview = await run_in_threadpool(_query_qmt_today_1m_display_klines, canonical_symbol, count)
+        if qmt_preview:
+            source = f"{source}+qmt_lake_1m_preview"
         klines = _merge_m1_display_rows(klines, qmt_preview, count)
         quote = await get_current_price(canonical_symbol)
         if quote:
@@ -456,7 +511,16 @@ async def query_klines(
             except Exception:
                 pass
         klines = append_live_quote_1m_bar(klines, quote, symbol, count)
+        if quote:
+            source = f"{source}+live_quote"
         interval = "m1"
+        data_quality = _display_quality(
+            source=source,
+            rows=klines,
+            requested_count=count,
+            fallback_used=fallback_used,
+            warning="1分钟展示为盘中预览数据；正式盘后结构以 TDX 同步后的数据湖为准。" if fallback_used or qmt_preview or quote else "",
+        )
         if not klines:
             minute_status = await run_in_threadpool(tdx_minute_status, symbol)
             reason = minute_status.get("reason") or "NO_LOCAL_1M_ROWS"
@@ -471,19 +535,59 @@ async def query_klines(
             )
     else:
         klines = await run_in_threadpool(_query_tdx_display_klines, canonical_symbol, freq, count)
-        if not klines:
-            klines = await fetch_tdx_klines(canonical_symbol, period=TDX_PERIOD_BY_FREQ[freq], count=count)
-        if not klines:
-            _, klines = await run_in_threadpool(_sync_local_tdx_history_to_lake, canonical_symbol, freq, count)
+        source = "tdx_lake"
+        fallback_used = False
+        if _should_backfill_tdx_display_klines(klines, count):
+            local_rows = await run_in_threadpool(_read_local_tdx_display_klines, canonical_symbol, freq, count)
+            if local_rows and len(local_rows) >= len(klines):
+                klines = local_rows
+                source = "tdx_local_display"
+                fallback_used = True
+        data_quality = _display_quality(
+            source=source,
+            rows=klines,
+            requested_count=count,
+            fallback_used=fallback_used,
+            warning=(
+                "当前仅用于看图展示，未写入数据湖；如需生成结构和复权数据，请点击手动同步。"
+                if fallback_used
+                else ""
+            ),
+        )
         if not klines:
             raise HTTPException(
                 404,
-                f"无法获取 {symbol} 的 {normalized_interval} K线：TDX bridge 未返回数据，本地 .lc1 也无法派生该周期。",
+                _missing_tdx_kline_message(symbol, normalized_interval),
             )
         interval = normalized_interval
     if not klines:
         raise HTTPException(404, f"无法获取 {symbol} 的 {interval} K 线数据")
-    return {"symbol": symbol, "interval": interval, "count": len(klines), "klines": klines}
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "count": len(klines),
+        "klines": klines,
+        "data_quality": data_quality,
+    }
+
+
+def _missing_tdx_kline_message(symbol: str, interval: str) -> str:
+    minute_status = tdx_minute_status(symbol)
+    reason = minute_status.get("reason") or "NO_LOCAL_MINUTE_ROWS"
+    vipdoc = minute_status.get("vipdoc") or ""
+    path = minute_status.get("path") or ""
+    bridge_state = "TDX bridge 未配置" if not is_tdx_bridge_enabled() else "TDX bridge 未返回数据"
+    native_file = ".lc5" if interval == "m5" else ".lc1/.lc5"
+    details = f"{reason}"
+    if vipdoc:
+        details += f"，vipdoc={vipdoc}"
+    if path:
+        details += f"，path={path}"
+    return (
+        f"无法获取 {symbol} 的 {interval} K线：{bridge_state}，"
+        f"本地 TDX {native_file} 不可用（{details}）。"
+        "请先挂载 Windows new_tdx64/vipdoc 共享，或执行 TDX 盘后同步。"
+    )
 
 
 # ── K 线数据同步 ──

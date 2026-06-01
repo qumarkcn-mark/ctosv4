@@ -12,6 +12,8 @@ export const KLINE_PERIODS = [
 ]
 
 const PERIOD_BY_VALUE = new Map(KLINE_PERIODS.map((item) => [item.value, item]))
+const PRICE_CACHE_TTL_MS = 3_000
+const priceCache = new Map()
 
 export function normalizeKlinePeriod(value) {
   if (PERIOD_BY_VALUE.has(value)) return value
@@ -39,7 +41,12 @@ export async function fetchKlines(symbol, periodValue, count = 1200) {
 }
 
 export async function fetchCurrentPrice(symbol) {
-  return apiJson(`${API_BASE}/data/price/${encodeURIComponent(symbol)}`)
+  const key = String(symbol || '').trim()
+  const cached = priceCache.get(key)
+  if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL_MS) return cached.data
+  const data = await apiJson(`${API_BASE}/data/price/${encodeURIComponent(symbol)}`)
+  if (key) priceCache.set(key, { ts: Date.now(), data })
+  return data
 }
 
 export async function syncKlines(symbol, periodValue) {
