@@ -133,7 +133,7 @@ class T0SweeperWorker:
                         symbol=symbol,
                         signal="SWEEP",
                         signal_price=current_price,
-                        t0_qty=t0_qty,
+                        t0_qty=result.signal_qty or t0_qty,
                         tick_result=result,
                     )
                 except Exception as exc:

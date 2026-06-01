@@ -189,7 +189,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                     "time": bar_time,
                     "signal": result.signal,
                     "price": bar["close"],
-                    "qty": config.t0_qty,
+                    "qty": result.signal_qty or config.t0_qty,
                     "entry_price": result.entry_price,
                     "daily_pnl": result.daily_pnl,
                     "state": result.state,
@@ -326,7 +326,7 @@ def _safe_record(config: BacktestConfig, result, price: float, trade_num: int):
                 symbol=config.symbol,
                 signal=result.signal,
                 signal_price=price,
-                t0_qty=config.t0_qty,
+                t0_qty=result.signal_qty or config.t0_qty,
                 tick_result=result,
                 run_id=f"backtest_{config.symbol}_{config.start_date}",
             )

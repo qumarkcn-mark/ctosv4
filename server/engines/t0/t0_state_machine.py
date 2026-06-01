@@ -40,6 +40,7 @@ class T0TickResult:
     daily_trades: int
     daily_stop_count: int
     reason: str
+    signal_qty: Optional[int] = None
 
 
 class T0StateMachine:
@@ -58,14 +59,16 @@ class T0StateMachine:
 
     # 触发区阈值：距中枢边界在此比例内视为"进入触发区"
     TRIGGER_ZONE_RATIO = 0.005   # 0.5%
-    # 倒T高抛止盈目标：ZD（跌回 ZD 即买回）
-    # 正T低吸止盈目标：ZG（涨到 ZG 即卖出）
     # 结构止损缓冲倍数
     STRUCTURAL_STOP_ATR_MULT = 1.2
     # 灾难止损比率（入场价的 97%）
     CATASTROPHIC_STOP_RATIO = 0.97
     # 倒T止损：涨超 ZG × (1 + ATR 缓冲)
     SHORT_STOP_ATR_MULT = 1.2
+    # 笔振幅衰减阈值：当前向下笔振幅 / 上一笔振幅 < 此值才允许买入
+    BI_STRENGTH_VETO_THRESHOLD = 0.7
+    # 首次触碰 ZD 时的额度比例（未验证支撑，减半试探）
+    FIRST_TOUCH_QTY_RATIO = 0.5
 
     def __init__(self, symbol: str, t0_qty: int):
         """
@@ -86,6 +89,10 @@ class T0StateMachine:
         self._daily_pnl: float = 0.0
         self._daily_trades: int = 0
         self._daily_stop_count: int = 0
+        self._current_open_qty: int = t0_qty
+        # 笔动力学状态
+        self._zd_touch_count: int = 0      # 当前中枢 ZD 被触碰次数
+        self._last_pivot_zd: Optional[float] = None  # 上一次 tick 的 ZD，用于检测中枢漂移
 
     # ------------------------------------------------------------------ #
     #  公共接口
@@ -97,6 +104,9 @@ class T0StateMachine:
         self._state = T0State.IDLE
         self._entry_price = None
         self._target_price = None
+        self._current_open_qty = self.t0_qty
+        self._zd_touch_count = 0
+        self._last_pivot_zd = None
         self._stop_structural = None
         self._stop_catastrophic = None
         self._daily_pnl = 0.0
@@ -112,6 +122,7 @@ class T0StateMachine:
         pivot_zg: Optional[float],
         klines_1m: Optional[list] = None,
         atr_5m: Optional[float] = None,
+        bi_strength_ratio: Optional[float] = None,  # 笔振幅衰减比，None 表示无数据（跳过过滤）
     ) -> T0TickResult:
         """每次价格更新调用一次。
 
@@ -122,6 +133,10 @@ class T0StateMachine:
             pivot_zg: 5M 中枢上沿 ZG
             klines_1m: 最近 N 根已收盘 1M K线（时间升序）
             atr_5m: 5M 级 ATR（用于结构止损计算）
+            bi_strength_ratio: 当前向下笔振幅 / 上一向下笔振幅。
+                < BI_STRENGTH_VETO_THRESHOLD (0.7) = 空头动能衰减，允许开仓。
+                >= 0.7 = 空头仍在加速，拒绝买入。
+                None = 笔数据不足，跳过此过滤层。
 
         Returns:
             T0TickResult
@@ -145,14 +160,20 @@ class T0StateMachine:
         # 优先用 5M ATR（更稳定），无则用 1M ATR
         atr_ref = atr_5m if atr_5m and atr_5m > 0 else atr_1m
 
-        def make_result(signal=None, signal_price=None, reason=""):
+        def make_result(
+            signal=None,
+            signal_price=None,
+            reason="",
+            signal_qty: Optional[int] = None,
+            entry_price_for_result: Optional[float] = None,
+        ):
             return T0TickResult(
                 state=self._state.value,
                 signal=signal,
                 signal_price=signal_price,
                 pivot_zd=pivot_zd,
                 pivot_zg=pivot_zg,
-                entry_price=self._entry_price,
+                entry_price=entry_price_for_result if entry_price_for_result is not None else self._entry_price,
                 target_price=self._target_price,
                 stop_structural=self._stop_structural,
                 stop_catastrophic=self._stop_catastrophic,
@@ -162,6 +183,7 @@ class T0StateMachine:
                 daily_trades=self._daily_trades,
                 daily_stop_count=self._daily_stop_count,
                 reason=reason,
+                signal_qty=signal_qty,
             )
 
         # ---- 各状态处理 ----
@@ -179,15 +201,41 @@ class T0StateMachine:
         if not has_pivot or not viable:
             return make_result(reason=f"中枢无效或摩擦不足 viable={viable} spread={grid_spread:.3f} fps={fps:.4f}")
 
+        # 中枢漂移检测：若 ZD 发生变化，重置触碰计数器
+        if pivot_zd != self._last_pivot_zd:
+            self._zd_touch_count = 0
+            self._last_pivot_zd = pivot_zd
+
         # 正T触发：价格接近 ZD（支撑区低吸）
         zd_trigger = round(pivot_zd * (1 + self.TRIGGER_ZONE_RATIO), 6)
         if current_price <= zd_trigger + 1e-9:
-            # 检查 1M 底分型确认
+            # 第一层过滤：笔振幅衰减比（有数据时才过滤）
+            if bi_strength_ratio is not None and bi_strength_ratio >= self.BI_STRENGTH_VETO_THRESHOLD:
+                return make_result(
+                    reason=f"笔动能未衰减（空头加速中），拒绝开仓。"
+                           f"bi_ratio={bi_strength_ratio:.2f} >= {self.BI_STRENGTH_VETO_THRESHOLD}。"
+                           f"等待向下笔力度收缩。"
+                )
+
+            # 第二层过滤：1M 底分型右侧确认
             if klines_1m and len(klines_1m) >= 3:
                 bottom = validate_1m_bottom_fractal(klines_1m)
                 if bottom["confirmed"]:
-                    return self._open_long(current_price, pivot_zd, pivot_zg, atr_ref, fps, make_result,
-                                           f"1M底分型确认@{bottom['fractal_low']}")
+                    # ZD 触碰计数 +1
+                    self._zd_touch_count += 1
+                    # 首次触碰减半额度（支撑未验证，轻仓试探）
+                    effective_qty = self.t0_qty
+                    touch_note = ""
+                    if self._zd_touch_count == 1:
+                        effective_qty = max(100, (self.t0_qty * self.FIRST_TOUCH_QTY_RATIO // 100) * 100)
+                        touch_note = f" [首次触碰ZD，减半试探 qty={effective_qty}]"
+                    reason_detail = f"1M底分型确认@{bottom['fractal_low']}{touch_note}"
+                    if bi_strength_ratio is not None:
+                        reason_detail += f" bi_ratio={bi_strength_ratio:.2f}"
+                    return self._open_long(
+                        current_price, pivot_zd, pivot_zg, atr_ref, fps, make_result,
+                        reason_detail, effective_qty=effective_qty,
+                    )
                 else:
                     return make_result(reason=f"进入ZD触发区但1M底分型未确认: {bottom['reason']}")
             else:
@@ -216,20 +264,29 @@ class T0StateMachine:
 
         if self._state == T0State.POSITION_LONG:
             signal = "SWEEP"
-            pnl = (current_price - self._entry_price) * self.t0_qty
-            rt = calculate_round_trip_friction(current_price, self.t0_qty)
+            qty = self._effective_open_qty()
+            entry = self._entry_price
+            pnl = (current_price - entry) * qty
+            rt = calculate_round_trip_friction(current_price, qty)
             self._daily_pnl += pnl - rt["sell_cost"]
             self._daily_trades += 1
             self._state = T0State.IDLE
             self._entry_price = None
+            self._current_open_qty = self.t0_qty
         elif self._state == T0State.POSITION_SHORT:
             signal = "SWEEP"
-            pnl = (self._entry_price - current_price) * self.t0_qty
-            rt = calculate_round_trip_friction(current_price, self.t0_qty)
+            qty = self._effective_open_qty()
+            entry = self._entry_price
+            pnl = (entry - current_price) * qty
+            rt = calculate_round_trip_friction(current_price, qty)
             self._daily_pnl += pnl - rt["buy_cost"]
             self._daily_trades += 1
             self._state = T0State.IDLE
             self._entry_price = None
+            self._current_open_qty = self.t0_qty
+        else:
+            qty = None
+            entry = None
 
         rt_friction = calculate_round_trip_friction(current_price, self.t0_qty)
         fps = rt_friction["cost_per_share"]
@@ -240,7 +297,7 @@ class T0StateMachine:
             signal_price=current_price if signal else None,
             pivot_zd=None,
             pivot_zg=None,
-            entry_price=self._entry_price,
+            entry_price=entry,
             target_price=None,
             stop_structural=None,
             stop_catastrophic=None,
@@ -250,10 +307,11 @@ class T0StateMachine:
             daily_trades=self._daily_trades,
             daily_stop_count=self._daily_stop_count,
             reason=reason,
+            signal_qty=qty if signal else None,
         )
 
     def serialize(self) -> dict:
-        """序列化状态机状态为字典（存入 t0_state_cache）。"""
+        """序列化状态机状态为字典（存入 t0_state_cache.state_json）。"""
         return {
             "symbol": self.symbol,
             "t0_qty": self.t0_qty,
@@ -266,11 +324,15 @@ class T0StateMachine:
             "daily_pnl": self._daily_pnl,
             "daily_trades": self._daily_trades,
             "daily_stop_count": self._daily_stop_count,
+            "current_open_qty": self._current_open_qty,
+            # 笔动力学状态（进程重启后恢复计数）
+            "zd_touch_count": self._zd_touch_count,
+            "last_pivot_zd": self._last_pivot_zd,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "T0StateMachine":
-        """从字典恢复状态机（从 t0_state_cache 读取）。"""
+        """从字典恢复状态机（从 t0_state_cache.state_json 读取）。"""
         machine = cls(symbol=data["symbol"], t0_qty=data["t0_qty"])
         machine._state = T0State(data.get("state", T0State.IDLE.value))
         machine._trade_date = data.get("trade_date")
@@ -281,17 +343,23 @@ class T0StateMachine:
         machine._daily_pnl = data.get("daily_pnl", 0.0)
         machine._daily_trades = data.get("daily_trades", 0)
         machine._daily_stop_count = data.get("daily_stop_count", 0)
+        machine._current_open_qty = data.get("current_open_qty", machine.t0_qty)
+        machine._zd_touch_count = data.get("zd_touch_count", 0)
+        machine._last_pivot_zd = data.get("last_pivot_zd")
         return machine
 
     # ------------------------------------------------------------------ #
     #  内部方法
     # ------------------------------------------------------------------ #
 
-    def _open_long(self, price, pivot_zd, pivot_zg, atr_ref, fps, make_result, reason_detail):
-        """开正T仓位（低吸买入）。"""
+    def _open_long(self, price, pivot_zd, pivot_zg, atr_ref, fps, make_result, reason_detail,
+                   effective_qty: Optional[int] = None):
+        """开正T仓位（低吸买入）。effective_qty 允许首次触碰时使用减半额度。"""
         self._state = T0State.POSITION_LONG
         self._entry_price = price
         self._target_price = pivot_zg
+        # 记录实际使用的做T额度（不改变 self.t0_qty，仅影响本次仓位大小）
+        self._current_open_qty = effective_qty if effective_qty else self.t0_qty
         # 结构止损 = ZD - 1.2 × ATR
         self._stop_structural = pivot_zd - self.STRUCTURAL_STOP_ATR_MULT * atr_ref if atr_ref > 0 else pivot_zd * 0.995
         # 灾难止损 = 入场价 × 0.97
@@ -300,13 +368,14 @@ class T0StateMachine:
         logger.info("[T0 %s] 开正T BUY_LONG price=%.2f target=%.2f stop_s=%.2f stop_c=%.2f %s",
                     self.symbol, price, self._target_price, self._stop_structural, self._stop_catastrophic, reason_detail)
         return make_result(signal="BUY_LONG", signal_price=price,
-                           reason=f"开正T {reason_detail}")
+                           reason=f"开正T {reason_detail}", signal_qty=self._current_open_qty)
 
     def _open_short(self, price, pivot_zd, pivot_zg, atr_ref, fps, make_result, reason_detail):
         """开倒T仓位（高抛卖出）。"""
         self._state = T0State.POSITION_SHORT
         self._entry_price = price
         self._target_price = pivot_zd
+        self._current_open_qty = self.t0_qty
         # 倒T止损：涨超 ZG + 1.2 × ATR（或 ZG × 1.005 兜底）
         self._stop_structural = pivot_zg + self.SHORT_STOP_ATR_MULT * atr_ref if atr_ref > 0 else pivot_zg * 1.005
         # 灾难止损：入场价 × 1.03（倒T方向，涨超 3% 强平）
@@ -315,7 +384,7 @@ class T0StateMachine:
         logger.info("[T0 %s] 开倒T SELL_SHORT price=%.2f target=%.2f stop_s=%.2f",
                     self.symbol, price, self._target_price, self._stop_structural)
         return make_result(signal="SELL_SHORT", signal_price=price,
-                           reason=f"开倒T {reason_detail}")
+                           reason=f"开倒T {reason_detail}", signal_qty=self._current_open_qty)
 
     def _tick_position_long(self, price, pivot_zd, pivot_zg, atr_ref, fps, make_result):
         """正T持仓中的 tick 处理。"""
@@ -329,18 +398,22 @@ class T0StateMachine:
                                            f"结构止损触发 price={price:.2f} <= {self._stop_structural:.2f}")
         # 止盈：价格触达 ZG
         if self._target_price and price >= self._target_price:
-            pnl = (price - self._entry_price) * self.t0_qty
-            rt = calculate_round_trip_friction(price, self.t0_qty)
+            qty = self._effective_open_qty()
+            entry = self._entry_price
+            pnl = (price - entry) * qty
+            rt = calculate_round_trip_friction(price, qty)
             net_pnl = pnl - rt["sell_cost"]
             self._daily_pnl += net_pnl
             self._state = T0State.IDLE
-            entry = self._entry_price
             self._entry_price = None
             self._target_price = None
+            self._current_open_qty = self.t0_qty
             logger.info("[T0 %s] 正T止盈 SELL_LONG price=%.2f entry=%.2f net_pnl=%.2f",
                         self.symbol, price, entry, net_pnl)
             return make_result(signal="SELL_LONG", signal_price=price,
-                               reason=f"正T止盈: price={price:.2f} >= ZG={self._target_price or pivot_zg:.2f} net_pnl={net_pnl:.2f}")
+                               reason=f"正T止盈: price={price:.2f} >= ZG={self._target_price or pivot_zg:.2f} net_pnl={net_pnl:.2f}",
+                               signal_qty=qty,
+                               entry_price_for_result=entry)
         # 持仓等待
         return make_result(reason=f"POSITION_LONG 持仓中 entry={self._entry_price:.2f} target={self._target_price:.2f}")
 
@@ -356,40 +429,67 @@ class T0StateMachine:
                                             f"结构止损触发 price={price:.2f} >= {self._stop_structural:.2f}")
         # 止盈：价格跌回 ZD
         if self._target_price and price <= self._target_price:
-            pnl = (self._entry_price - price) * self.t0_qty
-            rt = calculate_round_trip_friction(price, self.t0_qty)
+            qty = self._effective_open_qty()
+            entry = self._entry_price
+            pnl = (entry - price) * qty
+            rt = calculate_round_trip_friction(price, qty)
             net_pnl = pnl - rt["buy_cost"]
             self._daily_pnl += net_pnl
             self._state = T0State.IDLE
-            entry = self._entry_price
             self._entry_price = None
             self._target_price = None
+            self._current_open_qty = self.t0_qty
             logger.info("[T0 %s] 倒T止盈 BUY_SHORT price=%.2f entry=%.2f net_pnl=%.2f",
                         self.symbol, price, entry, net_pnl)
             return make_result(signal="BUY_SHORT", signal_price=price,
-                               reason=f"倒T止盈: price={price:.2f} <= ZD={self._target_price or pivot_zd:.2f} net_pnl={net_pnl:.2f}")
+                               reason=f"倒T止盈: price={price:.2f} <= ZD={self._target_price or pivot_zd:.2f} net_pnl={net_pnl:.2f}",
+                               signal_qty=qty,
+                               entry_price_for_result=entry)
         return make_result(reason=f"POSITION_SHORT 持仓中 entry={self._entry_price:.2f} target={self._target_price:.2f}")
 
     def _trigger_stop_long(self, price, make_result, reason):
         """触发正T止损，进入 LOCKDOWN。"""
-        pnl = (price - self._entry_price) * self.t0_qty
-        rt = calculate_round_trip_friction(price, self.t0_qty)
+        qty = self._effective_open_qty()
+        entry = self._entry_price
+        pnl = (price - entry) * qty
+        rt = calculate_round_trip_friction(price, qty)
         net_pnl = pnl - rt["sell_cost"]
         self._daily_pnl += net_pnl
         self._daily_stop_count += 1
         self._state = T0State.LOCKDOWN
         self._entry_price = None
+        self._current_open_qty = self.t0_qty
         logger.warning("[T0 %s] 正T止损 STOP_LONG %s net_pnl=%.2f", self.symbol, reason, net_pnl)
-        return make_result(signal="STOP_LONG", signal_price=price, reason=f"正T止损→LOCKDOWN: {reason}")
+        return make_result(
+            signal="STOP_LONG",
+            signal_price=price,
+            reason=f"正T止损→LOCKDOWN: {reason}",
+            signal_qty=qty,
+            entry_price_for_result=entry,
+        )
 
     def _trigger_stop_short(self, price, make_result, reason):
         """触发倒T止损，进入 LOCKDOWN。"""
-        pnl = (self._entry_price - price) * self.t0_qty
-        rt = calculate_round_trip_friction(price, self.t0_qty)
+        qty = self._effective_open_qty()
+        entry = self._entry_price
+        pnl = (entry - price) * qty
+        rt = calculate_round_trip_friction(price, qty)
         net_pnl = pnl - rt["buy_cost"]
         self._daily_pnl += net_pnl
         self._daily_stop_count += 1
         self._state = T0State.LOCKDOWN
         self._entry_price = None
+        self._current_open_qty = self.t0_qty
         logger.warning("[T0 %s] 倒T止损 STOP_SHORT %s net_pnl=%.2f", self.symbol, reason, net_pnl)
-        return make_result(signal="STOP_SHORT", signal_price=price, reason=f"倒T止损→LOCKDOWN: {reason}")
+        return make_result(
+            signal="STOP_SHORT",
+            signal_price=price,
+            reason=f"倒T止损→LOCKDOWN: {reason}",
+            signal_qty=qty,
+            entry_price_for_result=entry,
+        )
+
+    def _effective_open_qty(self) -> int:
+        """返回当前已开 T 仓数量；旧状态无该字段时回退到 t0_qty。"""
+        qty = int(self._current_open_qty or self.t0_qty or 0)
+        return max(100, qty)
