@@ -31,6 +31,7 @@ def get_structure_view(
         symbol=canonical,
         level=normalized_level,
         min_profile=compute_profile,
+        allow_bootstrap=False,
     )
     if not snapshot_row:
         return None

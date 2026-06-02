@@ -1,9 +1,12 @@
 """CT-OS V4.0 数据库初始化 — SQLite + 多用户 Ready"""
 
 import logging
+import json
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from server.config import DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -690,6 +693,23 @@ CREATE TABLE IF NOT EXISTS paper_feature_cache (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 行情数据同步批次：记录盘中/盘后数据流水线状态，支撑数据溯源和 snapshot 失效判断。
+CREATE TABLE IF NOT EXISTS market_data_batches (
+    batch_id      TEXT PRIMARY KEY,
+    source        TEXT NOT NULL,
+    mode          TEXT NOT NULL,
+    started_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at   TEXT,
+    symbols_count INTEGER DEFAULT 0,
+    latest_day    TEXT NOT NULL DEFAULT '',
+    latest_1m     TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'running',
+    error_message TEXT NOT NULL DEFAULT '',
+    meta_json     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_market_data_batches_status
+ON market_data_batches(source, mode, status, started_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_paper_accounts_user ON paper_accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_paper_positions_account ON paper_positions(paper_account_id);
 CREATE INDEX IF NOT EXISTS idx_paper_replay_user ON paper_replay_runs(user_id, started_at);
@@ -718,6 +738,65 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def create_market_data_batch(
+    *,
+    source: str,
+    mode: str,
+    batch_id: str | None = None,
+    symbols_count: int = 0,
+    meta: dict | None = None,
+) -> dict:
+    """创建行情数据批次记录，供盘中/盘后流水线溯源。"""
+    resolved_id = batch_id or f"mdb_{uuid4().hex}"
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO market_data_batches (
+                batch_id, source, mode, started_at, symbols_count, status, meta_json
+            )
+            VALUES (?, ?, ?, ?, ?, 'running', ?)
+            """,
+            (resolved_id, source, mode, now, int(symbols_count or 0), json.dumps(meta or {}, ensure_ascii=False)),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM market_data_batches WHERE batch_id = ?", (resolved_id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def update_market_data_batch(batch_id: str, **fields) -> dict | None:
+    """更新行情数据批次状态；未知字段会被忽略。"""
+    allowed = {
+        "finished_at",
+        "symbols_count",
+        "latest_day",
+        "latest_1m",
+        "status",
+        "error_message",
+        "meta_json",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return None
+    if updates.get("status") in {"success", "partial", "failed", "error"} and not updates.get("finished_at"):
+        updates["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    if isinstance(updates.get("meta_json"), dict):
+        updates["meta_json"] = json.dumps(updates["meta_json"], ensure_ascii=False)
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    values = list(updates.values())
+    conn = get_connection()
+    try:
+        conn.execute(f"UPDATE market_data_batches SET {assignments} WHERE batch_id = ?", [*values, batch_id])
+        conn.commit()
+        row = conn.execute("SELECT * FROM market_data_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def run_migrations(conn: sqlite3.Connection):
@@ -1281,6 +1360,25 @@ def run_migrations(conn: sqlite3.Connection):
         """,
         "ALTER TABLE watchlist_items ADD COLUMN t0_enabled INTEGER DEFAULT 0",
         "ALTER TABLE watchlist_items ADD COLUMN t0_qty INTEGER DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS market_data_batches (
+            batch_id      TEXT PRIMARY KEY,
+            source        TEXT NOT NULL,
+            mode          TEXT NOT NULL,
+            started_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at   TEXT,
+            symbols_count INTEGER DEFAULT 0,
+            latest_day    TEXT NOT NULL DEFAULT '',
+            latest_1m     TEXT NOT NULL DEFAULT '',
+            status        TEXT NOT NULL DEFAULT 'running',
+            error_message TEXT NOT NULL DEFAULT '',
+            meta_json     TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_market_data_batches_status
+        ON market_data_batches(source, mode, status, started_at DESC)
+        """,
     ]
     for sql in migrations:
         try:

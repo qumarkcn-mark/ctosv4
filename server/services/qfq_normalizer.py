@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from server.db.kline_lake import query_klines, upsert_klines
+from server.db.kline_lake import query_klines, upsert_adjusted_bars, upsert_qfq_factors
 from server.domain.symbols import normalize_symbol
 from server.services.baostock_service import CHUNK_DAYS, FREQ_MAP, _bs_query
 
@@ -101,6 +101,7 @@ def normalize_minute_rows(raw_rows: Iterable[dict], day_qfq_rows: Iterable[dict]
         item = _scale_ohlc(row, factor)
         item["volume"] = float(row.get("volume", 0) or 0)
         item["amount"] = float(row.get("amount", 0) or 0)
+        item["qfq_factor"] = factor
         normalized.append(item)
     return normalized
 
@@ -153,15 +154,28 @@ def rebuild_symbol_qfq(
         return QfqBuildResult(canonical_symbol, 0, 0, {}, start_date, effective_end, suspicious)
 
     day_written = 0
+    upsert_qfq_factors(canonical_symbol, qfq_day_rows, source_name="baostock_pctchg", lake_source="baostock")
     if "day" in requested:
-        day_written = upsert_klines(canonical_symbol, "day", qfq_day_rows, adjustflag="2", source="baostock")
+        day_written = upsert_adjusted_bars(
+            canonical_symbol,
+            "day",
+            qfq_day_rows,
+            dataset="baostock_qfq",
+            source="baostock",
+        )
     if "week" in requested:
         week_rows = aggregate_week_rows(qfq_day_rows)
     else:
         week_rows = []
     week_written = 0
     if "week" in requested and week_rows:
-        week_written = upsert_klines(canonical_symbol, "week", week_rows, adjustflag="2", source="baostock")
+        week_written = upsert_adjusted_bars(
+            canonical_symbol,
+            "week",
+            week_rows,
+            dataset="baostock_qfq",
+            source="baostock",
+        )
 
     minute_written: dict[str, int] = {}
     for freq in MINUTE_FREQS:
@@ -170,12 +184,12 @@ def rebuild_symbol_qfq(
         raw_minute_rows = _query_raw_without_pct(canonical_symbol, freq, start_date, effective_end)
         qfq_minute_rows = normalize_minute_rows(raw_minute_rows, qfq_day_rows)
         if qfq_minute_rows:
-            minute_written[freq] = upsert_klines(
+            minute_written[freq] = upsert_adjusted_bars(
                 canonical_symbol,
                 freq,
                 qfq_minute_rows,
-                adjustflag="2",
                 source="baostock",
+                dataset="baostock_qfq",
             )
         else:
             minute_written[freq] = 0

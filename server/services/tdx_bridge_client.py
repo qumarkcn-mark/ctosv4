@@ -139,6 +139,8 @@ def append_live_quote_1m_bar(rows: list[dict], quote: Optional[dict], symbol: st
     """Append/update the current forming 1m bar from realtime TDX quote snapshots."""
     if not quote:
         return rows[-count:]
+    if not _is_a_share_trading_minute(datetime.now().strftime("%Y-%m-%d %H:%M:%S")):
+        return rows[-count:]
     price = _num(quote.get("price"))
     minute = _quote_minute(quote)
     if price <= 0 or not minute:

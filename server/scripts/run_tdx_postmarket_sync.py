@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.engines.ai_native.czsc_snapshot_service import prewarm_structure_snapshots
+from server.db.database import create_market_data_batch, update_market_data_batch
 from server.services.tdx_daily_sync_service import resolve_vipdoc, sync_daily_files, vipdoc_status
 from server.workers.kline_sync_worker import (
     ALL_FREQS,
@@ -38,51 +39,77 @@ def run_postmarket_sync(*, vipdoc: str | None = None, mode: str = "incremental",
         }
 
     symbols = _get_all_tracked_symbols()
-    if mode == "full" or reset:
-        daily = sync_daily_files(root, mode=mode, reset=reset, job_id=None)
-    else:
-        daily = {
-            "skipped": True,
-            "reason": "TRACKED_SYMBOLS_ONLY",
-            "message": "盘后按钮只同步盯盘/持仓股票；不扫描全市场日线。",
-            "total_files": 0,
-            "processed_files": 0,
-            "synced_symbols": 0,
-            "written_rows": 0,
-            "skipped_files": 0,
-        }
-    tracked = _sync_all_symbols_from_tdx_local(symbols, list(ALL_FREQS)) if symbols else {
-        "total_symbols": 0,
-        "updated_symbols": 0,
-        "total_written": 0,
-        "errors": 0,
-        "changed": [],
-    }
-    structure_jobs = enqueue_structure_jobs_for_changes(
-        tracked.get("changed") or [],
-        priority=90,
-        reason="tdx_postmarket_sync",
+    batch = create_market_data_batch(
+        source="tdx_vipdoc",
+        mode="postmarket",
+        symbols_count=len(symbols),
+        meta={"vipdoc": str(root), "sync_mode": mode, "reset": bool(reset)},
     )
-    changed_symbols = sorted({item["symbol"] for item in tracked.get("changed", []) if item.get("symbol")})
-    snapshot_prewarm = (
-        prewarm_structure_snapshots(
-            symbols=changed_symbols,
-            levels=["week", "day", "30", "5"],
+    batch_id = batch["batch_id"]
+    try:
+        if mode == "full" or reset:
+            daily = sync_daily_files(root, mode=mode, reset=reset, job_id=None, batch_id=batch_id)
+        else:
+            daily = {
+                "skipped": True,
+                "reason": "TRACKED_SYMBOLS_ONLY",
+                "message": "盘后按钮只同步盯盘/持仓股票；不扫描全市场日线。",
+                "total_files": 0,
+                "processed_files": 0,
+                "synced_symbols": 0,
+                "written_rows": 0,
+                "skipped_files": 0,
+            }
+        tracked = _sync_all_symbols_from_tdx_local(symbols, list(ALL_FREQS), batch_id=batch_id) if symbols else {
+            "total_symbols": 0,
+            "updated_symbols": 0,
+            "total_written": 0,
+            "errors": 0,
+            "changed": [],
+        }
+        structure_jobs = enqueue_structure_jobs_for_changes(
+            tracked.get("changed") or [],
             priority=90,
             reason="tdx_postmarket_sync",
-            force_rebuild=True,
         )
-        if changed_symbols
-        else {"count": 0, "items": [], "skipped": True, "reason": "NO_CHANGED_SYMBOLS"}
-    )
-    return {
-        "status": "success" if tracked.get("errors", 0) == 0 else "partial",
-        "vipdoc": status,
-        "daily_raw": daily,
-        "tracked": tracked,
-        "structure_jobs": structure_jobs,
-        "snapshot_prewarm": snapshot_prewarm,
-    }
+        changed_symbols = sorted({item["symbol"] for item in tracked.get("changed", []) if item.get("symbol")})
+        snapshot_prewarm = (
+            prewarm_structure_snapshots(
+                symbols=changed_symbols,
+                levels=["week", "day", "30", "5"],
+                priority=90,
+                reason="tdx_postmarket_sync",
+                force_rebuild=True,
+            )
+            if changed_symbols
+            else {"count": 0, "items": [], "skipped": True, "reason": "NO_CHANGED_SYMBOLS"}
+        )
+        result_status = "success" if tracked.get("errors", 0) == 0 else "partial"
+        update_market_data_batch(
+            batch_id,
+            status=result_status,
+            symbols_count=len(symbols),
+            latest_day=_latest_changed_date(tracked.get("changed") or [], "day"),
+            latest_1m=_latest_changed_date(tracked.get("changed") or [], "1"),
+            meta_json={"daily_raw": daily, "tracked": tracked},
+        )
+        return {
+            "status": result_status,
+            "batch_id": batch_id,
+            "vipdoc": status,
+            "daily_raw": daily,
+            "tracked": tracked,
+            "structure_jobs": structure_jobs,
+            "snapshot_prewarm": snapshot_prewarm,
+        }
+    except Exception as exc:
+        update_market_data_batch(batch_id, status="failed", error_message=str(exc)[:300])
+        raise
+
+
+def _latest_changed_date(changes: list[dict], freq: str) -> str:
+    values = [str(item.get("last_date") or item.get("date") or "") for item in changes if item.get("freq") == freq]
+    return max(values) if values else ""
 
 
 def print_summary(result: dict) -> None:

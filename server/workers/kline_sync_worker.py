@@ -197,9 +197,11 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
     """
     from functools import partial
 
-    from server.db.kline_lake import upsert_klines
+    from server.db.database import create_market_data_batch, update_market_data_batch
+    from server.db.kline_lake import upsert_adjusted_bars, upsert_raw_bars
     from server.services.tdx_bridge_client import fetch_tdx_klines
     from server.services.tdx_daily_sync_service import aggregate_tdx_week_klines, read_tdx_day_klines
+    from server.services.intraday_official_replacement_service import mark_intraday_replaced_for_official_rows
     from server.services.tdx_minute_service import derive_tdx_day_from_minutes, read_tdx_derived_minute_klines
 
     def _day_rows_with_minute_fallback(limit: int = 5000) -> list[dict]:
@@ -213,6 +215,14 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
         rows = [row for row in rows if str(row.get("date") or "")[:10] != today]
         return [*rows, derived][-max(1, min(int(limit), 20000)):]
 
+    batch = create_market_data_batch(
+        source="tdx",
+        mode="watchlist_new_symbol_init",
+        symbols_count=1,
+        meta={"symbol": symbol, "reason": "watchlist_new_symbol_tdx_sync"},
+    )
+    batch_id = str(batch.get("batch_id") or "")
+
     def _sync_local_history(freq: str) -> tuple[int, list[dict]]:
         if freq == "week":
             rows = aggregate_tdx_week_klines(_day_rows_with_minute_fallback(limit=20000))[-1200:]
@@ -222,7 +232,14 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
             rows = read_tdx_derived_minute_klines(symbol, freq, limit=5000)
         else:
             rows = []
-        return upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx"), rows
+        written = upsert_raw_bars(symbol, freq, rows, dataset="tdx_raw", source="tdx", batch_id=batch_id)
+        if written > 0 and freq == "1":
+            mark_intraday_replaced_for_official_rows(symbol, freq, rows, batch_id=batch_id)
+        return written, rows
+
+    def _latest_date(full: list[dict], freq: str) -> str:
+        matches = [str(item.get("last") or "") for item in full if item.get("freq") == freq and item.get("last")]
+        return max(matches) if matches else ""
 
     async def _run() -> dict:
         changed = []
@@ -250,8 +267,26 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
                     adjustflag = "3"
                 else:
                     written = await run_in_threadpool(
-                        partial(upsert_klines, symbol, freq, rows, adjustflag="2", source="tdx")
+                        partial(
+                            upsert_adjusted_bars,
+                            symbol,
+                            freq,
+                            rows,
+                            dataset="tdx_qfq",
+                            source="tdx",
+                            batch_id=batch_id,
+                        )
                     )
+                    if written > 0 and freq == "1":
+                        await run_in_threadpool(
+                            partial(
+                                mark_intraday_replaced_for_official_rows,
+                                symbol,
+                                freq,
+                                rows,
+                                batch_id=batch_id,
+                            )
+                        )
                 item = {
                     "freq": freq,
                     "period": period,
@@ -271,7 +306,9 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
 
         from server.services.tdx_qfq_normalizer import rebuild_tdx_qfq_from_existing_factors
 
-        qfq_result = await run_in_threadpool(rebuild_tdx_qfq_from_existing_factors, symbol)
+        qfq_result = await run_in_threadpool(
+            partial(rebuild_tdx_qfq_from_existing_factors, symbol, batch_id=batch_id)
+        )
         if qfq_result.total_written > 0:
             for freq, written in qfq_result.written.items():
                 if written > 0:
@@ -291,9 +328,25 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
             priority=85,
             reason="watchlist_new_symbol_tdx_policy",
         )
+        total_written = sum(int(item.get("written") or 0) for item in full) + int(qfq_result.total_written or 0)
+        batch_status = "partial" if errors else "success"
+        updated_batch = update_market_data_batch(
+            batch_id,
+            status=batch_status,
+            latest_day=_latest_date(full, "day"),
+            latest_1m=_latest_date(full, "1"),
+            meta_json={
+                "symbol": symbol,
+                "total_written": total_written,
+                "errors": len(errors),
+                "changed": len(changed),
+            },
+        )
         return {
             "skipped": False,
             "source": "tdx",
+            "batch_id": batch_id,
+            "batch": updated_batch,
             "full": full,
             "qfq_rebuild": {
                 "status": qfq_result.status,
@@ -307,7 +360,16 @@ def _sync_new_watchlist_symbol_from_tdx(symbol: str) -> dict:
             "snapshot_prewarm": snapshot_prewarm,
         }
 
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:
+        update_market_data_batch(
+            batch_id,
+            status="failed",
+            error_message=str(exc),
+            meta_json={"symbol": symbol, "stage": "watchlist_new_symbol_tdx_sync"},
+        )
+        raise
 
 
 def _is_trading_day(dt: datetime) -> bool:
@@ -353,6 +415,7 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
     updated_symbols = 0
     errors = 0
     changed: list[dict] = []
+    intraday_replaced = 0
 
     for symbol in symbols:
         symbol_updated = False
@@ -384,9 +447,9 @@ def _sync_all_symbols(symbols: list[str], freqs: list[str]) -> dict:
     }
 
 
-def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> dict:
+def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str], *, batch_id: str = "") -> dict:
     """Sync tracked symbols from local TDX after-hours history files."""
-    from server.db.kline_lake import query_klines, upsert_klines
+    from server.db.kline_lake import query_klines, upsert_adjusted_bars, upsert_raw_bars
     from server.services.tdx_bridge_client import fetch_tdx_klines
     from server.services.tdx_daily_sync_service import aggregate_tdx_week_klines, read_tdx_day_klines
     from server.services.tdx_minute_service import derive_tdx_day_from_minutes, read_tdx_derived_minute_klines
@@ -455,11 +518,24 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
                 last_qfq_day = _last_lake_date(symbol, "day", "2")
                 front_day_rows = _fetch_front_day_rows(symbol)
                 front_day_rows = _rows_after(front_day_rows, last_qfq_day)
-                written = upsert_klines(symbol, "day", front_day_rows, adjustflag="2", source="tdx")
+                written = upsert_adjusted_bars(
+                    symbol,
+                    "day",
+                    front_day_rows,
+                    dataset="tdx_qfq",
+                    source="tdx",
+                    batch_id=batch_id,
+                )
                 total_written += written
                 if written > 0:
                     symbol_updated = True
-                    changed.append({"symbol": symbol, "freq": "day", "written": written, "source": "tdx_bridge_front"})
+                    changed.append({
+                        "symbol": symbol,
+                        "freq": "day",
+                        "written": written,
+                        "source": "tdx_bridge_front",
+                        "last_date": front_day_rows[-1]["date"] if front_day_rows else "",
+                    })
             except Exception as e:
                 logger.error("TDX 前复权日线同步失败 %s: %s", symbol, e)
                 errors += 1
@@ -478,7 +554,14 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
                 else:
                     rows = []
                 rows = _rows_after(rows, last_date)
-                written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
+                written = upsert_raw_bars(symbol, freq, rows, dataset="tdx_raw", source="tdx", batch_id=batch_id)
+                if written > 0 and freq == "1":
+                    intraday_replaced += mark_intraday_replaced_for_official_rows(
+                        symbol,
+                        freq,
+                        rows,
+                        batch_id=batch_id,
+                    )
                 total_written += written
                 if written > 0:
                     symbol_updated = True
@@ -495,11 +578,18 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
                     symbol,
                     target_freqs=qfq_target_freqs,
                     limit=5000,
+                    batch_id=batch_id,
                 )
                 qfq_written = qfq_result.written
                 for freq, written in qfq_written.items():
                     if written > 0:
-                        changed.append({"symbol": symbol, "freq": freq, "written": written, "source": "tdx_qfq"})
+                        changed.append({
+                            "symbol": symbol,
+                            "freq": freq,
+                            "written": written,
+                            "source": "tdx_qfq",
+                            "last_date": _last_lake_date(symbol, freq, "2"),
+                        })
             except Exception as e:
                 logger.error("TDX 前复权重建失败 %s: %s", symbol, e)
                 errors += 1
@@ -513,6 +603,7 @@ def _sync_all_symbols_from_tdx_local(symbols: list[str], freqs: list[str]) -> di
         "total_written": total_written,
         "errors": errors,
         "changed": changed,
+        "intraday_replaced": intraday_replaced,
     }
 
 

@@ -40,6 +40,7 @@ def get_momentum_context(
         symbol=canonical,
         level=normalized_level,
         min_profile=compute_profile,
+        allow_bootstrap=False,
     )
     snapshot = (snapshot_row or {}).get("snapshot") or {}
     klines = list(snapshot.get("klines") or [])

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from server.db.kline_lake import query_klines
+from server.db.kline_lake import query_intraday_bars, query_klines
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
 from server.services.tdx_daily_sync_service import read_tdx_day_klines
@@ -66,7 +66,7 @@ def hydrate_intraday_snapshot(
         "version": "intraday_snapshot.v1",
         "available": True,
         "symbol": canonical,
-        "source": "tdx_local_1m_preview",
+        "source": _snapshot_source(rows),
         "usage": "validate_previous_plan",
         "date": target_date,
         "date_basis": date_basis,
@@ -96,6 +96,14 @@ def _resolve_target_date(symbol: str, trade_date: str | None) -> tuple[str, str]
 
 def _latest_available_1m_date(symbol: str) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        intraday_rows = query_intraday_bars(symbol, "1", start_time=today, limit=1)
+    except Exception:
+        intraday_rows = []
+    if intraday_rows:
+        date = str(intraday_rows[-1].get("bar_time") or intraday_rows[-1].get("date") or "")[:10]
+        if date == today:
+            return date
     try:
         rows = query_klines(symbol, "1", limit=1, adjustflag="3", source="qmt")
     except Exception:
@@ -128,6 +136,26 @@ def _read_1m_rows_for_date(
     prefer_qmt_preview: bool = False,
 ) -> list[dict[str, Any]]:
     if prefer_qmt_preview:
+        try:
+            intraday_rows = query_intraday_bars(
+                symbol,
+                "1",
+                start_time=target_date,
+                end_time=f"{target_date} 15:00:00",
+                limit=limit,
+            )
+        except Exception:
+            intraday_rows = []
+        if intraday_rows:
+            return [
+                dict(
+                    row,
+                    date=row.get("bar_time") or row.get("date"),
+                    adjustflag="3",
+                    source=row.get("source") or "tdx_quote_aggregation",
+                )
+                for row in intraday_rows
+            ]
         try:
             qmt_rows = query_klines(
                 symbol,
@@ -183,6 +211,11 @@ def _normalize_1m_row(row: dict[str, Any], symbol: str) -> dict[str, Any]:
         "bar_status": str(row.get("bar_status") or "CLOSED"),
         "source": str(row.get("source") or "tdx_local_1m"),
     }
+
+
+def _snapshot_source(rows: list[dict[str, Any]]) -> str:
+    source = str((rows[-1] if rows else {}).get("source") or "")
+    return source or "tdx_local_1m_preview"
 
 
 def _previous_close(symbol: str, target_date: str) -> float:
