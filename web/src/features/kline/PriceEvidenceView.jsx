@@ -21,6 +21,7 @@ import {
 import './PriceEvidenceView.css'
 
 const KLINE_COUNT = 1200
+const LIVE_M1_REFRESH_INTERVAL_MS = 10_000
 const CANDLE_PANE_ID = 'candle_pane'
 const SUB_PANE_ID = 'ct-sub-indicator-pane'
 const VOLUME_HEIGHT = 112
@@ -62,6 +63,7 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState('')
   const [barCount, setBarCount] = useState(0)
+  const [dataQuality, setDataQuality] = useState(null)
   const [quote, setQuote] = useState(null)
   const [structureView, setStructureView] = useState(null)
   const [structureOverlay, setStructureOverlay] = useState(null)
@@ -280,6 +282,7 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
       if (requestRef.current !== requestId || !mountedRef.current) return []
       latestBarsRef.current = result.klines
       setBarCount(result.klines.length)
+      setDataQuality(buildKlineDataQuality(result))
       setBarsReadyKey(result.klines.length ? `${symbol}:${period}` : '')
       setError('')
       return result.klines
@@ -287,6 +290,7 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
       if (requestRef.current === requestId && mountedRef.current) {
         latestBarsRef.current = []
         setBarCount(0)
+        setDataQuality(null)
         setBarsReadyKey('')
         setError(err?.message || 'K 线加载失败')
       }
@@ -425,6 +429,17 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
       structureRequestRef.current += 1
     }
   }, [barsReadyKey, loadStructureOverlay, viewKey])
+
+  useEffect(() => {
+    if (!symbol || period !== 'm1') return undefined
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      if (loading || syncing) return
+      chartRef.current?.resetData()
+      loadQuote()
+    }, LIVE_M1_REFRESH_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [loadQuote, loading, period, symbol, syncing])
 
   useEffect(() => {
     if (barsReadyKey !== viewKey || structureStatus !== 'queued') return undefined
@@ -653,6 +668,14 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
               </div>
             )}
             <span>{loading ? '加载中' : `${barCount} 根`}</span>
+            {dataQuality && (
+              <span
+                className={`base-kline__data-quality base-kline__data-quality--${dataQuality.tone}`}
+                title={dataQuality.title}
+              >
+                {dataQuality.label}
+              </span>
+            )}
             {!supportsStructureLayers && <span>TDX 1分</span>}
             {structureLayer && supportsStructureLayers && <span>{structureStatusLabel(structureStatus, structureView)}</span>}
             {momentumLayer && supportsStructureLayers && <span>{momentumStatusLabel(momentumStatus, momentumContext)}</span>}
@@ -918,6 +941,57 @@ function momentumStatusLabel(status, context) {
   if (status === 'insufficient') return '力量不足'
   if (status === 'missing') return '无力量'
   return ''
+}
+
+function buildKlineDataQuality(result = {}) {
+  const quality = result.data_quality || {}
+  const bars = Array.isArray(result.klines) ? result.klines : []
+  const lastBar = bars[bars.length - 1] || {}
+  const source = String(quality.source || lastBar.source || '')
+  const status = String(lastBar.bar_status || '')
+  const lastTime = String(quality.last || lastBar.date || lastBar.datetime || '')
+  const sourceLabel = source.includes('intraday_bars') || source.includes('live_quote')
+    ? '实时'
+    : source.includes('tdx_lake')
+      ? 'TDX'
+      : source.includes('tdx_local')
+        ? '本地TDX'
+        : source
+          ? '数据'
+          : ''
+  const timeLabel = compactKlineTime(lastTime)
+  const isForming = status === 'FORMING'
+  const label = isForming
+    ? `形成中 ${timeLabel}`
+    : timeLabel
+      ? `截止 ${timeLabel}`
+      : sourceLabel
+  if (!label) return null
+  const warning = quality.warning || ''
+  return {
+    label,
+    tone: isForming || source.includes('intraday_bars') || source.includes('live_quote')
+      ? 'live'
+      : quality.status === 'partial' || warning
+        ? 'warn'
+        : 'ready',
+    title: [
+      sourceLabel ? `来源：${source || sourceLabel}` : '',
+      status ? `状态：${status}` : '',
+      quality.status ? `质量：${quality.status}` : '',
+      lastTime ? `截止：${lastTime}` : '',
+      warning,
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+function compactKlineTime(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/)
+  if (!match) return text.slice(0, 16)
+  const [, , month, day, hour, minute] = match
+  return hour && minute ? `${month}-${day} ${hour}:${minute}` : `${month}-${day}`
 }
 
 function applyMainIndicator(chart, indicatorName) {

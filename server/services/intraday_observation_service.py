@@ -15,7 +15,7 @@ import pandas as pd
 
 from czsc.py.bar_generator import freq_end_time, resample_bars
 
-from server.db.kline_lake import query_klines, upsert_klines
+from server.db.kline_lake import query_intraday_bars, query_klines, upsert_intraday_bars
 from server.domain.symbols import normalize_symbol, to_tencent_symbol
 from server.engines.ai_native.dynamics_hydrator import hydrate_dynamics
 from server.services.price_service import get_current_price, get_minute_klines
@@ -76,9 +76,12 @@ def get_intraday_observation_snapshot(symbol: str, *, quote: dict | None = None)
     }
 
 
-def ingest_intraday_quote(symbol: str, quote: dict[str, Any]) -> None:
-    """Add one realtime quote into the in-memory intraday aggregation cache."""
-    _ingest_quote(to_tencent_symbol(normalize_symbol(symbol)), quote)
+def ingest_intraday_quote(symbol: str, quote: dict[str, Any]) -> bool:
+    """Add one realtime quote into the intraday aggregation cache.
+
+    Returns True only when the quote becomes a valid A-share trading-minute bar.
+    """
+    return _ingest_quote(to_tencent_symbol(normalize_symbol(symbol)), quote)
 
 
 def reset_intraday_observation_cache(symbol: str | None = None) -> None:
@@ -90,17 +93,20 @@ def reset_intraday_observation_cache(symbol: str | None = None) -> None:
 
 
 def _today_lake_1m_rows(symbol: str) -> list[dict[str, Any]]:
-    """Read today's 1m bars without letting partial preview rows hide TDX rows."""
+    """Read today's 1m bars without letting intraday preview rows hide TDX rows."""
     today = datetime.now().strftime("%Y-%m-%d")
     rows_by_date: dict[str, dict[str, Any]] = {}
 
-    # Formal/post-market TDX rows win for the same minute because they carry the
-    # complete OHLCV bar. QMT preview rows are still appended for minutes that
-    # TDX has not written yet during the live session.
-    for source, adjustflag, replace_existing in (
-        ("tdx", "3", True),
-        ("tdx", "2", True),
-        ("qmt", "3", False),
+    for row in _today_intraday_1m_rows(symbol, today):
+        date = row.get("date")
+        if date:
+            rows_by_date[date] = row
+
+    # Formal/post-market TDX rows win for the same minute because they carry
+    # complete OHLCV. Intraday preview remains only for not-yet-official minutes.
+    for source, adjustflag in (
+        ("tdx", "3"),
+        ("tdx", "2"),
     ):
         try:
             rows = query_klines(
@@ -119,9 +125,41 @@ def _today_lake_1m_rows(symbol: str) -> list[dict[str, Any]]:
             date = row.get("date")
             if not date:
                 continue
-            if replace_existing or date not in rows_by_date:
-                rows_by_date[date] = row
+            rows_by_date[date] = row
     return [rows_by_date[key] for key in sorted(rows_by_date)][-360:]
+
+
+def _today_intraday_1m_rows(symbol: str, today: str) -> list[dict[str, Any]]:
+    try:
+        rows = query_intraday_bars(symbol, "1", start_time=today, limit=360)
+    except Exception:
+        return []
+    return [_intraday_1m_row(symbol, row) for row in rows if row]
+
+
+def _intraday_1m_row(symbol: str, row: dict[str, Any]) -> dict[str, Any]:
+    date = str(row.get("bar_time") or row.get("date") or "")
+    if not _is_a_share_trading_minute(date) or _num(row.get("close")) <= 0:
+        return {}
+    return {
+        "symbol": to_tencent_symbol(symbol),
+        "freq": "1",
+        "date": date,
+        "open": _num(row.get("open")),
+        "high": _num(row.get("high")),
+        "low": _num(row.get("low")),
+        "close": _num(row.get("close")),
+        "volume": _num(row.get("volume") or row.get("vol")),
+        "amount": _num(row.get("amount")),
+        "adjustflag": "3",
+        "bar_status": str(row.get("bar_status") or "FORMING"),
+        "source": str(row.get("source") or "tdx_quote_aggregation"),
+        "sample_count": int(row.get("sample_count") or 0),
+        "first_quote_at": str(row.get("first_quote_at") or ""),
+        "last_quote_at": str(row.get("last_quote_at") or ""),
+        "quality": str(row.get("quality") or "partial"),
+        "gap_reason": str(row.get("gap_reason") or ""),
+    }
 
 
 def _lake_1m_row(symbol: str, row: dict[str, Any], *, source: str, adjustflag: str) -> dict[str, Any]:
@@ -161,11 +199,12 @@ def _lake_minute_history(symbol: str, interval: str) -> list[dict[str, Any]]:
         return []
 
 
-def _ingest_quote(compact: str, quote: dict[str, Any]) -> None:
+def _ingest_quote(compact: str, quote: dict[str, Any]) -> bool:
     price = _num(quote.get("price"))
     minute = _quote_minute(quote)
     if price <= 0 or not minute:
-        return
+        return False
+    sample_at = _quote_datetime(quote) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     rows = [
         dict(row)
@@ -183,8 +222,14 @@ def _ingest_quote(compact: str, quote: dict[str, Any]) -> None:
         current["low"] = round(min(_num(current.get("low")) or price, price), 4)
         current["close"] = round(price, 4)
         current["volume"] = max(_num(current.get("volume")), now_volume)
+        current["amount"] = max(_num(current.get("amount")), _num(quote.get("amount")))
         current["bar_status"] = "FORMING"
         current["source"] = "tdx_quote_aggregation"
+        current["sample_count"] = int(current.get("sample_count") or 0) + 1
+        current["first_quote_at"] = current.get("first_quote_at") or sample_at
+        current["last_quote_at"] = sample_at
+        current["quality"] = _intraday_row_quality(current)
+        current["gap_reason"] = "" if current["quality"] == "full" else "LOW_SAMPLE_COUNT"
     else:
         rows.append(
             {
@@ -200,12 +245,18 @@ def _ingest_quote(compact: str, quote: dict[str, Any]) -> None:
                 "adjustflag": "3",
                 "bar_status": "FORMING",
                 "source": "tdx_quote_aggregation",
+                "sample_count": 1,
+                "first_quote_at": sample_at,
+                "last_quote_at": sample_at,
+                "quality": "partial",
+                "gap_reason": "LOW_SAMPLE_COUNT",
             }
         )
 
     rows = sorted(rows, key=lambda item: item.get("date") or "")[-360:]
     _LIVE_1M_BY_SYMBOL[compact] = rows
     _persist_live_1m_row(compact, next((row for row in rows if row.get("date") == minute), None))
+    return True
 
 
 def _persist_live_1m_row(compact: str, row: dict[str, Any] | None) -> None:
@@ -213,26 +264,35 @@ def _persist_live_1m_row(compact: str, row: dict[str, Any] | None) -> None:
     if not row:
         return
     try:
-        upsert_klines(
+        upsert_intraday_bars(
             normalize_symbol(compact),
             "1",
             [
                 {
-                    "date": row.get("date") or "",
+                    "bar_time": row.get("date") or "",
                     "open": _num(row.get("open")),
                     "high": _num(row.get("high")),
                     "low": _num(row.get("low")),
                     "close": _num(row.get("close")),
                     "volume": _num(row.get("volume")),
                     "amount": _num(row.get("amount")),
+                    "bar_status": row.get("bar_status") or "FORMING",
+                    "source": row.get("source") or "tdx_quote_aggregation",
+                    "sample_count": int(row.get("sample_count") or 0),
+                    "first_quote_at": row.get("first_quote_at") or "",
+                    "last_quote_at": row.get("last_quote_at") or "",
+                    "quality": row.get("quality") or "partial",
+                    "gap_reason": row.get("gap_reason") or "",
                 }
             ],
-            adjustflag="3",
-            update_meta=True,
-            source="qmt",
         )
     except Exception:
         pass
+
+
+def _intraday_row_quality(row: dict[str, Any]) -> str:
+    # 单根 1m 至少有 2 次 quote 才认为高低点有基本可信度。
+    return "full" if int(row.get("sample_count") or 0) >= 2 else "partial"
 
 
 def _resample_today(rows: list[dict[str, Any]], target_freq: str, *, drop_unfinished: bool) -> list[dict[str, Any]]:

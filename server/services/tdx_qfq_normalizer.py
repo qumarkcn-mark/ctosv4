@@ -16,7 +16,7 @@ from typing import Iterable
 import pandas as pd
 
 from server.config import TDX_ROOT, TDX_VIPDOC
-from server.db.kline_lake import query_klines, upsert_klines
+from server.db.kline_lake import query_klines, upsert_adjusted_bars, upsert_qfq_factors
 from server.domain.symbols import normalize_symbol
 from server.services.qfq_normalizer import aggregate_week_rows, normalize_minute_rows
 
@@ -55,6 +55,7 @@ def rebuild_tdx_qfq_from_existing_factors(
     target_freqs: Iterable[str] | None = None,
     limit: int = 20000,
     tdx_root: str | None = None,
+    batch_id: str = "",
 ) -> TdxQfqBuildResult:
     """Rebuild TDX qfq cache from local raw bars and qfq daily anchors.
 
@@ -77,7 +78,15 @@ def rebuild_tdx_qfq_from_existing_factors(
     if raw_day_rows and _missing_qfq_days(raw_day_rows, qfq_day_rows):
         generated = build_tdx_qfq_day_rows_from_gbbq(canonical, raw_day_rows, tdx_root=tdx_root)
         if generated:
-            written["day"] = upsert_klines(canonical, "day", generated, adjustflag="2", source="tdx")
+            upsert_qfq_factors(canonical, generated, source_name="tdx_gbbq", batch_id=batch_id)
+            written["day"] = upsert_adjusted_bars(
+                canonical,
+                "day",
+                generated,
+                dataset="tdx_qfq",
+                source="tdx",
+                batch_id=batch_id,
+            )
             qfq_day_rows = generated
     if raw_day_rows and not qfq_day_rows:
         return TdxQfqBuildResult(
@@ -108,18 +117,27 @@ def rebuild_tdx_qfq_from_existing_factors(
             reason="NO_TDX_DAY_QFQ_FACTOR_OR_GBBQ",
         )
 
+    upsert_qfq_factors(canonical, factor_rows, source_name="tdx_gbbq", batch_id=batch_id)
     missing_factor_dates: dict[str, int] = {}
 
     if "week" in requested:
         week_rows = aggregate_week_rows(factor_rows)
-        written["week"] = upsert_klines(canonical, "week", week_rows, adjustflag="2", source="tdx") if week_rows else 0
+        written["week"] = (
+            upsert_adjusted_bars(canonical, "week", week_rows, dataset="tdx_qfq", source="tdx", batch_id=batch_id)
+            if week_rows
+            else 0
+        )
 
     for freq in requested:
         if freq == "week":
             continue
         raw_rows = query_klines(canonical, freq, limit=limit, adjustflag="3", source="tdx")
         qfq_rows = normalize_minute_rows(raw_rows, factor_rows)
-        written[freq] = upsert_klines(canonical, freq, qfq_rows, adjustflag="2", source="tdx") if qfq_rows else 0
+        written[freq] = (
+            upsert_adjusted_bars(canonical, freq, qfq_rows, dataset="tdx_qfq", source="tdx", batch_id=batch_id)
+            if qfq_rows
+            else 0
+        )
         raw_days = {str(row.get("date") or "")[:10] for row in raw_rows}
         factor_days = {str(row.get("date") or "")[:10] for row in factor_rows}
         missing_factor_dates[freq] = len(raw_days - factor_days)

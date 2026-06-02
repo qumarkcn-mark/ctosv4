@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from server.config import TDX_VIPDOC
-from server.db.kline_lake import LAKE_SCHEMA, get_lake_path, init_lake
+from server.db.kline_lake import FORMAL_DATA_SCHEMA, LAKE_SCHEMA, get_lake_path, init_lake
 
 RECORD_SIZE = 32
 RECORD_FMT = "<IIIIIfII"
@@ -143,7 +143,7 @@ def _run_daily_sync_job(job_id: str) -> None:
             _jobs[job_id]["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def sync_daily_files(root: Path, mode: str, reset: bool, job_id: Optional[str] = None) -> dict:
+def sync_daily_files(root: Path, mode: str, reset: bool, job_id: Optional[str] = None, batch_id: str = "") -> dict:
     init_lake()
     files = _collect_day_files(root)
     conn = sqlite3.connect(get_lake_path("tdx"), timeout=60)
@@ -152,8 +152,10 @@ def sync_daily_files(root: Path, mode: str, reset: bool, job_id: Optional[str] =
         conn.execute("PRAGMA synchronous=OFF")
         conn.execute("PRAGMA cache_size=-131072")
         conn.executescript(LAKE_SCHEMA)
+        conn.executescript(FORMAL_DATA_SCHEMA)
         if reset or mode == "full":
             conn.execute("DELETE FROM klines WHERE freq='day' AND adjustflag='3'")
+            conn.execute("DELETE FROM raw_bars WHERE freq='day' AND dataset='tdx_raw'")
             conn.execute("DELETE FROM tdx_sync_meta WHERE freq='day'")
             conn.commit()
             last_dates = {}
@@ -176,7 +178,7 @@ def sync_daily_files(root: Path, mode: str, reset: bool, job_id: Optional[str] =
                 _update_job(job_id, processed_files=idx, skipped_files=skipped_files)
                 continue
 
-            _upsert_rows(conn, symbol, rows)
+            _upsert_rows(conn, symbol, rows, batch_id=batch_id)
             total_written += len(rows)
             synced_symbols += 1
             pending += len(rows)
@@ -343,7 +345,28 @@ def _format_date(date_int: int) -> str:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
-def _upsert_rows(conn: sqlite3.Connection, symbol: str, rows: list[dict]) -> None:
+def _upsert_rows(conn: sqlite3.Connection, symbol: str, rows: list[dict], *, batch_id: str = "") -> None:
+    conn.executemany(
+        """
+        INSERT INTO raw_bars
+            (symbol, freq, date, open, high, low, close, volume, amount, dataset, batch_id)
+        VALUES (?, 'day', ?, ?, ?, ?, ?, ?, ?, 'tdx_raw', ?)
+        ON CONFLICT(symbol, freq, date, dataset)
+        DO UPDATE SET
+            open = excluded.open,
+            high = excluded.high,
+            low = excluded.low,
+            close = excluded.close,
+            volume = excluded.volume,
+            amount = excluded.amount,
+            batch_id = COALESCE(NULLIF(excluded.batch_id, ''), raw_bars.batch_id),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        [
+            (symbol, row["date"], row["open"], row["high"], row["low"], row["close"], row["volume"], row["amount"], batch_id)
+            for row in rows
+        ],
+    )
     conn.executemany(
         """
         INSERT OR REPLACE INTO klines

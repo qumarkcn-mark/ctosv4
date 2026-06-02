@@ -401,6 +401,8 @@ def _source_meta(source_policy: dict | None = None) -> dict:
     selected = (source_policy or {}).get("selected") or {}
     return {
         "provider": selected.get("source") or FORMAL_SOURCE,
+        "storage": selected.get("storage") or "legacy_klines",
+        "dataset": selected.get("dataset") or "klines",
         "adjustflag": selected.get("adjustflag") or FORMAL_ADJUSTFLAG,
         "engine": STRUCTURE_ENGINE,
         "adapter": "server.engines.structure.czsc_adapter",

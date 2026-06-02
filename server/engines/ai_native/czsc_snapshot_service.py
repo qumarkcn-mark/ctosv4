@@ -928,7 +928,7 @@ def _dedupe_user_ids(raw_user_ids: list[Any]) -> list[int]:
 def _latest_snapshot_ids_for_context(*, symbol: str, compute_profile: str) -> list[str]:
     ids = []
     for level in DEFAULT_LEVELS:
-        snapshot = get_latest_structure(symbol=symbol, level=level, min_profile=compute_profile)
+        snapshot = get_latest_structure(symbol=symbol, level=level, min_profile=compute_profile, allow_bootstrap=False)
         if snapshot:
             ids.append(snapshot["snapshot_id"])
     return ids

@@ -108,6 +108,13 @@ def answer_structure_question(
     runtime_context["chat_current_price_source"] = _chat_current_price_source(runtime_context, intraday_observation)
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     postmarket_snapshot = _chat_postmarket_1m_snapshot(canonical)
+    data_freshness = _chat_data_freshness(
+        context=context,
+        data_status=data_status,
+        runtime_context=runtime_context,
+        intraday_observation=intraday_observation,
+        intraday_snapshot=postmarket_snapshot,
+    )
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
         if intent_type == "review"
@@ -123,6 +130,7 @@ def answer_structure_question(
         runtime_context=runtime_context,
         intraday_observation=intraday_observation,
         intraday_snapshot=postmarket_snapshot,
+        data_freshness=data_freshness,
         reasoning_continuity_context=reasoning_continuity_context,
         data_status=data_status,
         memory_context=memory_context,
@@ -152,6 +160,7 @@ def answer_structure_question(
         "intraday_live_snapshot": intraday_observation,
         "postmarket_1m_snapshot": postmarket_snapshot,
         "intraday_snapshot": postmarket_snapshot,
+        "data_freshness": data_freshness,
         "reasoning_continuity_context": reasoning_continuity_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
@@ -255,6 +264,13 @@ async def stream_structure_question(
     runtime_context["chat_current_price_source"] = _chat_current_price_source(runtime_context, intraday_observation)
     memory_context = get_memory_context_for_chat(user_id=user_id, symbol=canonical)
     postmarket_snapshot = _chat_postmarket_1m_snapshot(canonical)
+    data_freshness = _chat_data_freshness(
+        context=context,
+        data_status=data_status,
+        runtime_context=runtime_context,
+        intraday_observation=intraday_observation,
+        intraday_snapshot=postmarket_snapshot,
+    )
     review_context = (
         list_symbol_outcome_reviews(user_id=user_id, symbol=canonical, limit=5)
         if intent_type == "review"
@@ -270,6 +286,7 @@ async def stream_structure_question(
         runtime_context=runtime_context,
         intraday_observation=intraday_observation,
         intraday_snapshot=postmarket_snapshot,
+        data_freshness=data_freshness,
         reasoning_continuity_context=reasoning_continuity_context,
         data_status=data_status,
         memory_context=memory_context,
@@ -378,6 +395,7 @@ async def stream_structure_question(
         "intraday_live_snapshot": intraday_observation,
         "postmarket_1m_snapshot": postmarket_snapshot,
         "intraday_snapshot": postmarket_snapshot,
+        "data_freshness": data_freshness,
         "reasoning_continuity_context": reasoning_continuity_context,
         "suggested_reminders": reminder_candidates,
         "data_status": data_status,
@@ -750,6 +768,7 @@ def _chat_llm_prompt_material(
     runtime_context: dict[str, Any] | None = None,
     intraday_observation: dict[str, Any] | None = None,
     intraday_snapshot: dict[str, Any] | None = None,
+    data_freshness: dict[str, Any] | None = None,
     reasoning_continuity_context: dict[str, Any] | None = None,
     data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
@@ -782,6 +801,7 @@ def _chat_llm_prompt_material(
         intent_type=intent_type,
         intraday_observation=intraday_observation or {},
         intraday_snapshot=intraday_snapshot or {},
+        data_freshness=data_freshness or {},
         reasoning_continuity_context=reasoning_continuity_context or {},
         conversation_context=conversation_context or {},
         runtime_context=runtime_context or {},
@@ -800,6 +820,7 @@ def _chat_llm_prompt_material(
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
+            "data_freshness": data_freshness or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "runtime_context": runtime_context or {},
             "data_status": data_status or {},
@@ -830,6 +851,7 @@ def _chat_llm_prompt_material(
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
+            "data_freshness": data_freshness or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "memory_context": memory_context or {},
             "review_context": review_context or {},
@@ -862,6 +884,7 @@ def _build_ai_answer_from_full_reasoning(
     runtime_context: dict[str, Any] | None = None,
     intraday_observation: dict[str, Any] | None = None,
     intraday_snapshot: dict[str, Any] | None = None,
+    data_freshness: dict[str, Any] | None = None,
     reasoning_continuity_context: dict[str, Any] | None = None,
     data_status: dict[str, Any] | None = None,
     memory_context: dict[str, Any] | None = None,
@@ -895,6 +918,7 @@ def _build_ai_answer_from_full_reasoning(
         intent_type=intent_type,
         intraday_observation=intraday_observation or {},
         intraday_snapshot=intraday_snapshot or {},
+        data_freshness=data_freshness or {},
         reasoning_continuity_context=reasoning_continuity_context or {},
         conversation_context=conversation_context or {},
         runtime_context=runtime_context or {},
@@ -913,6 +937,7 @@ def _build_ai_answer_from_full_reasoning(
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
+            "data_freshness": data_freshness or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "runtime_context": runtime_context or {},
             "data_status": data_status or {},
@@ -944,6 +969,7 @@ def _build_ai_answer_from_full_reasoning(
             "intraday_observation": intraday_observation or {},
             "intraday_live_snapshot": intraday_observation or {},
             "postmarket_1m_snapshot": intraday_snapshot or {},
+            "data_freshness": data_freshness or {},
             "reasoning_continuity_context": reasoning_continuity_context or {},
             "memory_context": memory_context or {},
             "review_context": review_context or {},
@@ -1408,12 +1434,57 @@ def _chat_position_context(context: dict[str, Any], runtime_context: dict[str, A
     return position
 
 
+def _chat_data_freshness(
+    *,
+    context: dict[str, Any],
+    data_status: dict[str, Any],
+    runtime_context: dict[str, Any],
+    intraday_observation: dict[str, Any],
+    intraday_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Small data freshness contract for chat; it never triggers structure recompute."""
+    intraday_coverage = intraday_observation.get("coverage") or {}
+    snapshot_coverage = intraday_snapshot.get("coverage") or {}
+    status = str(data_status.get("status") or "unknown")
+    source_price = _chat_current_price_source(runtime_context, intraday_observation)
+    return {
+        "version": "ai_structure_chat_data_freshness.v1",
+        "structure_basis": "fresh_snapshot_read_only" if status == "fresh" else "snapshot_read_only",
+        "structure_status": status,
+        "stale_reason": str(data_status.get("stale_reason") or ""),
+        "missing_structure_levels": list(data_status.get("missing_levels") or []),
+        "reasoning_status": data_status.get("reasoning_status") or reasoning_availability(context or None),
+        "context": {
+            "context_id": str(context.get("context_id") or ""),
+            "updated_at": str(context.get("updated_at") or ""),
+        },
+        "intraday_basis": {
+            "source": str(intraday_observation.get("source") or ""),
+            "usage": str(intraday_observation.get("usage") or ""),
+            "as_of": str(intraday_observation.get("as_of") or ""),
+            "coverage": intraday_coverage,
+            "active": bool(intraday_observation.get("as_of") or (intraday_observation.get("quote") or {}).get("price")),
+        },
+        "postmarket_1m_basis": {
+            "available": bool(intraday_snapshot.get("available")),
+            "source": str(intraday_snapshot.get("source") or ""),
+            "usage": str(intraday_snapshot.get("usage") or ""),
+            "date": str(intraday_snapshot.get("date") or ""),
+            "coverage": snapshot_coverage,
+        },
+        "current_price": _chat_current_price(runtime_context, intraday_observation),
+        "current_price_source": source_price,
+        "watchboard_quote_time": str(runtime_context.get("watchboard_quote_time") or ""),
+    }
+
+
 def _build_chat_context_pack(
     *,
     question: str,
     intent_type: str,
     intraday_observation: dict[str, Any],
     intraday_snapshot: dict[str, Any],
+    data_freshness: dict[str, Any],
     reasoning_continuity_context: dict[str, Any],
     conversation_context: dict[str, Any],
     runtime_context: dict[str, Any],
@@ -1430,6 +1501,7 @@ def _build_chat_context_pack(
         "live_tape": _chat_live_tape(intraday_observation, runtime_context),
         "intraday_live_snapshot": _chat_live_tape(intraday_observation, runtime_context),
         "postmarket_1m_snapshot": _chat_intraday_snapshot_pack(intraday_snapshot),
+        "data_freshness": data_freshness,
         "trigger_state": _chat_trigger_state(triggers),
         "recent_dialogue": _chat_recent_dialogue(
             conversation_context,
