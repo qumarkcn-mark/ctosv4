@@ -125,13 +125,13 @@ class T0SweeperWorker:
 
             result = machine.force_sweep(current_price)
 
-            if result.signal == "SWEEP":
+            if result.signal and result.signal.startswith("SWEEP"):
                 try:
                     get_or_create_t0_account(user_id)
                     record_t0_signal(
                         user_id=user_id,
                         symbol=symbol,
-                        signal="SWEEP",
+                        signal=result.signal,
                         signal_price=current_price,
                         t0_qty=result.signal_qty or t0_qty,
                         tick_result=result,

@@ -60,7 +60,7 @@ def get_or_create_t0_account(user_id: int) -> str:
 def record_t0_signal(
     user_id: int,
     symbol: str,
-    signal: str,          # BUY_LONG / SELL_LONG / SELL_SHORT / BUY_SHORT / STOP_LONG / STOP_SHORT / SWEEP
+    signal: str,          # BUY_LONG / SELL_LONG / SELL_SHORT / BUY_SHORT / STOP_LONG / STOP_SHORT / SWEEP_LONG / SWEEP_SHORT
     signal_price: float,
     t0_qty: int,
     tick_result: T0TickResult,
@@ -81,9 +81,9 @@ def record_t0_signal(
         { intent_id, fill_id, side, quantity, fill_price, net_pnl, fees }
     """
     # 确定买卖方向
-    # BUY_LONG / BUY_SHORT → "BUY"（实际买入操作）
-    # SELL_LONG / SELL_SHORT / STOP_LONG / STOP_SHORT / SWEEP → "SELL"
-    side = "BUY" if signal in ("BUY_LONG", "BUY_SHORT") else "SELL"
+    # BUY_LONG / BUY_SHORT / SWEEP_SHORT → "BUY"（实际买入操作）
+    # SELL_LONG / SELL_SHORT / STOP_LONG / STOP_SHORT / SWEEP_LONG → "SELL"
+    side = "BUY" if signal in ("BUY_LONG", "BUY_SHORT", "SWEEP_SHORT") else "SELL"
 
     # 幂等键：防止同一信号重复写入
     today = datetime.now().strftime("%Y-%m-%d")
@@ -100,10 +100,10 @@ def record_t0_signal(
 
     # 计算本笔净 PnL（仅对平仓信号有意义）
     net_pnl = 0.0
-    if tick_result.entry_price and signal in ("SELL_LONG", "STOP_LONG", "SWEEP") and side == "SELL":
+    if tick_result.entry_price and signal in ("SELL_LONG", "STOP_LONG", "SWEEP_LONG") and side == "SELL":
         gross = (signal_price - tick_result.entry_price) * t0_qty
         net_pnl = gross - fee_detail["total"]
-    elif tick_result.entry_price and signal in ("BUY_SHORT", "STOP_SHORT") and side == "BUY":
+    elif tick_result.entry_price and signal in ("BUY_SHORT", "STOP_SHORT", "SWEEP_SHORT") and side == "BUY":
         gross = (tick_result.entry_price - signal_price) * t0_qty
         net_pnl = gross - fee_detail["total"]
 

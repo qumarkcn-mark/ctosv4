@@ -160,7 +160,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
             hhmm = bar_time[11:16] if len(bar_time) > 10 else ""
             if hhmm >= "14:55":
                 result = machine.force_sweep(bar["close"])
-                if result.signal == "SWEEP":
+                if result.signal and result.signal.startswith("SWEEP"):
                     day_signals += 1
                     day_fills += 1
                     if config.use_paper_db:
@@ -233,7 +233,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
     # 总信号数和成交数（计算 SELL/BUY 完整笔数）
     buy_signals = [t for t in all_trades if "BUY" in t["signal"]]
-    sell_signals = [t for t in all_trades if "SELL" in t["signal"] or "STOP" in t["signal"] or t["signal"] == "SWEEP"]
+    sell_signals = [t for t in all_trades if "SELL" in t["signal"] or "STOP" in t["signal"] or t["signal"].startswith("SWEEP")]
 
     return BacktestResult(
         symbol=config.symbol,

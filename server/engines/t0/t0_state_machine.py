@@ -26,7 +26,7 @@ class T0State(str, Enum):
 @dataclass
 class T0TickResult:
     state: str
-    signal: Optional[str]              # BUY_LONG/SELL_LONG/SELL_SHORT/BUY_SHORT/STOP_LONG/STOP_SHORT/SWEEP
+    signal: Optional[str]              # BUY_LONG/SELL_LONG/SELL_SHORT/BUY_SHORT/STOP_LONG/STOP_SHORT/SWEEP_LONG/SWEEP_SHORT
     signal_price: Optional[float]
     pivot_zd: Optional[float]
     pivot_zg: Optional[float]
@@ -263,7 +263,7 @@ class T0StateMachine:
         reason = "14:55强制平仓"
 
         if self._state == T0State.POSITION_LONG:
-            signal = "SWEEP"
+            signal = "SWEEP_LONG"
             qty = self._effective_open_qty()
             entry = self._entry_price
             pnl = (current_price - entry) * qty
@@ -274,7 +274,7 @@ class T0StateMachine:
             self._entry_price = None
             self._current_open_qty = self.t0_qty
         elif self._state == T0State.POSITION_SHORT:
-            signal = "SWEEP"
+            signal = "SWEEP_SHORT"
             qty = self._effective_open_qty()
             entry = self._entry_price
             pnl = (entry - current_price) * qty

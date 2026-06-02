@@ -286,7 +286,7 @@ class TestForceSweep:
         machine._entry_price = 100.0
 
         result = machine.force_sweep(103.0)
-        assert result.signal == "SWEEP"
+        assert result.signal == "SWEEP_LONG"
         assert result.state == T0State.IDLE.value
 
     def test_sweep_from_position_short(self):
@@ -297,7 +297,7 @@ class TestForceSweep:
         machine._entry_price = 107.0
 
         result = machine.force_sweep(105.0)
-        assert result.signal == "SWEEP"
+        assert result.signal == "SWEEP_SHORT"
         assert result.state == T0State.IDLE.value
 
     def test_sweep_from_idle_no_signal(self):
