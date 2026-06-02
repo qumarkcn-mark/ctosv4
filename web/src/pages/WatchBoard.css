@@ -424,6 +424,106 @@
   color: var(--text-primary, rgba(255, 255, 255, 0.92));
 }
 
+.watchboard-t0-panel {
+  margin-bottom: 14px;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.1));
+  border-left: 3px solid var(--border-strong, rgba(255, 255, 255, 0.18));
+  border-radius: var(--radius-md, 6px);
+  padding: 12px;
+  background: var(--surface-1, #0d0d0f);
+}
+
+.watchboard-t0-panel.is-active {
+  border-left-color: var(--accent-cyan, #06b6d4);
+}
+
+.watchboard-t0-panel.is-signal {
+  border-left-color: var(--signal-amber, #f59e0b);
+}
+
+.watchboard-t0-panel.is-danger {
+  border-left-color: var(--warning-red, #dc2626);
+}
+
+.watchboard-t0-panel.is-muted {
+  opacity: 0.82;
+}
+
+.watchboard-t0-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.watchboard-t0-head strong {
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-family: var(--font-display, sans-serif);
+  font-size: var(--text-md, 14px);
+  font-weight: 800;
+}
+
+.watchboard-t0-head span {
+  border-radius: var(--radius-xs, 2px);
+  padding: 2px 7px;
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--accent-cyan, #06b6d4);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+  font-weight: 700;
+}
+
+.watchboard-t0-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 9px;
+}
+
+.watchboard-t0-grid span {
+  min-width: 0;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-xs, 2px);
+  padding: 6px;
+  background: var(--surface-2, #111115);
+}
+
+.watchboard-t0-grid em {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-cn, sans-serif);
+  font-size: var(--text-2xs, 10px);
+  font-style: normal;
+}
+
+.watchboard-t0-grid strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 11px);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchboard-t0-panel p {
+  margin: 0;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+  font-size: var(--text-sm, 12px);
+  line-height: 1.55;
+}
+
+.watchboard-t0-panel small {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+}
+
 .watchboard-reasoning-content h3 {
   font-family: var(--font-display, sans-serif);
   font-size: var(--text-md, 14px);

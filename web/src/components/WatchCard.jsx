@@ -60,6 +60,34 @@ function formatMetaTime(value) {
   return text.slice(0, 16)
 }
 
+function t0Badge(state = null) {
+  if (!state) return null
+  const signal = String(state.signal || '')
+  const stateValue = String(state.state || '')
+  const signalMap = {
+    BUY_LONG: '低吸',
+    SELL_LONG: '正T卖',
+    SELL_SHORT: '高抛',
+    BUY_SHORT: '倒T买',
+    STOP_LONG: '止损',
+    STOP_SHORT: '止损',
+    SWEEP_LONG: '扫尾',
+    SWEEP_SHORT: '扫尾',
+  }
+  const stateMap = {
+    IDLE: '等待',
+    POSITION_LONG: '正T',
+    POSITION_SHORT: '倒T',
+    LOCKDOWN: '锁定',
+  }
+  const label = signalMap[signal] || stateMap[stateValue] || 'T0'
+  let tone = 'idle'
+  if (stateValue === 'LOCKDOWN' || signal.includes('STOP')) tone = 'danger'
+  else if (stateValue === 'POSITION_LONG' || stateValue === 'POSITION_SHORT' || signal) tone = 'active'
+  else if (state.is_grid_viable === 0 || state.is_grid_viable === false) tone = 'muted'
+  return { label, tone }
+}
+
 function reasoningFreshnessMeta(item = {}, summary = {}) {
   const freshness = item.reasoning_freshness || {}
   const status = String(freshness.status || '').trim()
@@ -87,6 +115,7 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
   const triggerLine = machine.available ? machine.nextWatchLine : ''
   const triggerLabel = machine.nextWatchLabel || (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '已越过') : '等待')
   const position = item.position
+  const t0 = t0Badge(item.t0_state)
   const action = normalizeCurrentAction(rawAction, Boolean(position?.shares))
   const quoteTime = item.price_data?.quote_time || ''
   const pnlPct = Number(position?.pnl_pct ?? 0)
@@ -158,6 +187,7 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
         {freshnessMeta.label && (
           <span className={`watch-card-freshness is-${freshnessMeta.tone}`}>{freshnessMeta.label}</span>
         )}
+        {t0 && <span className={`watch-card-t0 is-${t0.tone}`}>T0 {t0.label}</span>}
         <span className={`watch-action-badge action-${actionClass(action)}`}>当前：{action}</span>
       </div>
     </button>

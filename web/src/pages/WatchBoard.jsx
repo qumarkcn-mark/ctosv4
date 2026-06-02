@@ -44,6 +44,15 @@ function mergePrice(item, prices, previousPrices = {}) {
   }
 }
 
+function mergeT0State(item, t0States = {}) {
+  const state = t0States[item.symbol] || t0States[priceKey(item.symbol)]
+  if (!state) return item
+  return {
+    ...item,
+    t0_state: state,
+  }
+}
+
 function chatQuestionPayload(item, question, thinkingEnabled = false) {
   const price = Number(item?.price || item?.price_data?.price || 0)
   return {
@@ -79,6 +88,49 @@ function formatMetaTime(value) {
   const text = String(value).replace('T', ' ').replace(/\+\d\d:\d\d|Z$/g, '').trim()
   if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(5, 16)
   return text.slice(0, 16)
+}
+
+function formatT0Value(value, digits = 2) {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num === 0) return '--'
+  return num >= 100 ? num.toFixed(2) : num.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function formatT0Time(value) {
+  return formatMetaTime(value)
+}
+
+function t0StateLabel(value) {
+  const map = {
+    IDLE: '等待',
+    POSITION_LONG: '正T持仓',
+    POSITION_SHORT: '倒T持仓',
+    LOCKDOWN: '锁定',
+  }
+  return map[String(value || '')] || '未启用'
+}
+
+function t0SignalLabel(value) {
+  const map = {
+    BUY_LONG: '低吸',
+    SELL_LONG: '正T卖出',
+    SELL_SHORT: '高抛',
+    BUY_SHORT: '倒T买回',
+    STOP_LONG: '正T止损',
+    STOP_SHORT: '倒T止损',
+    SWEEP_LONG: '尾盘卖出',
+    SWEEP_SHORT: '尾盘买回',
+  }
+  return map[String(value || '')] || ''
+}
+
+function t0Tone(state = {}) {
+  const signal = String(state.signal || '')
+  if (String(state.state || '') === 'LOCKDOWN' || signal.includes('STOP')) return 'danger'
+  if (state.state === 'POSITION_LONG' || state.state === 'POSITION_SHORT') return 'active'
+  if (signal) return 'signal'
+  if (state.is_grid_viable === 0 || state.is_grid_viable === false) return 'muted'
+  return 'idle'
 }
 
 function formatElapsed(seconds) {
@@ -191,6 +243,7 @@ export default function WatchBoard() {
   const [groups, setGroups] = useState([])
   const [prices, setPrices] = useState({})
   const [previousPrices, setPreviousPrices] = useState({})
+  const [t0States, setT0States] = useState({})
   const [selected, setSelected] = useState(null)
   const [fullText, setFullText] = useState('')
   const [detailStatus, setDetailStatus] = useState('idle')
@@ -217,7 +270,7 @@ export default function WatchBoard() {
           ...group,
           items: (group.items || [])
         .map((item, index) => {
-          const merged = mergePrice(item, prices, previousPrices)
+          const merged = mergeT0State(mergePrice(item, prices, previousPrices), t0States)
           const tactical = computeStateMachineState(merged, merged.price, merged.previous_price)
           return {
             ...merged,
@@ -237,7 +290,7 @@ export default function WatchBoard() {
           return a._watchboardIndex - b._watchboardIndex
         }),
     }))
-  ), [groups, prices, previousPrices])
+  ), [groups, prices, previousPrices, t0States])
   const selectedReasoningStatus = useMemo(() => (
     buildReasoningStatus(
       selected?.reasoning_freshness,
@@ -247,14 +300,15 @@ export default function WatchBoard() {
     )
   ), [selected, reasoningRun, nowTick])
   const selectedLiveItem = useMemo(() => (
-    selected ? mergePrice(selected, prices, previousPrices) : null
-  ), [selected, prices, previousPrices])
+    selected ? mergeT0State(mergePrice(selected, prices, previousPrices), t0States) : null
+  ), [selected, prices, previousPrices, t0States])
   const selectedIntradayReviewQuestion = useMemo(() => (
     selectedLiveItem ? buildIntradayReviewQuestion(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
   ), [selectedLiveItem])
   const selectedIntradayReviewLabel = useMemo(() => (
     selectedLiveItem ? intradayReviewLabel(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
   ), [selectedLiveItem])
+  const selectedT0State = selectedLiveItem?.t0_state || null
 
   const loadWatchboard = useCallback(async () => {
     setError('')
@@ -268,6 +322,16 @@ export default function WatchBoard() {
       return null
     } finally {
       setLoading(false)
+    }
+  }, [])
+
+  const loadT0States = useCallback(async () => {
+    try {
+      const json = await apiJson('/api/t0/states')
+      setT0States(json.states || {})
+    } catch (err) {
+      console.warn('T0 状态加载失败:', err)
+      setT0States({})
     }
   }, [])
 
@@ -288,17 +352,19 @@ export default function WatchBoard() {
 
   useEffect(() => {
     loadWatchboard()
-  }, [loadWatchboard])
+    loadT0States()
+  }, [loadWatchboard, loadT0States])
 
   useEffect(() => {
     if (!allItems.length) return
     const tick = () => {
       if (isTradingTime()) pollPrices()
+      if (isTradingTime()) loadT0States()
     }
     tick()
     const timer = setInterval(tick, 5000)
     return () => clearInterval(timer)
-  }, [allItems, pollPrices])
+  }, [allItems, pollPrices, loadT0States])
 
   useEffect(() => {
     if (activeDetailTab !== 'chat') return
@@ -339,7 +405,7 @@ export default function WatchBoard() {
   }, [])
 
   const openDetail = useCallback(async (item) => {
-    const current = mergePrice(item, prices, previousPrices)
+    const current = mergeT0State(mergePrice(item, prices, previousPrices), t0States)
     setSelected(current)
     setFullText('')
     setDetailStatus('loading')
@@ -358,7 +424,7 @@ export default function WatchBoard() {
     } finally {
       setDrawerLoading(false)
     }
-  }, [prices, previousPrices, restoreChatHistory])
+  }, [prices, previousPrices, t0States, restoreChatHistory])
 
   useEffect(() => {
     if (autoOpenedRef.current || selected || loading) return
@@ -630,6 +696,47 @@ export default function WatchBoard() {
           </div>
 
           <div className="watchboard-drawer-body">
+            <section className={`watchboard-t0-panel is-${t0Tone(selectedT0State || {})}`} aria-label="T0 做T状态">
+              <div className="watchboard-t0-head">
+                <strong>T0 做T</strong>
+                <span>{selectedT0State ? t0StateLabel(selectedT0State.state) : '未启用'}</span>
+              </div>
+              {selectedT0State ? (
+                <>
+                  <div className="watchboard-t0-grid">
+                    <span>
+                      <em>数量</em>
+                      <strong>{selectedT0State.t0_qty || '--'}</strong>
+                    </span>
+                    <span>
+                      <em>中枢</em>
+                      <strong>{formatT0Value(selectedT0State.pivot_zd)} / {formatT0Value(selectedT0State.pivot_zg)}</strong>
+                    </span>
+                    <span>
+                      <em>入场</em>
+                      <strong>{formatT0Value(selectedT0State.entry_price)}</strong>
+                    </span>
+                    <span>
+                      <em>日内</em>
+                      <strong className={Number(selectedT0State.daily_pnl || 0) >= 0 ? 'is-up' : 'is-down'}>
+                        {formatT0Value(selectedT0State.daily_pnl)}
+                      </strong>
+                    </span>
+                  </div>
+                  <p>
+                    {selectedT0State.signal ? `${t0SignalLabel(selectedT0State.signal)} ${formatT0Value(selectedT0State.signal_price)} · ` : ''}
+                    {selectedT0State.reason || '等待 5 分钟中枢边界与 1 分钟分型确认。'}
+                  </p>
+                  <small>
+                    {selectedT0State.is_grid_viable ? '网格可行' : '网格未满足摩擦空间'}
+                    {selectedT0State.updated_at ? ` · ${formatT0Time(selectedT0State.updated_at)}` : ''}
+                    {Number(selectedT0State.daily_stop_count || 0) > 0 ? ` · 止损 ${selectedT0State.daily_stop_count}` : ''}
+                  </small>
+                </>
+              ) : (
+                <p>这只票还没有启用 T0 做T教练，当前只展示 AI 盯盘推演。</p>
+              )}
+            </section>
             {activeDetailTab === 'reasoning' ? (
               drawerLoading ? (
                 <div className="watchboard-empty">正在读取完整推演...</div>
