@@ -21,18 +21,25 @@ def _row(date: str, close: float) -> dict:
     }
 
 
-def test_today_lake_1m_rows_merges_tdx_and_qmt_without_masking(monkeypatch):
+def test_today_lake_1m_rows_merges_tdx_and_intraday_without_masking(monkeypatch):
     def fake_query_klines(symbol, freq, start_date=None, limit=360, adjustflag="2", source=None):
         assert symbol == "sh.600790"
         assert freq == "1"
         if source == "tdx" and adjustflag == "2":
             return [_row("2026-05-28 09:31:00", 10.1), _row("2026-05-28 09:32:00", 10.2)]
-        if source == "qmt" and adjustflag == "3":
-            return [_row("2026-05-28 09:31:00", 9.9), _row("2026-05-28 09:33:00", 10.3)]
         return []
+
+    def fake_query_intraday_bars(symbol, freq, start_time=None, limit=360):
+        assert symbol == "sh.600790"
+        assert freq == "1"
+        return [
+            {**_row("2026-05-28 09:31:00", 9.9), "bar_time": "2026-05-28 09:31:00", "source": "tdx_quote_aggregation"},
+            {**_row("2026-05-28 09:33:00", 10.3), "bar_time": "2026-05-28 09:33:00", "source": "tdx_quote_aggregation"},
+        ]
 
     monkeypatch.setattr(svc, "datetime", FixedDateTime)
     monkeypatch.setattr(svc, "query_klines", fake_query_klines)
+    monkeypatch.setattr(svc, "query_intraday_bars", fake_query_intraday_bars)
 
     rows = svc._today_lake_1m_rows("sh.600790")
 
@@ -44,7 +51,7 @@ def test_today_lake_1m_rows_merges_tdx_and_qmt_without_masking(monkeypatch):
     assert rows[0]["close"] == 10.1
     assert rows[0]["source"] == "tdx_lake_1m"
     assert rows[-1]["close"] == 10.3
-    assert rows[-1]["source"] == "qmt_lake_1m"
+    assert rows[-1]["source"] == "tdx_quote_aggregation"
 
 
 def test_today_lake_1m_rows_prefers_qfq_tdx_over_raw_for_same_minute(monkeypatch):
@@ -57,6 +64,7 @@ def test_today_lake_1m_rows_prefers_qfq_tdx_over_raw_for_same_minute(monkeypatch
 
     monkeypatch.setattr(svc, "datetime", FixedDateTime)
     monkeypatch.setattr(svc, "query_klines", fake_query_klines)
+    monkeypatch.setattr(svc, "query_intraday_bars", lambda *args, **kwargs: [])
 
     rows = svc._today_lake_1m_rows("sh.600790")
 

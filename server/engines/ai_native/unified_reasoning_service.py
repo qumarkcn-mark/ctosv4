@@ -196,7 +196,12 @@ def build_unified_reasoning_input(
     rows: list[dict[str, Any]] = []
     missing_levels: list[str] = []
     for level in normalized_levels:
-        row = get_latest_structure(symbol=canonical, level=level, min_profile=compute_profile)
+        row = get_latest_structure(
+            symbol=canonical,
+            level=level,
+            min_profile=compute_profile,
+            allow_bootstrap=False,
+        )
         if not row:
             missing_levels.append(level)
             continue
@@ -221,8 +226,17 @@ def build_unified_reasoning_input(
         for level in normalized_levels
         if level in snapshots
     }
-    current_price = _current_price(snapshots)
+    intraday_observation = _intraday_observation(canonical)
+    snapshot_price = _current_price(snapshots)
+    current_price = _intraday_price(intraday_observation) or snapshot_price
     source_snapshot_ids = [item["snapshot_id"] for item in rows]
+    data_freshness = _data_freshness(
+        snapshots=snapshots,
+        intraday_observation=intraday_observation,
+        missing_levels=missing_levels,
+        current_price=current_price,
+        snapshot_price=snapshot_price,
+    )
     pressure_support = _compute_pressure_support(snapshots)
     nearby_pressure_support = _add_pressure_support_semantics(pressure_support, structure_geometry)
     resonance_evidence = _compute_resonance_evidence(
@@ -235,7 +249,6 @@ def build_unified_reasoning_input(
         pressure_support=nearby_pressure_support,
         level_names=level_names,
     )
-    intraday_observation = _intraday_observation(canonical)
     reasoning_continuity_context = build_reasoning_continuity_context(
         user_id=user_id,
         symbol=canonical,
@@ -258,7 +271,10 @@ def build_unified_reasoning_input(
     full_input = {
         "symbol": canonical,
         "current_price": current_price,
+        "current_price_source": data_freshness["current_price_source"],
         "data_as_of": _data_as_of(snapshots),
+        "data_freshness": data_freshness,
+        "structure_snapshot": _structure_snapshot_manifest(snapshots),
         "first_stage_reasoning": structure,
         "structure_geometry": structure_geometry,
         "momentum_dynamics": momentum_dynamics,
@@ -1436,6 +1452,65 @@ def _data_as_of(snapshots: dict[str, dict[str, Any]]) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _intraday_price(intraday_observation: dict[str, Any]) -> float:
+    return _num((intraday_observation.get("quote") or {}).get("price"))
+
+
+def _data_freshness(
+    *,
+    snapshots: dict[str, dict[str, Any]],
+    intraday_observation: dict[str, Any],
+    missing_levels: list[str],
+    current_price: float,
+    snapshot_price: float,
+) -> dict[str, Any]:
+    quote_price = _intraday_price(intraday_observation)
+    levels = {
+        level: {
+            "snapshot_id": str(row.get("snapshot_id") or ""),
+            "data_as_of": str(row.get("data_as_of") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+            "data_signature": str(row.get("data_signature") or ""),
+            "source": ((row.get("snapshot") or {}).get("source") or {}),
+        }
+        for level, row in snapshots.items()
+    }
+    intraday_coverage = intraday_observation.get("coverage") or {}
+    return {
+        "version": "ai_native_data_freshness.v1",
+        "structure_basis": "fresh_snapshot_read_only",
+        "structure_levels": levels,
+        "missing_structure_levels": list(missing_levels or []),
+        "intraday_basis": {
+            "source": intraday_observation.get("source") or "",
+            "usage": intraday_observation.get("usage") or "",
+            "as_of": intraday_observation.get("as_of") or "",
+            "coverage": intraday_coverage,
+        },
+        "current_price": current_price,
+        "current_price_source": "intraday_observation" if quote_price > 0 else ("structure_snapshot" if snapshot_price > 0 else ""),
+        "snapshot_price": snapshot_price,
+        "quote_price": quote_price,
+    }
+
+
+def _structure_snapshot_manifest(snapshots: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "source": "structure_snapshots",
+        "usage": "formal_structure",
+        "levels": {
+            level: {
+                "snapshot_id": str(row.get("snapshot_id") or ""),
+                "data_as_of": str(row.get("data_as_of") or ""),
+                "compute_profile": str(row.get("compute_profile") or ""),
+                "data_signature": str(row.get("data_signature") or ""),
+                "source": ((row.get("snapshot") or {}).get("source") or {}),
+            }
+            for level, row in snapshots.items()
+        },
+    }
 
 
 def _num(value: Any) -> float:

@@ -273,6 +273,7 @@ def latest_snapshot(
         symbol=normalize_symbol(symbol),
         level=normalized_level,
         min_profile=compute_profile,
+        allow_bootstrap=False,
     )
     if not snapshot:
         raise HTTPException(status_code=404, detail="snapshot not found")

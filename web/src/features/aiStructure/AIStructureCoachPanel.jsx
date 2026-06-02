@@ -13,6 +13,7 @@ const QUICK_QUESTIONS = [
 const CONTEXT_LEVELS = ['week', 'day', '30', '5']
 const CONTEXT_POLL_WINDOW_MS = 300_000
 const CONTEXT_POLL_INTERVAL_MS = 2_000
+const DATA_DIAGNOSTICS_POLL_INTERVAL_MS = 15_000
 const LEVEL_LABELS = {
   week: '周线',
   day: '日线',
@@ -45,6 +46,7 @@ export default function AIStructureCoachPanel({
   const [activeSessionId, setActiveSessionId] = useState('')
   const [unifiedReasoning, setUnifiedReasoning] = useState(null)
   const [intradaySnapshot, setIntradaySnapshot] = useState(null)
+  const [dataDiagnostics, setDataDiagnostics] = useState(null)
   const mountedRef = useRef(true)
   const symbolRef = useRef(symbol)
   const messagesRef = useRef(null)
@@ -60,8 +62,8 @@ export default function AIStructureCoachPanel({
     : (status?.status || 'idle')
   const commandActive = loading || Boolean(pendingQuestion && !canAsk)
   const dataLineage = useMemo(
-    () => buildDataLineageModel(status, detailReasoningContext || reasoningContext, messages, intradaySnapshot),
-    [status, detailReasoningContext, reasoningContext, messages, intradaySnapshot],
+    () => buildDataLineageModel(status, detailReasoningContext || reasoningContext, messages, intradaySnapshot, dataDiagnostics),
+    [status, detailReasoningContext, reasoningContext, messages, intradaySnapshot, dataDiagnostics],
   )
   const reasoningStale = dataLineage.reasoningStale
 
@@ -143,6 +145,21 @@ export default function AIStructureCoachPanel({
     } catch {
       if (mountedRef.current && sameSymbol(symbolRef.current, requestedSymbol)) {
         setIntradaySnapshot(null)
+      }
+    }
+  }, [symbol])
+
+  const loadDataDiagnostics = useCallback(async () => {
+    if (!symbol) return
+    const requestedSymbol = symbol
+    try {
+      const json = await apiJson(`${API_BASE}/data/diagnostics/${encodeURIComponent(symbol)}`)
+      if (mountedRef.current && sameSymbol(symbolRef.current, requestedSymbol)) {
+        setDataDiagnostics(json.data || json || null)
+      }
+    } catch {
+      if (mountedRef.current && sameSymbol(symbolRef.current, requestedSymbol)) {
+        setDataDiagnostics(null)
       }
     }
   }, [symbol])
@@ -271,6 +288,7 @@ export default function AIStructureCoachPanel({
     setActiveSessionId('')
     setUnifiedReasoning(null)
     setIntradaySnapshot(null)
+    setDataDiagnostics(null)
     if (deferLoad) {
       return () => {
         mountedRef.current = false
@@ -306,6 +324,20 @@ export default function AIStructureCoachPanel({
     loadIntradaySnapshot,
     loadChatHistory,
   ])
+
+  useEffect(() => {
+    if (!symbol) return
+    loadDataDiagnostics()
+  }, [symbol, loadDataDiagnostics])
+
+  useEffect(() => {
+    if (!symbol) return undefined
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      loadDataDiagnostics()
+    }, DATA_DIAGNOSTICS_POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [symbol, loadDataDiagnostics])
 
   useEffect(() => {
     if (deferLoad) return
@@ -420,6 +452,7 @@ export default function AIStructureCoachPanel({
       await loadChatHistory()
       await loadStatus()
       await loadIntradaySnapshot()
+      await loadDataDiagnostics()
     } catch (err) {
       patchStreamingMessage(streamingKey, { isStreaming: false })
       setError(err?.message || 'AI 问答失败')
@@ -427,7 +460,7 @@ export default function AIStructureCoachPanel({
       setLoading(false)
       setActiveQuestion('')
     }
-  }, [input, loading, symbol, canAsk, prewarm, loadStatus, activeSessionId, loadCurrentQuote, streamAnswer, patchStreamingMessage, loadChatHistory, loadIntradaySnapshot])
+  }, [input, loading, symbol, canAsk, prewarm, loadStatus, activeSessionId, loadCurrentQuote, streamAnswer, patchStreamingMessage, loadChatHistory, loadIntradaySnapshot, loadDataDiagnostics])
 
   useEffect(() => {
     if (!pendingQuestion || loading || !canAsk) return
@@ -517,7 +550,8 @@ export default function AIStructureCoachPanel({
     activeQuestion,
     pendingQuestion,
     pollingActive,
-  }), [status, booting, workspaceLoading, canAsk, loading, activeQuestion, pendingQuestion, pollingActive])
+    dataDiagnostics,
+  }), [status, booting, workspaceLoading, canAsk, loading, activeQuestion, pendingQuestion, pollingActive, dataDiagnostics])
 
   return (
     <section className="ai-structure-panel">
@@ -777,12 +811,12 @@ function DataLineageStrip({ model }) {
   )
 }
 
-function buildDataLineageModel(status, context, messages = [], intradaySnapshot = null) {
+function buildDataLineageModel(status, context, messages = [], intradaySnapshot = null, dataDiagnostics = null) {
   const freshness = primaryFreshness(status, context)
   const latestFreshness = latestStructureFreshness(status, context)
   const reasoningStale = Boolean(context && (freshness.stale || status?.status === 'stale'))
   return {
-    items: buildDataLineageItems(status, context, messages, intradaySnapshot, {
+    items: buildDataLineageItems(status, context, messages, intradaySnapshot, dataDiagnostics, {
       freshness,
       latestFreshness,
       reasoningStale,
@@ -793,7 +827,7 @@ function buildDataLineageModel(status, context, messages = [], intradaySnapshot 
   }
 }
 
-function buildDataLineageItems(status, context, messages = [], intradaySnapshot = null, model = {}) {
+function buildDataLineageItems(status, context, messages = [], intradaySnapshot = null, dataDiagnostics = null, model = {}) {
   const items = []
   const freshness = model.freshness || primaryFreshness(status, context)
   const latestFreshness = model.latestFreshness || latestStructureFreshness(status, context)
@@ -830,11 +864,41 @@ function buildDataLineageItems(status, context, messages = [], intradaySnapshot 
     tone: context ? (reasoningStale ? 'warn' : 'ready') : 'muted',
   })
 
-  const intraday = formatIntradaySnapshotStatus(intradaySnapshot) || latestIntradayCoverageStatus(messages)
+  const intraday = formatIntradayDiagnosticsStatus(dataDiagnostics)
+    || formatIntradaySnapshotStatus(intradaySnapshot)
+    || latestIntradayCoverageStatus(messages)
   if (intraday?.value) {
-    items.push({ key: 'intraday', label: '1m', ...intraday })
+    items.push({ key: 'intraday', label: '盘中', ...intraday })
   }
   return items
+}
+
+function formatIntradayDiagnosticsStatus(diagnostics) {
+  if (!diagnostics) return null
+  const routing = diagnostics.routing || {}
+  const preview = diagnostics.intraday_preview || {}
+  const sampler = diagnostics.sampler || {}
+  const readiness = diagnostics.readiness || {}
+  const activeRows = Number(preview.active_rows || 0)
+  if (activeRows > 0 || routing.m1_display_primary === 'intraday_bars') {
+    return {
+      value: `实时 ${activeRows || ''}根`.trim(),
+      tone: 'ready',
+    }
+  }
+  if (routing.m1_display_primary === 'tdx_lake') {
+    return {
+      value: formatAsOf(diagnostics.official_1m?.display_last_at || '') || 'TDX历史',
+      tone: readiness.status === 'waiting' ? 'warn' : 'muted',
+    }
+  }
+  if (sampler.last_error) {
+    return {
+      value: compactDataReason(sampler.last_error),
+      tone: 'error',
+    }
+  }
+  return null
 }
 
 function formatIntradaySnapshotStatus(snapshot) {
@@ -990,7 +1054,11 @@ function PipelineStatus({ items }) {
   return (
     <div className="ai-pipeline" aria-label="AI 结构数据流水线状态">
       {items.map((item) => (
-        <div key={item.key} className={`ai-pipeline-step ai-pipeline-step--${item.tone}`}>
+        <div
+          key={item.key}
+          className={`ai-pipeline-step ai-pipeline-step--${item.tone}`}
+          title={item.title || `${item.label}：${item.detail}`}
+        >
           <span className="ai-pipeline-dot" aria-hidden="true" />
           <strong>{item.label}</strong>
           <em>{item.detail}</em>
@@ -1108,6 +1176,7 @@ function Message({ item, onReminder, context }) {
   }
   const answer = item.answer || {}
   const answerText = answer.coach_answer || answer.answer || ''
+  const dataFreshnessMeta = formatAnswerDataFreshness(answer.data_freshness)
   const reminderCandidates = (answer.suggested_reminders || []).filter((candidate) => (
     isLiveReminderCandidate(answer, candidate, context)
   ))
@@ -1115,6 +1184,11 @@ function Message({ item, onReminder, context }) {
   return (
     <div className="ai-msg ai-msg--assistant">
       <div className="ai-msg-content">{renderCoachText(answerText)}</div>
+      {dataFreshnessMeta && (
+        <div className={`ai-msg-data-meta ai-msg-data-meta--${dataFreshnessMeta.tone}`}>
+          {dataFreshnessMeta.items.map((item) => <span key={item}>{item}</span>)}
+        </div>
+      )}
       {!!reminderCandidates.length && (
         <div className="ai-reminder-list">
           {reminderCandidates.map((candidate) => (
@@ -1131,6 +1205,47 @@ function Message({ item, onReminder, context }) {
       {answer.risk_disclaimer && !hasDisclaimerInAnswer && <span>{answer.risk_disclaimer}</span>}
     </div>
   )
+}
+
+function formatAnswerDataFreshness(freshness) {
+  if (!freshness) return null
+  const intraday = freshness.intraday_basis || {}
+  const postmarket = freshness.postmarket_1m_basis || {}
+  const structureStatus = String(freshness.structure_status || '')
+  const source = intraday.source
+    ? '盘中观察'
+    : postmarket.available
+      ? 'TDX历史'
+      : freshness.current_price_source
+        ? '价格'
+        : ''
+  if (!source && !structureStatus) return null
+  const asOf = formatAsOf(intraday.as_of || postmarket.date || freshness.context?.updated_at || '')
+  const quality = String((intraday.coverage || {}).quality || (postmarket.coverage || {}).quality || '')
+  const structure = structureStatus === 'fresh'
+    ? '结构fresh'
+    : structureStatus
+      ? '结构待刷新'
+      : ''
+  const items = [
+    source,
+    quality ? formatDataQuality(quality) : '',
+    structure,
+    asOf,
+  ].filter(Boolean)
+  const tone = structureStatus && structureStatus !== 'fresh'
+    ? 'warn'
+    : quality === 'partial'
+      ? 'warn'
+      : 'ready'
+  return items.length ? { items, tone } : null
+}
+
+function formatDataQuality(value) {
+  if (value === 'complete_from_open' || value === 'full') return '完整'
+  if (value === 'partial') return '部分'
+  if (value === 'none') return '无盘中'
+  return value
 }
 
 function renderCoachText(text) {
@@ -1390,7 +1505,7 @@ function statusNotice(status, pollingActive, options = {}) {
 }
 
 function buildPipelineItems(status, flags) {
-  const { booting, canAsk, loading, activeQuestion, pendingQuestion, pollingActive } = flags
+  const { booting, canAsk, loading, activeQuestion, pendingQuestion, pollingActive, dataDiagnostics } = flags
   const reason = statusReason(status)
   const isFailed = status?.status === 'failed'
   const isNoData = reason === 'NO_DATA'
@@ -1409,6 +1524,7 @@ function buildPipelineItems(status, flags) {
       tone: !status ? 'checking' : isNoData ? 'error' : booting ? 'working' : 'ready',
       detail: !status ? '检测中' : isNoData ? '缺数据' : booting ? '同步中' : '已接入',
     },
+    buildDataPipelineItem(dataDiagnostics),
     {
       key: 'snapshot',
       label: 'CZSC快照',
@@ -1428,6 +1544,63 @@ function buildPipelineItems(status, flags) {
       detail: loading ? '回答中' : activeQuestion || pendingQuestion ? '已收到' : canAsk ? '可提问' : '可先问',
     },
   ]
+}
+
+function buildDataPipelineItem(diagnostics) {
+  if (!diagnostics) {
+    return {
+      key: 'data',
+      label: '数据',
+      tone: 'checking',
+      detail: '检测中',
+    }
+  }
+  const readiness = diagnostics.readiness || {}
+  const routing = diagnostics.routing || {}
+  const official = diagnostics.official_1m || {}
+  const preview = diagnostics.intraday_preview || {}
+  const status = String(readiness.status || 'unknown')
+  const reason = String(readiness.reason || '')
+  const m1Route = String(routing.m1_display_primary || '')
+  const formalRoute = String(routing.formal_czsc_primary || '')
+  const routeLabel = m1Route === 'intraday_bars'
+    ? '实时1m'
+    : m1Route === 'tdx_lake'
+      ? 'TDX历史'
+      : m1Route === 'missing'
+        ? '缺1m'
+        : '未知'
+  const tone = status === 'blocked' || m1Route === 'missing'
+    ? 'error'
+    : status === 'ready'
+      ? 'ready'
+      : status === 'waiting'
+        ? 'warn'
+        : 'checking'
+  const detail = status === 'blocked'
+    ? compactDataReason(reason)
+    : routeLabel
+  return {
+    key: 'data',
+    label: '数据',
+    tone,
+    detail,
+    title: [
+      `数据：${detail}`,
+      formalRoute ? `结构：${formalRoute}` : '',
+      official.display_last_at ? `TDX 1m：${official.display_last_at}` : '',
+      preview.last_active_at ? `盘中：${preview.last_active_at}` : '',
+      reason ? `状态：${reason}` : '',
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+function compactDataReason(reason) {
+  if (!reason) return '异常'
+  if (reason.includes('BRIDGE')) return '桥异常'
+  if (reason.includes('TIMEOUT')) return '超时'
+  if (reason.includes('NO_VALID')) return '等实流'
+  return '异常'
 }
 
 function snapshotStatusTone(status, isWorking) {

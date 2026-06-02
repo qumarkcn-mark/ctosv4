@@ -9,8 +9,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from fastapi.concurrency import run_in_threadpool
 
 from server.api.auth import get_current_user_id
-from server.db.database import get_connection
-from server.db.kline_lake import lake_status, query_klines as query_lake_klines, upsert_klines
+from server.db.database import create_market_data_batch, get_connection, update_market_data_batch
+from server.db.kline_lake import (
+    lake_status,
+    query_intraday_bars,
+    query_klines as query_lake_klines,
+    upsert_adjusted_bars,
+    upsert_raw_bars,
+)
 from server.domain.symbols import normalize_symbol
 from server.services.csv_importer import import_csv
 from server.services.price_service import (
@@ -364,6 +370,37 @@ def _query_qmt_today_1m_display_klines(symbol: str, count: int) -> list[dict]:
     return result[-count:]
 
 
+def _query_intraday_today_1m_display_klines(symbol: str, count: int) -> list[dict]:
+    """Read today's quote-aggregated intraday 1m preview bars for display."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = query_intraday_bars(symbol, "1", start_time=today, limit=count)
+    result = []
+    for row in rows:
+        date = str(row.get("bar_time") or row.get("date") or "")
+        if not date.startswith(today):
+            continue
+        result.append(
+            {
+                "symbol": symbol.replace(".", ""),
+                "freq": "1",
+                "date": date,
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+                "volume": row.get("volume", 0),
+                "amount": row.get("amount", 0),
+                "adjustflag": "3",
+                "bar_status": row.get("bar_status") or "FORMING",
+                "source": row.get("source") or "tdx_quote_aggregation",
+                "sample_count": row.get("sample_count", 0),
+                "quality": row.get("quality") or "partial",
+                "gap_reason": row.get("gap_reason") or "",
+            }
+        )
+    return result[-count:]
+
+
 def _merge_m1_display_rows(history_rows: list[dict], preview_rows: list[dict], count: int) -> list[dict]:
     """Merge formal/replay 1m history with today's preview tape by timestamp."""
     merged: dict[str, dict] = {}
@@ -378,7 +415,13 @@ def _merge_m1_display_rows(history_rows: list[dict], preview_rows: list[dict], c
     return [merged[key] for key in sorted(merged)][-count:]
 
 
-def _sync_local_tdx_history_to_lake(symbol: str, freq: str, count: int = 5000) -> tuple[int, list[dict]]:
+def _sync_local_tdx_history_to_lake(
+    symbol: str,
+    freq: str,
+    count: int = 5000,
+    *,
+    batch_id: str = "",
+) -> tuple[int, list[dict]]:
     """Import local TDX .day/.lc1 derived history bars when bridge has no rows."""
     if freq == "week":
         rows = _tdx_week_rows_with_minute_day(symbol, limit=min(count, 1200))
@@ -388,7 +431,7 @@ def _sync_local_tdx_history_to_lake(symbol: str, freq: str, count: int = 5000) -
         rows = read_tdx_derived_minute_klines(symbol, freq, limit=count)
     else:
         rows = []
-    written = upsert_klines(symbol, freq, rows, adjustflag="3", source="tdx")
+    written = upsert_raw_bars(symbol, freq, rows, dataset="tdx_raw", source="tdx", batch_id=batch_id)
     return written, rows
 
 
@@ -504,14 +547,21 @@ async def query_klines(
         if qmt_preview:
             source = f"{source}+qmt_lake_1m_preview"
         klines = _merge_m1_display_rows(klines, qmt_preview, count)
+        intraday_preview = await run_in_threadpool(_query_intraday_today_1m_display_klines, canonical_symbol, count)
+        if intraday_preview:
+            source = f"{source}+intraday_bars"
+        klines = _merge_m1_display_rows(klines, intraday_preview, count)
         quote = await get_current_price(canonical_symbol)
+        quote_ingested = False
         if quote:
             try:
-                ingest_intraday_quote(canonical_symbol, quote)
+                quote_ingested = ingest_intraday_quote(canonical_symbol, quote)
             except Exception:
                 pass
+        before_live_quote = list(klines)
         klines = append_live_quote_1m_bar(klines, quote, symbol, count)
-        if quote:
+        live_quote_changed = klines != before_live_quote
+        if live_quote_changed:
             source = f"{source}+live_quote"
         interval = "m1"
         data_quality = _display_quality(
@@ -519,7 +569,11 @@ async def query_klines(
             rows=klines,
             requested_count=count,
             fallback_used=fallback_used,
-            warning="1分钟展示为盘中预览数据；正式盘后结构以 TDX 同步后的数据湖为准。" if fallback_used or qmt_preview or quote else "",
+            warning=(
+                "1分钟展示为盘中预览数据；正式盘后结构以 TDX 同步后的数据湖为准。"
+                if fallback_used or qmt_preview or intraday_preview or quote_ingested or live_quote_changed
+                else ""
+            ),
         )
         if not klines:
             minute_status = await run_in_threadpool(tdx_minute_status, symbol)
@@ -618,16 +672,37 @@ async def sync_symbol_klines(
 
     started_at = datetime.now().isoformat(timespec="seconds")
     freqs = [requested_freq] if requested_freq else list(ALL_FREQS)
+    batch = create_market_data_batch(
+        source="tdx",
+        mode="manual_symbol_sync",
+        symbols_count=1,
+        meta={
+            "symbol": canonical_symbol,
+            "freqs": freqs,
+            "interval": interval or "",
+            "started_by": "api_sync_klines_symbol",
+        },
+    )
+    batch_id = batch["batch_id"]
     results = []
     total_written = 0
     error_count = 0
     changed = []
+    intraday_replaced = 0
     needs_day_factor = "day" not in freqs and any(freq in {"week", "1", "5", "15", "30", "60"} for freq in freqs)
     if needs_day_factor:
         try:
             factor_rows = await fetch_tdx_klines(canonical_symbol, period="1d", count=5000, refresh=True)
             factor_written = await run_in_threadpool(
-                partial(upsert_klines, canonical_symbol, "day", factor_rows, adjustflag="2", source="tdx")
+                partial(
+                    upsert_adjusted_bars,
+                    canonical_symbol,
+                    "day",
+                    factor_rows,
+                    dataset="tdx_qfq",
+                    source="tdx",
+                    batch_id=batch_id,
+                )
             )
             total_written += factor_written
             if factor_written > 0:
@@ -662,18 +737,27 @@ async def sync_symbol_klines(
             source = "tdx_bridge"
             adjustflag = "2"
             if not rows:
-                written, rows = await run_in_threadpool(_sync_local_tdx_history_to_lake, canonical_symbol, freq, 5000)
+                written, rows = await run_in_threadpool(
+                    partial(
+                        _sync_local_tdx_history_to_lake,
+                        canonical_symbol,
+                        freq,
+                        5000,
+                        batch_id=batch_id,
+                    )
+                )
                 source = "tdx_local_history"
                 adjustflag = "3"
             else:
                 written = await run_in_threadpool(
                     partial(
-                        upsert_klines,
+                        upsert_adjusted_bars,
                         canonical_symbol,
                         freq,
                         rows,
-                        adjustflag=adjustflag,
+                        dataset="tdx_qfq",
                         source="tdx",
+                        batch_id=batch_id,
                     )
                 )
             total_written += written
@@ -689,6 +773,18 @@ async def sync_symbol_klines(
             })
             if written > 0 and adjustflag == "2":
                 changed.append({"symbol": canonical_symbol, "freq": freq, "written": written})
+            if written > 0 and freq == "1":
+                from server.services.intraday_official_replacement_service import (
+                    mark_intraday_replaced_for_official_rows,
+                )
+
+                intraday_replaced += await run_in_threadpool(
+                    mark_intraday_replaced_for_official_rows,
+                    canonical_symbol,
+                    freq,
+                    rows,
+                    batch_id=batch_id,
+                )
         except Exception as exc:  # 单级别失败不阻断其他级别
             error_count += 1
             results.append({
@@ -708,6 +804,7 @@ async def sync_symbol_klines(
             rebuild_tdx_qfq_from_existing_factors,
             canonical_symbol,
             target_freqs=[freq for freq in freqs if freq != "day"],
+            batch_id=batch_id,
         )
         qfq_rebuild = {
             "status": qfq_result.status,
@@ -730,9 +827,34 @@ async def sync_symbol_klines(
         priority=90,
         reason="manual_symbol_tdx_sync",
     )
+    latest_day = max(
+        [str(item.get("last") or "")[:10] for item in results if item.get("freq") in {"day", "day_factor"}],
+        default="",
+    )
+    latest_1m = max(
+        [str(item.get("last") or "") for item in results if item.get("freq") == "1"],
+        default="",
+    )
+    batch_status = "success" if error_count == 0 else "partial"
+    batch_record = update_market_data_batch(
+        batch_id,
+        status=batch_status,
+        latest_day=latest_day,
+        latest_1m=latest_1m,
+        meta_json={
+            "symbol": canonical_symbol,
+            "freqs": freqs,
+            "total_written": total_written,
+            "errors": error_count,
+            "intraday_replaced": intraday_replaced,
+            "changed": changed,
+        },
+    )
     return {
-        "status": "success" if error_count == 0 else "partial",
+        "status": batch_status,
         "source": "tdx",
+        "batch_id": batch_id,
+        "batch": batch_record,
         "symbol": canonical_symbol,
         "freqs": freqs,
         "total_written": total_written,
@@ -740,6 +862,7 @@ async def sync_symbol_klines(
         "results": results,
         "qfq_rebuild": qfq_rebuild,
         "structure_jobs": structure_jobs,
+        "intraday_replaced": intraday_replaced,
         "started_at": started_at,
         "finished_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -756,6 +879,44 @@ async def sync_status():
 async def query_lake_status():
     """查询 TDX / BaoStock / QMT 三个 K 线数据湖的只读状态。"""
     return await run_in_threadpool(lake_status)
+
+
+@router.get("/diagnostics")
+async def query_market_data_diagnostics_batch(
+    symbols: Optional[str] = Query(None, description="逗号分隔股票代码；不传则使用当前盯盘/持仓股票"),
+    trade_date: Optional[str] = None,
+    limit: int = Query(60, ge=1, le=120),
+):
+    """批量诊断盯盘股票的数据链路状态。"""
+    from server.services.market_data_diagnostics_service import diagnose_market_data_symbols
+    from server.workers.intraday_quote_sampler_worker import intraday_quote_sampler_worker, load_watchboard_symbols
+
+    if symbols:
+        symbol_list = [item.strip() for item in symbols.split(",") if item.strip()]
+    else:
+        symbol_list = await run_in_threadpool(load_watchboard_symbols, limit)
+    return await run_in_threadpool(
+        diagnose_market_data_symbols,
+        symbol_list,
+        sampler_status=intraday_quote_sampler_worker.status(),
+        trade_date=trade_date,
+        limit=limit,
+    )
+
+
+@router.get("/diagnostics/{symbol}")
+async def query_market_data_diagnostics(symbol: str, trade_date: Optional[str] = None):
+    """诊断单只股票的正式结构、盘中预览和实时采样链路。"""
+    from server.services.market_data_diagnostics_service import diagnose_market_data_symbol
+    from server.workers.intraday_quote_sampler_worker import intraday_quote_sampler_worker
+
+    canonical_symbol = normalize_symbol(symbol)
+    return await run_in_threadpool(
+        diagnose_market_data_symbol,
+        canonical_symbol,
+        sampler_status=intraday_quote_sampler_worker.status(),
+        trade_date=trade_date,
+    )
 
 
 # ── QMT 只读行情桥 ──
