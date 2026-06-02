@@ -26,7 +26,7 @@ export default function AIStructureCoachPanel({
   workspaceSymbolState,
   workspaceLoading = false,
   onWorkspaceRefresh,
-  onEvidenceContext,
+  deferLoad = false,
 }) {
   const [status, setStatus] = useState(null)
   const [messages, setMessages] = useState([])
@@ -54,11 +54,16 @@ export default function AIStructureCoachPanel({
   const reasoningContext = status?.context || null
   const detailReasoningContext = unifiedReasoning
   const aiReasoningReady = isAiReasoningReady(status)
-  const canAsk = Boolean(status?.context && aiReasoningReady)
+  const canAsk = Boolean(!deferLoad && status?.context && aiReasoningReady)
   const displayStatus = status?.context && !aiReasoningReady
     ? `reasoning-${aiReasoningStatus(status) || 'pending'}`
     : (status?.status || 'idle')
   const commandActive = loading || Boolean(pendingQuestion && !canAsk)
+  const dataLineage = useMemo(
+    () => buildDataLineageModel(status, detailReasoningContext || reasoningContext, messages, intradaySnapshot),
+    [status, detailReasoningContext, reasoningContext, messages, intradaySnapshot],
+  )
+  const reasoningStale = dataLineage.reasoningStale
 
   const applyWorkspaceSymbolState = useCallback((state) => {
     if (!state || !sameSymbol(state.symbol, symbolRef.current)) return
@@ -68,13 +73,15 @@ export default function AIStructureCoachPanel({
   }, [])
 
   const loadStatus = useCallback(async () => {
-    if (!symbol) return
+    if (!symbol) return null
     try {
       const levels = CONTEXT_LEVELS.join(',')
       const json = await apiJson(`${API_BASE}/ai-structure/contexts/status/${encodeURIComponent(symbol)}?levels=${levels}`)
       if (mountedRef.current) setStatus(json.data)
+      return json.data || null
     } catch (err) {
       if (mountedRef.current) setError(err?.message || 'AI 结构状态读取失败')
+      return null
     }
   }, [symbol])
 
@@ -86,8 +93,12 @@ export default function AIStructureCoachPanel({
       const summary = data.summary || {}
       const next = {
         context_id: data.context_id || '',
+        run_id: data.run_id || '',
         prompt_version: 'unified_reasoning.v2.full_text',
         updated_at: data.updated_at || '',
+        source_snapshot_ids: data.source_snapshot_ids || [],
+        snapshots: data.source_snapshots || [],
+        latest_snapshot_as_of_by_level: data.latest_snapshot_as_of_by_level || {},
         summary_text: summary.coach_summary || summary.card_summary || '',
         main_level: summary.main_level || '',
         reasoning: {
@@ -135,20 +146,6 @@ export default function AIStructureCoachPanel({
       }
     }
   }, [symbol])
-
-  const loadChartEvidence = useCallback(async (answer) => {
-    const focus = answer?.chart_focus
-    if (!focus?.context_id || !focus?.level) return
-    const params = new URLSearchParams({
-      context_id: focus.context_id,
-      level: focus.level,
-      evidence_ids: (focus.evidence_ids || []).join(','),
-    })
-    const json = await apiJson(`${API_BASE}/ai-structure/chart-context/${encodeURIComponent(symbol)}?${params}`)
-    if (mountedRef.current && symbolRef.current === symbol) {
-      onEvidenceContext?.(json.data)
-    }
-  }, [symbol, onEvidenceContext])
 
   const loadCurrentQuote = useCallback(async () => {
     if (!symbol) return {}
@@ -226,21 +223,18 @@ export default function AIStructureCoachPanel({
     return doneMeta || {}
   }, [symbol, activeSessionId, appendStreamingMessage])
 
-  const loadChatHistory = useCallback(async () => {
+  const loadChatHistory = useCallback(async (contextId = '') => {
     if (!symbol) return
     const requestedSymbol = symbol
     try {
-      const levels = CONTEXT_LEVELS.join(',')
-      const statusJson = await apiJson(`${API_BASE}/ai-structure/contexts/status/${encodeURIComponent(symbol)}?levels=${levels}`)
-      const currentContextId = statusJson.data?.context?.context_id || ''
       const sessionsJson = await apiJson(`${API_BASE}/ai-structure/chat/sessions/${encodeURIComponent(symbol)}`)
       const latestSession = sessionsJson.data?.sessions?.[0]
       if (!latestSession?.session_id) return
+      const currentContextId = contextId || ''
       if (currentContextId && latestSession.latest_context_id !== currentContextId) {
         if (mountedRef.current && symbolRef.current === requestedSymbol) {
           setActiveSessionId('')
           setMessages([])
-          onEvidenceContext?.(null)
         }
         return
       }
@@ -253,10 +247,6 @@ export default function AIStructureCoachPanel({
       if (mountedRef.current && symbolRef.current === requestedSymbol) {
         setActiveSessionId(latestSession.session_id)
         setMessages(restored)
-        const lastAnswer = [...restored].reverse().find((item) => item.role === 'assistant')?.answer
-        if (lastAnswer) {
-          await loadChartEvidence(lastAnswer)
-        }
       }
     } catch {
       if (mountedRef.current && symbolRef.current === requestedSymbol) {
@@ -264,7 +254,7 @@ export default function AIStructureCoachPanel({
         setMessages([])
       }
     }
-  }, [symbol, loadChartEvidence, onEvidenceContext])
+  }, [symbol])
 
   useEffect(() => {
     mountedRef.current = true
@@ -281,33 +271,48 @@ export default function AIStructureCoachPanel({
     setActiveSessionId('')
     setUnifiedReasoning(null)
     setIntradaySnapshot(null)
-    onEvidenceContext?.(null)
-    if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
-      applyWorkspaceSymbolState(workspaceSymbolState)
+    if (deferLoad) {
+      return () => {
+        mountedRef.current = false
+      }
     }
-    loadStatus()
-    loadUnifiedReasoning()
-    loadReminders()
-    loadIntradaySnapshot()
-    loadChatHistory()
+    let cancelled = false
+    const loadPanelData = async () => {
+      if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
+        applyWorkspaceSymbolState(workspaceSymbolState)
+      }
+      const nextStatus = await loadStatus()
+      if (cancelled) return
+      await Promise.all([
+        loadUnifiedReasoning(),
+        loadReminders(),
+        loadIntradaySnapshot(),
+        loadChatHistory(nextStatus?.context?.context_id || ''),
+      ])
+    }
+    loadPanelData()
     return () => {
+      cancelled = true
       mountedRef.current = false
     }
   }, [
     symbol,
+    deferLoad,
+    workspaceSymbolState,
+    applyWorkspaceSymbolState,
     loadStatus,
     loadUnifiedReasoning,
     loadReminders,
     loadIntradaySnapshot,
     loadChatHistory,
-    onEvidenceContext,
   ])
 
   useEffect(() => {
+    if (deferLoad) return
     if (sameSymbol(workspaceSymbolState?.symbol, symbol)) {
       applyWorkspaceSymbolState(workspaceSymbolState)
     }
-  }, [symbol, workspaceSymbolState, applyWorkspaceSymbolState])
+  }, [symbol, deferLoad, workspaceSymbolState, applyWorkspaceSymbolState])
 
   useEffect(() => {
     if (!symbol || !pollUntil) return undefined
@@ -330,14 +335,19 @@ export default function AIStructureCoachPanel({
   }, [symbol, pollUntil, status?.status, loadStatus])
 
   const prewarm = useCallback(async () => {
-    if (!symbol || booting || pollingActive) return
+    if (!symbol || deferLoad || booting || pollingActive) return
     setBooting(true)
     setError('')
     try {
       await apiJson(`${API_BASE}/ai-structure/pipeline/ensure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: [symbol], levels: CONTEXT_LEVELS, reason: 'web_ai_structure_workspace' }),
+        body: JSON.stringify({
+          symbols: [symbol],
+          levels: CONTEXT_LEVELS,
+          reason: 'web_ai_structure_manual_context',
+          allow_context_enqueue: true,
+        }),
       })
       onWorkspaceRefresh?.({ ensurePipeline: true })
       setPollUntil(Date.now() + CONTEXT_POLL_WINDOW_MS)
@@ -347,10 +357,10 @@ export default function AIStructureCoachPanel({
     } finally {
       setBooting(false)
     }
-  }, [symbol, booting, pollingActive, loadStatus, onWorkspaceRefresh])
+  }, [symbol, deferLoad, booting, pollingActive, loadStatus, onWorkspaceRefresh])
 
   const regenerateReasoning = useCallback(async () => {
-    if (!symbol || regenerating) return
+    if (!symbol || deferLoad || regenerating) return
     setRegenerating(true)
     setError('')
     try {
@@ -371,7 +381,7 @@ export default function AIStructureCoachPanel({
     } finally {
       setRegenerating(false)
     }
-  }, [symbol, regenerating, loadStatus, loadUnifiedReasoning])
+  }, [symbol, deferLoad, regenerating, loadStatus, loadUnifiedReasoning])
 
   const ask = useCallback(async (questionText = input) => {
     const question = questionText.trim()
@@ -523,7 +533,7 @@ export default function AIStructureCoachPanel({
               onClick={regenerateReasoning}
               disabled={regenerating || !symbol}
             >
-              {regenerating ? '生成中' : '重新生成'}
+              {regenerating ? '生成中' : reasoningStale ? '更新推演' : '重新生成'}
             </button>
           )}
           <span className={`ai-structure-status ai-structure-status--${displayStatus}`}>
@@ -541,10 +551,7 @@ export default function AIStructureCoachPanel({
       />
 
       <DataLineageStrip
-        status={status}
-        context={detailReasoningContext || reasoningContext}
-        messages={messages}
-        intradaySnapshot={intradaySnapshot}
+        model={dataLineage}
       />
 
       <StatusNotice
@@ -556,7 +563,11 @@ export default function AIStructureCoachPanel({
       />
 
       <ReasoningBrief context={detailReasoningContext} status={status} />
-      <WatchPlanPanel context={detailReasoningContext} />
+      <WatchPlanPanel
+        context={detailReasoningContext}
+        status={status}
+        reasoningStale={dataLineage.reasoningStale}
+      />
 
       <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
@@ -660,17 +671,19 @@ function ReasoningBrief({ context, status }) {
   )
 }
 
-function WatchPlanPanel({ context }) {
+function WatchPlanPanel({ context, status, reasoningStale = false }) {
   if (!context) return null
   if (!isAiReasoningReady({ context })) return null
+  if (reasoningStale) return null
+  if (isStructureReasoningStale(status)) return null
   const reasoning = context.reasoning || context
   const plan = buildWatchPlan(reasoning, context)
   if (!plan.mainTask && !plan.levels.length && !plan.tPlan) return null
   return (
-    <section className="ai-watch-plan" aria-label="AI 观察任务">
+    <section className="ai-watch-plan" aria-label="AI 关键分支">
       <div className="ai-watch-plan-head">
-        <strong>观察任务</strong>
-        <span>关键位不是交易指令</span>
+        <strong>关键分支</strong>
+        <span>结合盘中走势复核</span>
       </div>
       {plan.mainTask && <p>{plan.mainTask}</p>}
       {!!plan.levels.length && (
@@ -696,9 +709,17 @@ function WatchPlanPanel({ context }) {
   )
 }
 
+function isStructureReasoningStale(status) {
+  if (!status) return false
+  return (
+    status.status === 'stale' ||
+    Boolean(status.stale_levels?.length) ||
+    statusReason(status) === 'SOURCE_SNAPSHOT_CHANGED'
+  )
+}
+
 function buildWatchPlan(reasoning = {}, context = {}) {
   const watchPlan = reasoning.watch_plan || {}
-  const monitorTriggers = (reasoning.monitor_conditions || {}).triggers || []
   const growth = reasoning.trend_growth || {}
   const mainTask = String(
     watchPlan.main_task ||
@@ -709,17 +730,7 @@ function buildWatchPlan(reasoning = {}, context = {}) {
     growth.current_state ||
     '',
   ).trim()
-  const keyLevels = Array.isArray(watchPlan.key_levels) && watchPlan.key_levels.length
-    ? watchPlan.key_levels
-    : monitorTriggers.length
-      ? monitorTriggers.map((item) => ({
-        type: item.type === 'price_below' ? 'support' : 'pressure',
-        price: item.level,
-        trigger: item.type,
-        note: item.message_on_trigger,
-        after: item.action_on_trigger,
-      }))
-      : fallbackWatchLevels(reasoning, context)
+  const keyLevels = Array.isArray(watchPlan.key_levels) ? watchPlan.key_levels : []
   return {
     mainTask,
     levels: keyLevels
@@ -728,85 +739,6 @@ function buildWatchPlan(reasoning = {}, context = {}) {
       .slice(0, 4),
     tPlan: watchPlan.t_plan?.enabled ? String(watchPlan.t_plan?.note || watchPlan.t_plan?.plan || '只在触发关键位后再结合分时确认').trim() : '',
   }
-}
-
-function fallbackWatchLevels(reasoning = {}, context = {}) {
-  const textLevels = fallbackTextWatchLevels(reasoning)
-  if (textLevels.length) return textLevels
-  const level = reasoning.main_level || context.main_level || context.boundary?.primary_level || ''
-  const center = (((context.boundary || {}).levels || {})[level] || {}).active_center || {}
-  const zg = Number(center.zg || 0)
-  const zd = Number(center.zd || 0)
-  const items = []
-  if (zg > 0) {
-    items.push({
-      type: 'pressure',
-      price: zg,
-      trigger: 'price_above',
-      note: `站上${formatLevel(level)}中枢上沿后再看增强确认`,
-    })
-  }
-  if (zd > 0) {
-    items.push({
-      type: 'support',
-      price: zd,
-      trigger: 'price_below',
-      note: `跌破${formatLevel(level)}中枢下沿后看结构是否转弱`,
-    })
-  }
-  return items
-}
-
-function fallbackTextWatchLevels(reasoning = {}) {
-  const growth = reasoning.trend_growth || {}
-  const text = [
-    growth.next_confirmation,
-    growth.growth_path,
-    growth.failure_path,
-    growth.current_state,
-  ].map((item) => String(item || '').trim()).filter(Boolean).join('。')
-  if (!text) return []
-  const matches = [...text.matchAll(/(?:^|[^\d])(\d{1,4}(?:\.\d{1,3})?)(?=[^\d]|$)/g)]
-  const items = []
-  const seen = new Set()
-  matches.forEach((match) => {
-    const price = Number(match[1])
-    if (!Number.isFinite(price) || price <= 0) return
-    const key = price.toFixed(3)
-    if (seen.has(key)) return
-    const start = (match.index || 0) + String(match[0] || '').lastIndexOf(match[1])
-    const end = start + match[1].length
-    const before = text.slice(Math.max(0, start - 10), start)
-    const after = text.slice(end, Math.min(text.length, end + 14))
-    if (isTimeframeNumber(before, after)) return
-    const type = inferWatchLevelType(before, after)
-    if (!type) return
-    seen.add(key)
-    items.push({
-      type,
-      price,
-      trigger: type === 'support' ? 'price_below' : 'price_above',
-      note: type === 'support'
-        ? `跌破 ${formatPlanPrice(price)} 后观察是否转弱`
-        : `站上 ${formatPlanPrice(price)} 后观察增强确认`,
-    })
-  })
-  return items.slice(0, 4)
-}
-
-function isTimeframeNumber(before, after) {
-  return /(?:^|[^A-Za-z])$/.test(before) && /^(f|分钟|分)/i.test(after)
-}
-
-function inferWatchLevelType(before, after) {
-  const local = `${before}${after}`
-  if (/跌破$|失守$|回踩$|支撑$|下沿$|防线$|承接$|考验$/.test(before)) return 'support'
-  if (/突破$|站稳$|站上$|攻击$|压力$|上沿$|冲击$|上破$|挑战$|受阻于$/.test(before)) return 'pressure'
-  if (/^(的突破|并站稳|后站稳|前高|压力|上沿)/.test(after)) return 'pressure'
-  if (/^(不破|确认走弱|支撑|下沿|后回落|附近回落)/.test(after)) return 'support'
-  if (/站稳|站上|突破|攻击|压力|上沿|冲击|上破|挑战|前高|受阻/.test(local)) return 'pressure'
-  if (/跌破|失守|支撑|下沿|回踩|防线|不破|承接|回拉|考验/.test(local)) return 'support'
-  return ''
 }
 
 function normalizeWatchLevel(item = {}) {
@@ -830,8 +762,8 @@ function formatPlanPrice(value) {
   return num >= 100 ? num.toFixed(2) : num.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
 }
 
-function DataLineageStrip({ status, context, messages, intradaySnapshot }) {
-  const items = buildDataLineageItems(status, context, messages, intradaySnapshot)
+function DataLineageStrip({ model }) {
+  const items = model?.items || []
   if (!items.length) return null
   return (
     <div className="ai-data-lineage" aria-label="推演、结构图和盘中观察的数据状态">
@@ -845,9 +777,27 @@ function DataLineageStrip({ status, context, messages, intradaySnapshot }) {
   )
 }
 
-function buildDataLineageItems(status, context, messages = [], intradaySnapshot = null) {
-  const items = []
+function buildDataLineageModel(status, context, messages = [], intradaySnapshot = null) {
   const freshness = primaryFreshness(status, context)
+  const latestFreshness = latestStructureFreshness(status, context)
+  const reasoningStale = Boolean(context && (freshness.stale || status?.status === 'stale'))
+  return {
+    items: buildDataLineageItems(status, context, messages, intradaySnapshot, {
+      freshness,
+      latestFreshness,
+      reasoningStale,
+    }),
+    reasoningStale,
+    freshness,
+    latestFreshness,
+  }
+}
+
+function buildDataLineageItems(status, context, messages = [], intradaySnapshot = null, model = {}) {
+  const items = []
+  const freshness = model.freshness || primaryFreshness(status, context)
+  const latestFreshness = model.latestFreshness || latestStructureFreshness(status, context)
+  const reasoningStale = Boolean(model.reasoningStale)
   const ai = aiReasoning(status)
   if (!context) {
     items.push({ key: 'reasoning', label: '推演', value: '待生成', tone: 'muted' })
@@ -857,18 +807,13 @@ function buildDataLineageItems(status, context, messages = [], intradaySnapshot 
     items.push({
       key: 'reasoning',
       label: '推演',
-      value: freshness.label === '待生成' ? formatAsOf(context.updated_at) || '已生成' : freshness.label,
-      tone: freshness.stale || status?.status === 'stale' ? 'warn' : 'ready',
+      value: reasoningStale ? `旧 ${freshness.label}` : freshness.label === '待生成' ? formatAsOf(context.updated_at) || '已生成' : freshness.label,
+      tone: reasoningStale ? 'warn' : 'ready',
     })
   }
 
-  const latestRows = status?.level_freshness || []
-  const latestPrimary = primaryFreshness(
-    { ...status, stale_levels: [], status: latestRows.length ? 'fresh' : status?.status },
-    { snapshots: latestRows },
-  )
-  const snapshotValue = latestPrimary.label && latestPrimary.label !== '待生成'
-    ? latestPrimary.label
+  const snapshotValue = latestFreshness.label && latestFreshness.label !== '待生成'
+    ? latestFreshness.label
     : status?.missing_levels?.length
       ? `缺${formatLevels(status.missing_levels)}`
       : '待生成'
@@ -881,8 +826,8 @@ function buildDataLineageItems(status, context, messages = [], intradaySnapshot 
   items.push({
     key: 'preview',
     label: '图',
-    value: 'preview',
-    tone: 'muted',
+    value: context ? (reasoningStale ? 'AI待重跑' : '同源') : 'preview',
+    tone: context ? (reasoningStale ? 'warn' : 'ready') : 'muted',
   })
 
   const intraday = formatIntradaySnapshotStatus(intradaySnapshot) || latestIntradayCoverageStatus(messages)
@@ -935,6 +880,11 @@ function buildFreshnessRows(status, context) {
   }))
   const latestRows = status?.level_freshness || []
   const latestByLevel = new Map(latestRows.map((item) => [item.level, item]))
+  Object.entries(context?.latest_snapshot_as_of_by_level || {}).forEach(([level, dataAsOf]) => {
+    if (!latestByLevel.has(level)) {
+      latestByLevel.set(level, { level, data_as_of: dataAsOf, status: 'fresh' })
+    }
+  })
   const rows = contextRows.length ? contextRows : latestRows
   const stale = new Set(status?.stale_levels || [])
   return rows
@@ -978,6 +928,28 @@ function primaryFreshness(status, context) {
     label: `${formatLevel(preferred.level)} ${formatAsOf(preferred.data_as_of)}`,
     stale: Boolean(preferred.stale),
   }
+}
+
+function latestStructureFreshness(status, context) {
+  const latestRows = [
+    ...(status?.level_freshness || []),
+    ...Object.entries(context?.latest_snapshot_as_of_by_level || {}).map(([level, dataAsOf]) => ({
+      level,
+      data_as_of: dataAsOf,
+      status: 'fresh',
+    })),
+  ]
+  const unique = []
+  const seen = new Set()
+  latestRows.forEach((item) => {
+    if (!item?.level || !item?.data_as_of || seen.has(item.level)) return
+    seen.add(item.level)
+    unique.push(item)
+  })
+  return primaryFreshness(
+    { ...status, stale_levels: [], status: unique.length ? 'fresh' : status?.status },
+    { snapshots: unique },
+  )
 }
 
 function panelSummary(reasoning = {}, context = {}) {
@@ -1375,15 +1347,15 @@ function statusNotice(status, pollingActive, options = {}) {
     if (status.stale_levels?.length) {
       return {
         tone: hasActiveContextJob(status) ? 'working' : 'warn',
-        title: hasActiveContextJob(status) ? '结构快照刷新中' : '部分级别数据过期',
-        text: `${formatLevels(status.stale_levels)} 结构还没追上最新 K 线，当前推演先按旧快照展示；刷新完成后会重跑上下文。`,
+        title: hasActiveContextJob(status) ? '结构快照刷新中' : '图结构已更新，AI推演待重跑',
+        text: `${formatLevels(status.stale_levels)} 已有更新结构，当前完整推演仍基于上一版；点“更新推演”后会用最新同源结构重新推演。`,
       }
     }
     if (hasUnifiedReasoning) return null
     return {
       tone: 'warn',
-      title: '基于上一版结构',
-      text: 'K 线或 CZSC 快照已有变化，当前回答会先引用上一版上下文；刷新完成后再复核触发线和失败线。',
+      title: '图结构已更新，AI推演待重跑',
+      text: 'K线和CZSC结构已经更新，完整推演还停在上一版；点“更新推演”后再复核触发线和失败线。',
     }
   }
   if (status?.status === 'failed') {
@@ -1424,9 +1396,10 @@ function buildPipelineItems(status, flags) {
   const isNoData = reason === 'NO_DATA'
   const isCzscUnavailable = reason === 'CZSC_UNAVAILABLE'
   const hasMissingLevels = Boolean(status?.missing_levels?.length)
-  // 分离快照和上下文的工作状态，避免上下文生成中时快照也误显示"生成中"
-  const isSnapshotWorking = booting || pollingActive || status?.status === 'pending'
-  const isContextWorking = isSnapshotWorking || hasActiveContextJob(status)
+  // 分离快照和上下文的工作状态；没有 job 时不能把“待生成”误显示为“生成中”。
+  const snapshotNeedsWork = Boolean(status?.missing_levels?.length || status?.stale_levels?.length || status?.status === 'no_snapshot')
+  const isSnapshotWorking = Boolean(snapshotNeedsWork && (booting || pollingActive || hasActiveContextJob(status)))
+  const isContextWorking = hasActiveContextJob(status)
   const contextTone = contextStatusTone(status, isContextWorking)
 
   return [

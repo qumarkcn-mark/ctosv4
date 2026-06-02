@@ -1,7 +1,7 @@
 """Public CZSC structure view for Kline overlays.
 
-This service is read-only. Snapshot views consume persisted V5 CZSC snapshots;
-preview views can pass a live CZSC payload without persisting it.
+This service is read-only. Snapshot views consume canonical V5 CZSC snapshots;
+preview views can pass a snapshot-like payload that was warmed by read-through.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from typing import Any
 from server.domain.symbols import normalize_symbol
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
-    get_latest_snapshot,
 )
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.engines.structure.structure_key import normalize_freq
 
 
@@ -27,10 +27,10 @@ def get_structure_view(
     """Return CZSC bi / segment / center geometry for chart display."""
     canonical = normalize_symbol(symbol)
     normalized_level = normalize_freq(level)
-    snapshot_row = get_latest_snapshot(
+    snapshot_row = get_latest_structure(
         symbol=canonical,
         level=normalized_level,
-        compute_profile=compute_profile,
+        min_profile=compute_profile,
     )
     if not snapshot_row:
         return None
@@ -232,23 +232,12 @@ def _normalize_center(
         return None
     raw_begin_index = _nearest_index(time_axis, begin_ts)
     raw_end_index = _nearest_index(time_axis, end_ts)
-    begin_index = _center_entry_index(
-        klines,
-        bis=bis,
-        zd=zd,
-        zg=zg,
-        fallback=raw_begin_index,
-        raw_end=raw_end_index,
-    )
-    end_index, exit_status = _center_exit_boundary(
-        klines,
-        bis=bis,
-        zd=zd,
-        zg=zg,
-        fallback=raw_end_index,
-        raw_begin=begin_index,
-        active=active,
-    )
+    # Kline overlay should mirror CZSC's native ZS boundaries. Extending the
+    # rectangle to later bars that merely touch/leave the zone makes the center
+    # look wider than the algorithmic object and visually detaches it from BI.
+    begin_index = raw_begin_index
+    end_index = raw_end_index
+    exit_status = "open" if active else "closed"
     begin_bar_time = _bar_time_at(klines, begin_index)
     end_bar_time = _bar_time_at(klines, end_index)
     return {
@@ -357,106 +346,6 @@ def _nearest_index(time_axis: dict[int, int], timestamp: int) -> int | None:
         return time_axis[timestamp]
     nearest = min(time_axis, key=lambda item: abs(item - timestamp))
     return time_axis[nearest]
-
-
-def _center_entry_index(
-    klines: list[dict[str, Any]],
-    *,
-    bis: list[dict[str, Any] | None],
-    zd: float,
-    zg: float,
-    fallback: int | None,
-    raw_end: int | None,
-) -> int | None:
-    """Find the first bar of the entering leg that touches the center zone."""
-    if fallback is None:
-        return None
-    entering_bi = _boundary_bi(bis, fallback, prefer="end")
-    if entering_bi:
-        start, end = _bi_index_range(entering_bi)
-        if start is not None and end is not None:
-            for index in range(max(0, start), min(len(klines) - 1, end) + 1):
-                if _bar_touches_zone(klines[index], zd=zd, zg=zg):
-                    return index
-    start = max(0, fallback)
-    end = min(len(klines) - 1, raw_end if raw_end is not None else len(klines) - 1)
-    for index in range(start, end + 1):
-        if _bar_touches_zone(klines[index], zd=zd, zg=zg):
-            return index
-    return fallback
-
-
-def _center_exit_boundary(
-    klines: list[dict[str, Any]],
-    *,
-    bis: list[dict[str, Any] | None],
-    zd: float,
-    zg: float,
-    fallback: int | None,
-    raw_begin: int | None,
-    active: bool,
-) -> tuple[int | None, str]:
-    """Find the first full bar that leaves the center zone."""
-    if fallback is None:
-        return None, "missing"
-    leaving_bi = _boundary_bi(bis, fallback, prefer="end")
-    if leaving_bi:
-        start, end = _bi_index_range(leaving_bi)
-        if start is not None and end is not None:
-            for index in range(max(raw_begin or 0, start), min(len(klines) - 1, end) + 1):
-                if _bar_fully_leaves_zone(klines[index], zd=zd, zg=zg):
-                    return index, "closed"
-    start = max(raw_begin or 0, fallback)
-    for index in range(start, len(klines)):
-        if _bar_fully_leaves_zone(klines[index], zd=zd, zg=zg):
-            return index, "closed"
-    if active and klines:
-        return len(klines) - 1, "open"
-    return fallback, "fallback"
-
-
-def _boundary_bi(bis: list[dict[str, Any] | None], boundary: int | None, *, prefer: str) -> dict[str, Any] | None:
-    if boundary is None:
-        return None
-    valid = [item for item in bis if item and item.get("start_index") is not None and item.get("end_index") is not None]
-    key = "end_index" if prefer == "end" else "start_index"
-    for item in valid:
-        if item.get(key) == boundary:
-            return item
-    containing = [
-        item
-        for item in valid
-        if min(int(item["start_index"]), int(item["end_index"])) <= boundary <= max(int(item["start_index"]), int(item["end_index"]))
-    ]
-    if not containing:
-        return None
-    return min(containing, key=lambda item: abs(int(item.get(key) or boundary) - boundary))
-
-
-def _bi_index_range(bi: dict[str, Any]) -> tuple[int | None, int | None]:
-    try:
-        start = int(bi.get("start_index"))
-        end = int(bi.get("end_index"))
-    except (TypeError, ValueError):
-        return None, None
-    return min(start, end), max(start, end)
-
-
-def _bar_touches_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
-    high = _num(bar.get("high"))
-    low = _num(bar.get("low"))
-    close = _num(bar.get("close"))
-    if close > 0 and zd <= close <= zg:
-        return True
-    if high <= 0 or low <= 0:
-        return False
-    return high >= zd and low <= zg
-
-
-def _bar_fully_leaves_zone(bar: dict[str, Any], *, zd: float, zg: float) -> bool:
-    high = _num(bar.get("high"))
-    low = _num(bar.get("low"))
-    return high > 0 and low > 0 and (low > zg or high < zd)
 
 
 def _bar_time_at(klines: list[dict[str, Any]], index: int | None) -> str:

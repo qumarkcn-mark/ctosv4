@@ -19,7 +19,6 @@ from server.engines.ai_native.chan_signal_digest import build_chan_signal_digest
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
-    get_latest_snapshot,
     now_text,
     stable_hash,
 )
@@ -34,6 +33,7 @@ from server.engines.ai_native.structure_context_service import (
     save_reasoning_run,
 )
 from server.engines.structure.structure_key import normalize_freq
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.services.intraday_observation_service import get_intraday_observation, get_intraday_observation_snapshot
 from server.services.llm_service import AIModelRoute, LLMService
 
@@ -196,7 +196,7 @@ def build_unified_reasoning_input(
     rows: list[dict[str, Any]] = []
     missing_levels: list[str] = []
     for level in normalized_levels:
-        row = get_latest_snapshot(symbol=canonical, level=level, compute_profile=compute_profile)
+        row = get_latest_structure(symbol=canonical, level=level, min_profile=compute_profile)
         if not row:
             missing_levels.append(level)
             continue

@@ -252,6 +252,8 @@ def _read_gbbq_df(*, tdx_root: str | None = None) -> pd.DataFrame:
 
 
 def _resolve_gbbq_path(tdx_root: str | None = None) -> Path:
+    from server.services.tdx_daily_sync_service import resolve_vipdoc
+
     candidates = []
     if tdx_root:
         candidates.append(Path(tdx_root))
@@ -260,8 +262,14 @@ def _resolve_gbbq_path(tdx_root: str | None = None) -> Path:
     if TDX_VIPDOC:
         vipdoc = Path(TDX_VIPDOC)
         candidates.extend([vipdoc.parent, vipdoc.parent.parent])
+    try:
+        vipdoc = Path(resolve_vipdoc())
+        candidates.extend([vipdoc.parent, vipdoc.parent.parent])
+    except Exception:
+        pass
     candidates.extend(
         [
+            Path("/Users/markqu/Desktop/tdx_vipdoc_mount"),
             Path("/Users/markqu/Desktop/new_tdx64_mount"),
             Path("/Volumes/new_tdx64"),
         ]

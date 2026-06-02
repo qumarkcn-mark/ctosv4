@@ -13,10 +13,10 @@ const WORKSPACE_LEVELS = ['week', 'day', '30', '5']
 export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, onSymbolChange }) {
   const [localSymbol, setLocalSymbol] = useState(() => readLastViewedSymbol().symbol)
   const [localName, setLocalName] = useState(() => readLastViewedSymbol().name)
-  const [aiEvidenceContext, setAiEvidenceContext] = useState(null)
   const [workspace, setWorkspace] = useState(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
+  const [klineReadySymbol, setKlineReadySymbol] = useState('')
   const watchlistRef = useRef(null)
   const symbol = activeSymbol ?? localSymbol
   const symbolName = activeSymbolName ?? localName
@@ -29,6 +29,7 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
     return map
   }, [workspace])
   const activeWorkspaceState = workspaceBySymbol.get(symbol) || null
+  const coachDeferred = hasSymbol && klineReadySymbol !== symbol
 
   const loadWorkspace = useCallback(async ({ ensurePipeline = false } = {}) => {
     setWorkspaceLoading(true)
@@ -61,7 +62,6 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
   const handleSelect = useCallback((stock) => {
     const nextSymbol = stock.symbol
     const nextName = stock.name || stock.symbol
-    setAiEvidenceContext(null)
     if (onSymbolChange) {
       onSymbolChange(nextSymbol, nextName)
     } else {
@@ -71,6 +71,14 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
       localStorage.setItem('lastViewedSymbolName', nextName)
     }
   }, [onSymbolChange])
+
+  useEffect(() => {
+    setKlineReadySymbol('')
+  }, [symbol])
+
+  const handleKlineFirstPaint = useCallback(({ symbol: paintedSymbol }) => {
+    if (paintedSymbol) setKlineReadySymbol(paintedSymbol)
+  }, [])
 
   const handleAddCurrentToWatchlist = useCallback(async () => {
     if (!symbol || !watchlistRef.current) return { ok: false, message: '自选股还没加载完' }
@@ -121,8 +129,8 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
             <PriceEvidenceView
               symbol={symbol}
               symbolName={symbolName}
-              chartContext={aiEvidenceContext}
               onAddToWatchlist={handleAddCurrentToWatchlist}
+              onFirstPaint={handleKlineFirstPaint}
             />
             <aside className="ai-workspace-coach">
               <AIStructureCoachPanel
@@ -131,7 +139,7 @@ export default function AIStructureWorkspace({ activeSymbol, activeSymbolName, o
                 workspaceSymbolState={activeWorkspaceState}
                 workspaceLoading={workspaceLoading}
                 onWorkspaceRefresh={loadWorkspace}
-                onEvidenceContext={setAiEvidenceContext}
+                deferLoad={coachDeferred}
               />
             </aside>
           </div>

@@ -252,6 +252,25 @@
   border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
 }
 
+.watch-card-freshness {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.32));
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs, 10px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watch-card-freshness.is-ready {
+  color: rgba(134, 239, 172, 0.68);
+}
+
+.watch-card-freshness.is-stale {
+  color: var(--signal-amber, #f59e0b);
+}
+
 .watch-card-levels {
   display: flex;
   min-width: 0;

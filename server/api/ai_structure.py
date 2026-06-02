@@ -25,7 +25,6 @@ from server.engines.ai_native.structure_chat_service import (
 from server.engines.ai_native.czsc_snapshot_service import (
     DEFAULT_COMPUTE_PROFILE,
     DEFAULT_LEVELS,
-    get_latest_snapshot,
     get_snapshot_status,
     prewarm_structure_snapshots,
 )
@@ -64,6 +63,7 @@ from server.engines.ai_native.ai_trigger_service import TRIGGER_MANUAL_FULL_REAS
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
 from server.engines.structure.structure_key import COMPUTE_PROFILES, FREQ_ALIASES, normalize_freq
+from server.engines.structure.canonical_structure_service import get_latest_structure
 from server.services.price_service import get_batch_prices
 
 
@@ -94,6 +94,7 @@ class PipelineEnsureRequest(BaseModel):
     compute_profile: str = DEFAULT_COMPUTE_PROFILE
     priority: int = Field(default=85, ge=1, le=100)
     reason: str = "web_ai_structure_workspace"
+    allow_context_enqueue: bool = False
 
 
 class WorkspaceBootstrapRequest(BaseModel):
@@ -250,10 +251,11 @@ async def ensure_pipeline(
             user_id=current_user_id,
             symbols=request.symbols,
             levels=levels,
-            compute_profile=request.compute_profile,
-            priority=request.priority,
-            reason=request.reason,
-        )
+        compute_profile=request.compute_profile,
+        priority=request.priority,
+        reason=request.reason,
+        allow_context_enqueue=request.allow_context_enqueue,
+    )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "success", "data": result}
@@ -267,10 +269,10 @@ def latest_snapshot(
 ):
     _validate_compute_profile(compute_profile)
     normalized_level = _validate_level(level)
-    snapshot = get_latest_snapshot(
+    snapshot = get_latest_structure(
         symbol=normalize_symbol(symbol),
         level=normalized_level,
-        compute_profile=compute_profile,
+        min_profile=compute_profile,
     )
     if not snapshot:
         raise HTTPException(status_code=404, detail="snapshot not found")
@@ -386,15 +388,28 @@ async def unified_reasoning_trigger(
 
 @router.get("/unified-reasoning/full/{symbol}")
 def unified_reasoning_full(symbol: str, current_user_id: int = Depends(get_current_user_id)):
-    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=normalize_symbol(symbol))
+    canonical = normalize_symbol(symbol)
+    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=canonical)
     if not run:
         raise HTTPException(status_code=404, detail="unified reasoning not found")
+    source_snapshot_ids = run.get("source_snapshot_ids") or []
+    conn = get_connection()
+    try:
+        source_snapshots = _snapshot_lineage_by_ids(conn, source_snapshot_ids)
+        latest_as_of = _latest_snapshot_as_of_by_level(conn, canonical)
+        source_as_of = {item["level"]: item["data_as_of"] for item in source_snapshots}
+    finally:
+        conn.close()
     return {
         "status": "success",
         "data": {
             "symbol": run["symbol"],
             "context_id": run.get("context_id") or "",
             "run_id": run["run_id"],
+            "source_snapshot_ids": source_snapshot_ids,
+            "source_snapshots": source_snapshots,
+            "source_snapshot_as_of_by_level": source_as_of,
+            "latest_snapshot_as_of_by_level": latest_as_of,
             "full_text": run.get("full_reasoning_text") or "",
             "summary": run.get("summary") or {},
             "updated_at": run.get("updated_at") or "",
@@ -404,16 +419,27 @@ def unified_reasoning_full(symbol: str, current_user_id: int = Depends(get_curre
 
 @router.get("/unified-reasoning/summary/{symbol}")
 def unified_reasoning_summary(symbol: str, current_user_id: int = Depends(get_current_user_id)):
-    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=normalize_symbol(symbol))
+    canonical = normalize_symbol(symbol)
+    run = get_latest_unified_reasoning(user_id=current_user_id, symbol=canonical)
     if not run:
         raise HTTPException(status_code=404, detail="unified reasoning not found")
     summary = run.get("summary") or {}
+    source_snapshot_ids = run.get("source_snapshot_ids") or []
+    conn = get_connection()
+    try:
+        source_snapshots = _snapshot_lineage_by_ids(conn, source_snapshot_ids)
+        latest_as_of = _latest_snapshot_as_of_by_level(conn, canonical)
+    finally:
+        conn.close()
     return {
         "status": "success",
         "data": {
             "symbol": run["symbol"],
             "context_id": run.get("context_id") or "",
             "run_id": run["run_id"],
+            "source_snapshot_ids": source_snapshot_ids,
+            "source_snapshots": source_snapshots,
+            "latest_snapshot_as_of_by_level": latest_as_of,
             "summary": summary.get("coach_summary") or "",
             "updated_at": run.get("updated_at") or "",
         },
@@ -1029,6 +1055,33 @@ def _snapshot_as_of_by_ids(conn, snapshot_ids: list[str]) -> dict[str, str]:
         ids,
     ).fetchall()
     return {row["level"]: row["data_as_of"] or "" for row in rows}
+
+
+def _snapshot_lineage_by_ids(conn, snapshot_ids: list[str]) -> list[dict[str, str]]:
+    ids = [str(item) for item in snapshot_ids if item]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT snapshot_id, level, compute_profile, data_signature, data_as_of, updated_at
+          FROM structure_snapshots
+         WHERE snapshot_id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    by_id = {
+        row["snapshot_id"]: {
+            "snapshot_id": row["snapshot_id"] or "",
+            "level": row["level"] or "",
+            "compute_profile": row["compute_profile"] or "",
+            "data_signature": row["data_signature"] or "",
+            "data_as_of": row["data_as_of"] or "",
+            "updated_at": row["updated_at"] or "",
+        }
+        for row in rows
+    }
+    return [by_id[item] for item in ids if item in by_id]
 
 
 def _latest_snapshot_as_of_by_level(conn, symbol: str) -> dict[str, str]:
