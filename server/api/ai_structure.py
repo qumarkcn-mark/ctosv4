@@ -806,12 +806,16 @@ def _load_watchboard_groups(user_id: int) -> list[dict]:
         conn.close()
 
 
+WATCHBOARD_VISIBLE_GROUP_NAMES = {"持仓", "自选", "备选"}
+
+
 def _load_watchlist_groups(conn, user_id: int) -> list[dict]:
     rows = conn.execute(
         """
         SELECT id, name
           FROM watchlist_groups
          WHERE user_id = ?
+           AND name IN ('持仓', '自选', '备选')
          ORDER BY sort_order, id
         """,
         (int(user_id),),

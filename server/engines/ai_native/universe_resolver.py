@@ -15,6 +15,7 @@ from server.domain.symbols import normalize_symbol
 DEFAULT_SOURCES = ("positions", "recent_chat", "watchlist")
 RECENT_CHAT_LOOKBACK_DAYS = 30
 MAX_RECENT_CHAT_SYMBOLS_PER_USER = 20
+WATCHBOARD_VISIBLE_GROUP_NAMES = {"持仓", "自选", "备选"}
 
 SOURCE_PRIORITIES = {
     "pin": 120,
@@ -79,6 +80,8 @@ def resolve_watchboard_universe(user_id: int) -> list[dict]:
     items: dict[str, dict] = {}
     position_symbols = {normalize_symbol(row["symbol"]) for row in _position_rows(user_id)}
     for row in _watchlist_rows(user_id):
+        if str(row.get("group_name") or "") not in WATCHBOARD_VISIBLE_GROUP_NAMES:
+            continue
         canonical = normalize_symbol(row["symbol"])
         has_position = canonical in position_symbols
         priority = SOURCE_PRIORITIES["position_watchlist"] if has_position else SOURCE_PRIORITIES["watchlist"]
@@ -130,6 +133,7 @@ def list_watchboard_user_ids(limit: int | None = None) -> list[int]:
             SELECT DISTINCT wg.user_id
               FROM watchlist_groups wg
               JOIN watchlist_items wi ON wi.group_id = wg.id
+             WHERE wg.name IN ('持仓', '自选', '备选')
              ORDER BY user_id
             """,
         ).fetchall()
