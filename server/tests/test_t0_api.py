@@ -80,3 +80,49 @@ def test_enable_t0_rejects_qty_above_users_position():
         enable_t0("sz.300394", EnableT0Request(t0_qty=400), user_id=2)
 
     assert exc.value.status_code == 400
+
+
+def test_get_all_t0_states_returns_action_fields():
+    """T0 状态接口返回卡片/Drawer 需要的新字段，并保留旧字段。"""
+    from server.api.t0 import get_all_t0_states
+    from server.db.database import get_connection
+
+    _seed_two_users_same_symbol()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO t0_state_cache (
+                user_id, symbol, state, pivot_zd, pivot_zg,
+                t0_qty, friction_per_share, is_grid_viable,
+                signal, signal_price, reason, state_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "sz.300394",
+                "IDLE",
+                9.8,
+                10.6,
+                200,
+                0.02,
+                1,
+                None,
+                None,
+                "进入ZD触发区但1M底分型未确认",
+                '{"current_open_qty": 100}',
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = get_all_t0_states(user_id=1)
+    state = result["states"]["sz.300394"]
+
+    assert state["pivot_zd"] == 9.8
+    assert state["data_quality"] == "ready"
+    assert state["action_window"] == "near_zd"
+    assert state["next_step"] == "进入ZD触发区但1M底分型未确认"
+    assert state["signal_qty"] == 100

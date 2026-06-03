@@ -160,7 +160,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
             hhmm = bar_time[11:16] if len(bar_time) > 10 else ""
             if hhmm >= "14:55":
                 result = machine.force_sweep(bar["close"])
-                if result.signal == "SWEEP":
+                if result.signal and result.signal.startswith("SWEEP"):
                     day_signals += 1
                     day_fills += 1
                     if config.use_paper_db:
@@ -189,7 +189,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                     "time": bar_time,
                     "signal": result.signal,
                     "price": bar["close"],
-                    "qty": config.t0_qty,
+                    "qty": result.signal_qty or config.t0_qty,
                     "entry_price": result.entry_price,
                     "daily_pnl": result.daily_pnl,
                     "state": result.state,
@@ -233,7 +233,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
     # 总信号数和成交数（计算 SELL/BUY 完整笔数）
     buy_signals = [t for t in all_trades if "BUY" in t["signal"]]
-    sell_signals = [t for t in all_trades if "SELL" in t["signal"] or "STOP" in t["signal"] or t["signal"] == "SWEEP"]
+    sell_signals = [t for t in all_trades if "SELL" in t["signal"] or "STOP" in t["signal"] or t["signal"].startswith("SWEEP")]
 
     return BacktestResult(
         symbol=config.symbol,
@@ -326,7 +326,7 @@ def _safe_record(config: BacktestConfig, result, price: float, trade_num: int):
                 symbol=config.symbol,
                 signal=result.signal,
                 signal_price=price,
-                t0_qty=config.t0_qty,
+                t0_qty=result.signal_qty or config.t0_qty,
                 tick_result=result,
                 run_id=f"backtest_{config.symbol}_{config.start_date}",
             )

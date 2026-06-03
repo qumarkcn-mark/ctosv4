@@ -141,11 +141,20 @@ class T0EngineWorker:
         except Exception:
             pass
 
-        # 获取 5M 中枢 ZG/ZD
-        pivot_zd, pivot_zg = _get_latest_pivot(symbol)
+        # 获取 5M 中枢 ZG/ZD + snapshot_json（含 bis 笔数据）
+        pivot_zd, pivot_zg, snapshot_json = _get_latest_pivot_with_snapshot(symbol)
 
         # 获取 5M ATR
         atr_5m = _get_atr_5m(symbol)
+
+        # 计算笔振幅衰减比（第三层过滤器）
+        bi_strength_ratio = None
+        if snapshot_json:
+            try:
+                from server.engines.t0.t0_fractal import calculate_bi_strength_ratio
+                bi_strength_ratio = calculate_bi_strength_ratio(snapshot_json.get("bis", []), direction="down")
+            except Exception:
+                pass
 
         # 执行 tick
         from datetime import datetime
@@ -157,6 +166,7 @@ class T0EngineWorker:
             pivot_zg=pivot_zg,
             klines_1m=klines_1m,
             atr_5m=atr_5m,
+            bi_strength_ratio=bi_strength_ratio,
         )
 
         # 有信号时写入纸盘
@@ -168,7 +178,7 @@ class T0EngineWorker:
                     symbol=symbol,
                     signal=result.signal,
                     signal_price=current_price,
-                    t0_qty=t0_qty,
+                    t0_qty=result.signal_qty or t0_qty,
                     tick_result=result,
                 )
             except Exception as exc:
@@ -232,14 +242,19 @@ def _safe_get_price(symbol: str) -> Optional[dict]:
         return None
 
 
-def _get_latest_pivot(symbol: str) -> tuple[Optional[float], Optional[float]]:
-    """获取最新 5M 中枢 ZD/ZG。"""
+def _get_latest_pivot_with_snapshot(symbol: str) -> tuple[Optional[float], Optional[float], Optional[dict]]:
+    """获取最新 5M 中枢 ZD/ZG，同时返回完整 snapshot_json 供笔动力学计算。
+
+    Returns:
+        (pivot_zd, pivot_zg, snapshot_json_dict)
+    """
     conn = get_connection()
     try:
         row = conn.execute(
             """
             SELECT json_extract(snapshot_json, '$.zd'),
-                   json_extract(snapshot_json, '$.zg')
+                   json_extract(snapshot_json, '$.zg'),
+                   snapshot_json
               FROM structure_snapshots
              WHERE symbol = ? AND level = '5' AND status = 'fresh'
              ORDER BY updated_at DESC
@@ -248,10 +263,24 @@ def _get_latest_pivot(symbol: str) -> tuple[Optional[float], Optional[float]]:
             (symbol,),
         ).fetchone()
         if row and row[0] and row[1]:
-            return float(row[0]), float(row[1])
-        return None, None
+            snapshot = None
+            if row[2]:
+                try:
+                    import json as _json
+                    snapshot = _json.loads(row[2])
+                except Exception:
+                    pass
+            return float(row[0]), float(row[1]), snapshot
+        return None, None, None
     finally:
         conn.close()
+
+
+# 向后兼容别名（sweeper_worker 使用）
+def _get_latest_pivot(symbol: str) -> tuple[Optional[float], Optional[float]]:
+    """获取最新 5M 中枢 ZD/ZG（兼容旧调用）。"""
+    zd, zg, _ = _get_latest_pivot_with_snapshot(symbol)
+    return zd, zg
 
 
 def _get_atr_5m(symbol: str) -> float:

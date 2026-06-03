@@ -1,6 +1,7 @@
 """测试 T0 1分钟分型过滤器。"""
 import pytest
 from server.engines.t0.t0_fractal import (
+    calculate_bi_strength_ratio,
     validate_1m_bottom_fractal,
     validate_1m_top_fractal,
     calculate_atr_1m,
@@ -119,3 +120,17 @@ class TestCalculateAtr1m:
         # ATR(5) 对短期波动更敏感，应 >= ATR(14) 或大致相当
         assert atr_14 > 0.0
         assert atr_5 > 0.0
+
+
+class TestBiStrengthRatio:
+    def test_detects_down_bi_strength_contraction(self):
+        bis = [
+            {"direction": "down", "high": 128.0, "low": 122.0},
+            {"direction": "up", "high": 126.0, "low": 123.0},
+            {"direction": "down", "high": 125.0, "low": 122.5},
+        ]
+        assert calculate_bi_strength_ratio(bis, direction="down") == pytest.approx(0.4167)
+
+    def test_returns_none_when_same_direction_bis_are_insufficient(self):
+        bis = [{"direction": "down", "high": 128.0, "low": 122.0}]
+        assert calculate_bi_strength_ratio(bis, direction="down") is None

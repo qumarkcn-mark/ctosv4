@@ -129,6 +129,34 @@ class TestRecordT0Signal:
         ).fetchone()
         assert row[0] == 0.0
 
+    def test_sweep_short_records_buy_side_and_short_pnl(self):
+        """倒T尾盘扫尾应按买回记录，并按 short 方向计算收益。"""
+        from server.engines.t0.t0_paper_service import record_t0_signal, get_or_create_t0_account
+        from server.db.database import get_connection
+
+        get_or_create_t0_account(user_id=1)
+        tick = _make_tick_result("SWEEP_SHORT", entry_price=107.0, daily_trades=6)
+        result = record_t0_signal(
+            user_id=1,
+            symbol="sz.300394",
+            signal="SWEEP_SHORT",
+            signal_price=105.0,
+            t0_qty=100,
+            tick_result=tick,
+        )
+
+        assert result["side"] == "BUY"
+        assert result["net_pnl"] > 0
+
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT side, stamp_tax FROM paper_fills WHERE fill_id = ?",
+            (result["fill_id"],),
+        ).fetchone()
+        conn.close()
+        assert row[0] == "BUY"
+        assert row[1] == 0.0
+
 
 class TestDailyT0Summary:
     @pytest.fixture(autouse=True)

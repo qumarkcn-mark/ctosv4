@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -30,7 +31,7 @@ def get_all_t0_states(user_id: int = 1):
                    entry_price, target_price, stop_structural, stop_catastrophic,
                    t0_qty, friction_per_share, is_grid_viable,
                    daily_pnl, daily_trades, daily_stop_count,
-                   signal, signal_price, reason, updated_at
+                   signal, signal_price, reason, state_json, updated_at
               FROM t0_state_cache
              WHERE user_id = ?
             """,
@@ -41,9 +42,13 @@ def get_all_t0_states(user_id: int = 1):
             "entry_price", "target_price", "stop_structural", "stop_catastrophic",
             "t0_qty", "friction_per_share", "is_grid_viable",
             "daily_pnl", "daily_trades", "daily_stop_count",
-            "signal", "signal_price", "reason", "updated_at",
+            "signal", "signal_price", "reason", "state_json", "updated_at",
         ]
-        states = {row[1]: dict(zip(cols, row)) for row in rows}
+        last_fills = _load_last_t0_fills(conn, user_id)
+        states = {
+            row[1]: _enrich_t0_state(dict(zip(cols, row)), last_fills.get(row[1]))
+            for row in rows
+        }
         return {"states": states, "count": len(states)}
     finally:
         conn.close()
@@ -60,7 +65,7 @@ def get_t0_state(symbol: str, user_id: int = 1):
                    entry_price, target_price, stop_structural, stop_catastrophic,
                    t0_qty, friction_per_share, is_grid_viable,
                    daily_pnl, daily_trades, daily_stop_count,
-                   signal, signal_price, reason, updated_at
+                   signal, signal_price, reason, state_json, updated_at
               FROM t0_state_cache
              WHERE user_id = ? AND symbol = ?
             """,
@@ -73,9 +78,10 @@ def get_t0_state(symbol: str, user_id: int = 1):
             "entry_price", "target_price", "stop_structural", "stop_catastrophic",
             "t0_qty", "friction_per_share", "is_grid_viable",
             "daily_pnl", "daily_trades", "daily_stop_count",
-            "signal", "signal_price", "reason", "updated_at",
+            "signal", "signal_price", "reason", "state_json", "updated_at",
         ]
-        return dict(zip(cols, row))
+        last_fill = _load_last_t0_fills(conn, user_id, symbol=symbol).get(symbol)
+        return _enrich_t0_state(dict(zip(cols, row)), last_fill)
     finally:
         conn.close()
 
@@ -235,3 +241,107 @@ def get_t0_history(
         return {"fills": [dict(zip(cols, r)) for r in rows], "count": len(rows)}
     finally:
         conn.close()
+
+
+def _load_last_t0_fills(conn, user_id: int, *, symbol: str | None = None) -> dict[str, dict]:
+    """Return latest T0 paper fill per symbol."""
+    paper_account_id = f"t0_coach_{user_id}"
+    params: list[object] = [paper_account_id]
+    symbol_clause = ""
+    if symbol:
+        symbol_clause = " AND symbol = ?"
+        params.append(symbol)
+    rows = conn.execute(
+        f"""
+        SELECT fill_id, symbol, side, quantity, fill_price,
+               commission, stamp_tax, transfer_fee, slippage,
+               reason, filled_at
+          FROM paper_fills
+         WHERE paper_account_id = ?
+           AND reason LIKE '%t0:%'
+           {symbol_clause}
+         ORDER BY filled_at DESC
+        """,
+        tuple(params),
+    ).fetchall()
+    cols = [
+        "fill_id", "symbol", "side", "quantity", "fill_price",
+        "commission", "stamp_tax", "transfer_fee", "slippage", "reason", "filled_at",
+    ]
+    result: dict[str, dict] = {}
+    for row in rows:
+        data = dict(zip(cols, row))
+        result.setdefault(data["symbol"], data)
+    return result
+
+
+def _enrich_t0_state(state: dict, last_fill: dict | None = None) -> dict:
+    """Add UI-friendly deterministic fields without changing the DB schema."""
+    state_json = _loads_json(state.get("state_json") or "{}")
+    if state_json:
+        state["signal_qty"] = state.get("signal_qty") or state_json.get("current_open_qty")
+    state.pop("state_json", None)
+    state["data_quality"] = _t0_data_quality(state)
+    state["action_window"] = _t0_action_window(state)
+    state["next_step"] = _t0_next_step(state)
+    state["last_fill"] = last_fill
+    return state
+
+
+def _t0_data_quality(state: dict) -> str:
+    reason = str(state.get("reason") or "")
+    if not state.get("pivot_zd") or not state.get("pivot_zg"):
+        return "missing"
+    if "不足" in reason or "无效" in reason:
+        return "partial"
+    return "ready"
+
+
+def _t0_action_window(state: dict) -> str:
+    t0_state = str(state.get("state") or "")
+    signal = str(state.get("signal") or "")
+    reason = str(state.get("reason") or "")
+    if t0_state == "LOCKDOWN" or "STOP" in signal:
+        return "locked"
+    if t0_state == "POSITION_LONG" or signal == "BUY_LONG":
+        return "long_open"
+    if t0_state == "POSITION_SHORT" or signal == "SELL_SHORT":
+        return "short_open"
+    if "ZD" in reason or "底分型" in reason:
+        return "near_zd"
+    if "ZG" in reason or "顶分型" in reason:
+        return "near_zg"
+    return "none"
+
+
+def _t0_next_step(state: dict) -> str:
+    if state.get("signal"):
+        signal_map = {
+            "BUY_LONG": "1分钟底分型确认，纸盘低吸",
+            "SELL_LONG": "到达上沿，纸盘正T卖出",
+            "SELL_SHORT": "1分钟顶分型确认，纸盘高抛",
+            "BUY_SHORT": "回到下沿，纸盘倒T买回",
+            "STOP_LONG": "正T止损，今日锁定",
+            "STOP_SHORT": "倒T止损，今日锁定",
+            "SWEEP_LONG": "尾盘扫尾，纸盘卖出",
+            "SWEEP_SHORT": "尾盘扫尾，纸盘买回",
+        }
+        return signal_map.get(str(state.get("signal")), str(state.get("reason") or "T0信号已触发"))
+    reason = str(state.get("reason") or "").strip()
+    if reason:
+        return reason
+    if state.get("data_quality") == "missing":
+        return "缺少5分钟中枢或1分钟数据"
+    if state.get("action_window") == "near_zd":
+        return "进入下沿区域，等待1分钟底分型"
+    if state.get("action_window") == "near_zg":
+        return "进入上沿区域，等待1分钟顶分型"
+    return "等待5分钟中枢边界与1分钟分型确认"
+
+
+def _loads_json(value: str | None) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

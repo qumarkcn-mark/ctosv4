@@ -1,7 +1,8 @@
-"""T+0 有边界做T — 1分钟右侧分型过滤器。
+"""T+0 有边界做T — 1分钟右侧分型过滤器 + 笔动力学计算。
 
 纯数学计算，确定性，零 LLM 依赖。
 基于缠论分型定义，判断 1M K 线是否形成底/顶分型。
+同时提供笔振幅衰减比计算，用于判断是否存在底背驰动能衰减。
 """
 from __future__ import annotations
 
@@ -175,3 +176,61 @@ def calculate_atr_1m(klines_1m: list[dict], period: int = 15) -> float:
         atr = (atr * (period - 1) + tr) / period
 
     return round(atr, 4)
+
+
+def calculate_bi_strength_ratio(bis: list[dict], direction: str = "down") -> float | None:
+    """计算笔振幅衰减比：当前同向笔振幅 / 上一同向笔振幅。
+
+    用于判断做T方向的动能是否已经衰减（底背驰/顶背驰的几何近似）。
+
+    Args:
+        bis: structure_snapshots['bis'] 列表，每根笔包含：
+             { direction, high, low, start_price, end_price, x0, x1, bar_count, ... }
+             时间升序排列（旧的在前）。
+        direction: 要分析的笔方向，"down" = 向下笔（做T低吸时用），"up" = 向上笔（倒T高抛时用）
+
+    Returns:
+        float: 振幅衰减比 = current_amplitude / previous_amplitude
+               < 1.0 表示动能在衰减（利好信号）
+               >= 1.0 表示动能仍在扩大（空头加速，拒绝开仓）
+               None: 同向笔数量不足 2 根，无法计算
+
+    示例：
+        向下笔 A: high=128.0, low=122.0 → amplitude=6.0
+        向下笔 B: high=125.0, low=122.5 → amplitude=2.5
+        ratio = 2.5 / 6.0 = 0.417  → 明显衰减，确认底背驰
+    """
+    if not bis:
+        return None
+
+    # 筛选同向笔
+    same_direction = [b for b in bis if b.get("direction") == direction]
+
+    if len(same_direction) < 2:
+        return None
+
+    # 取最后两根同向笔：[-2]=上一笔，[-1]=当前笔
+    prev_bi = same_direction[-2]
+    curr_bi = same_direction[-1]
+
+    prev_amplitude = abs(prev_bi.get("high", 0) - prev_bi.get("low", 0))
+    curr_amplitude = abs(curr_bi.get("high", 0) - curr_bi.get("low", 0))
+
+    if prev_amplitude <= 0:
+        return None
+
+    return round(curr_amplitude / prev_amplitude, 4)
+
+
+def extract_bis_from_snapshot(snapshot_json: dict, direction: str = "down") -> list[dict]:
+    """从 structure_snapshots 的 snapshot_json 中提取已完成的同向笔列表。
+
+    Args:
+        snapshot_json: structure_snapshots.snapshot_json 解析后的 dict
+        direction: "down" 或 "up"
+
+    Returns:
+        同向笔列表，时间升序
+    """
+    bis = snapshot_json.get("bis", [])
+    return [b for b in bis if b.get("direction") == direction]

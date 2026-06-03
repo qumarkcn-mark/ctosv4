@@ -60,6 +60,58 @@ class TestLongT0Lifecycle:
         assert result.entry_price == pytest.approx(100.3)
         assert result.target_price == pytest.approx(108.0)
 
+    def test_bi_strength_veto_rejects_accelerating_down_bi(self):
+        """向下笔仍在放大时，拒绝低吸开仓。"""
+        machine = self._make_machine()
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=100.3,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_bottom_fractal(),
+            atr_5m=0.5,
+            bi_strength_ratio=0.92,
+        )
+
+        assert result.signal is None
+        assert result.state == T0State.IDLE.value
+        assert "笔动能未衰减" in result.reason
+
+    def test_first_zd_touch_uses_half_signal_qty_and_pnl(self):
+        """首次触碰 ZD 时使用减半试探数量，并用实际数量计算后续 PnL。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=400)
+        machine.reset_daily("2025-05-26")
+
+        opened = machine.tick(
+            current_price=100.3,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_bottom_fractal(),
+            atr_5m=0.5,
+            bi_strength_ratio=0.42,
+        )
+
+        assert opened.signal == "BUY_LONG"
+        assert opened.signal_qty == 200
+        assert machine.serialize()["current_open_qty"] == 200
+
+        closed = machine.tick(
+            current_price=108.5,
+            timestamp="2025-05-26 11:00:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=[],
+        )
+
+        assert closed.signal == "SELL_LONG"
+        assert closed.signal_qty == 200
+        assert closed.entry_price == pytest.approx(100.3)
+        assert closed.daily_pnl < (108.5 - 100.3) * 400
+        assert closed.daily_pnl > (108.5 - 100.3) * 150
+
     def test_position_long_to_idle_profit(self):
         """POSITION_LONG → IDLE（止盈：价格触达 ZG）。"""
         machine = self._make_machine()
@@ -234,7 +286,7 @@ class TestForceSweep:
         machine._entry_price = 100.0
 
         result = machine.force_sweep(103.0)
-        assert result.signal == "SWEEP"
+        assert result.signal == "SWEEP_LONG"
         assert result.state == T0State.IDLE.value
 
     def test_sweep_from_position_short(self):
@@ -245,7 +297,7 @@ class TestForceSweep:
         machine._entry_price = 107.0
 
         result = machine.force_sweep(105.0)
-        assert result.signal == "SWEEP"
+        assert result.signal == "SWEEP_SHORT"
         assert result.state == T0State.IDLE.value
 
     def test_sweep_from_idle_no_signal(self):

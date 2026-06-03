@@ -59,6 +59,7 @@ from server.engines.ai_native.unified_reasoning_service import (
     get_latest_unified_reasoning,
     normalize_monitor_conditions,
 )
+from server.engines.ai_native.position_path_state_service import derive_position_path_state
 from server.engines.ai_native.ai_trigger_service import TRIGGER_MANUAL_FULL_REASONING, request_ai_reasoning
 from server.engines.ai_native.universe_resolver import resolve_ai_native_universe
 from server.engines.ai_native.workspace_bootstrap_service import bootstrap_ai_structure_workspace
@@ -181,6 +182,11 @@ async def watchboard(current_user_id: int = Depends(get_current_user_id)):
                 cost = _num(item["position"].get("cost"))
                 if cost > 0:
                     item["position"]["pnl_pct"] = round((_num(item["price"]) - cost) / cost * 100, 2)
+            item["position_path"] = derive_position_path_state(
+                summary=item.get("reasoning_summary") or {},
+                current_price=item.get("price"),
+                position=item.get("position"),
+            )
     return {
         "status": "success",
         "data": {
