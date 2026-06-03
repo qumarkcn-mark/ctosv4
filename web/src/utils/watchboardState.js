@@ -137,6 +137,48 @@ export function computeStateMachineState(item, currentPrice, previousPrice) {
   }
 }
 
+export function derivePositionPathState(item, currentPrice, previousPrice) {
+  const base = item?.position_path || {}
+  if (!base || base.data_status !== 'ready') {
+    return {
+      version: 'position_path_state.v1',
+      data_status: base.data_status || 'missing',
+      lifecycle_stage: base.lifecycle_stage || (item?.position ? 'entry_validation' : 'watching'),
+      major_task: base.major_task || '',
+      current_phase: base.current_phase || '暂无路径状态',
+      success_path: base.success_path || '',
+      failure_path: base.failure_path || '',
+      next_focus: base.next_focus || '等待统一推演提取状态机',
+      draft_action: base.draft_action || 'WAIT',
+      range: base.range || null,
+      ui_state: 'missing',
+    }
+  }
+  const active = base.active_transition || null
+  const draftAction = String(base.draft_action || 'WAIT')
+  const transitionText = `${active?.id || ''}${active?.next_state || ''}${base.current_phase || ''}`
+  const uiState = draftAction === 'LOCKDOWN' || /down|下|跌|破|支撑|转弱|失败|风险/.test(transitionText)
+    ? 'alert'
+    : draftAction === 'REVIEW_TRIGGER' || draftAction === 'T0_PAPER_ACTION'
+      ? 'confirmed'
+      : 'idle'
+  return {
+    version: 'position_path_state.v1',
+    data_status: 'ready',
+    lifecycle_stage: base.lifecycle_stage || (item?.position ? 'entry_validation' : 'watching'),
+    major_task: base.major_task || '',
+    current_phase: base.current_phase || base.major_task || '等待路径确认',
+    success_path: base.success_path || '',
+    failure_path: base.failure_path || '',
+    next_focus: base.next_focus || '等待下一次结构触发',
+    draft_action: draftAction,
+    range: base.range || null,
+    active_transition: active,
+    nearest_transition: base.nearest_transition || null,
+    ui_state: uiState,
+  }
+}
+
 export function computeCardState(item, currentPrice, previousPrice) {
   const tactical = computeStateMachineState(item, currentPrice, previousPrice)
   const map = {

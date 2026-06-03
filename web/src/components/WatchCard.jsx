@@ -1,5 +1,5 @@
 import './WatchCard.css'
-import { computeStateMachineState, formatWatchPrice } from '../utils/watchboardState.js'
+import { derivePositionPathState, formatWatchPrice } from '../utils/watchboardState.js'
 
 const formatPrice = (value) => formatWatchPrice(value, { fixed: true })
 const formatLevel = formatWatchPrice
@@ -88,6 +88,22 @@ function t0Badge(state = null) {
   return { label, tone }
 }
 
+function t0CardLine(state = null) {
+  if (!state) return ''
+  return String(state.next_step || state.reason || '').trim()
+}
+
+function cardStateFromPathAndT0(path, t0) {
+  const t0State = String(t0?.state || '')
+  const signal = String(t0?.signal || '')
+  if (t0State === 'LOCKDOWN' || signal.includes('STOP')) return 'danger'
+  if (signal || t0State === 'POSITION_LONG' || t0State === 'POSITION_SHORT') return 'confirm'
+  if (path?.data_status === 'missing') return 'idle'
+  if (path?.ui_state === 'alert') return 'alert'
+  if (path?.ui_state === 'confirmed') return 'confirm'
+  return 'idle'
+}
+
 function reasoningFreshnessMeta(item = {}, summary = {}) {
   const freshness = item.reasoning_freshness || {}
   const status = String(freshness.status || '').trim()
@@ -107,15 +123,16 @@ function reasoningFreshnessMeta(item = {}, summary = {}) {
 
 export default function WatchCard({ item, currentPrice, previousPrice, onClick }) {
   const price = Number(currentPrice || item.price || 0)
-  const machine = computeStateMachineState(item, price, previousPrice)
-  const state = machine.available ? machine.state : 'idle'
-  const summary = item.reasoning_summary || {}
-  const message = machine.available ? (machine.displayLine || summary.one_liner || '等待关键位') : missingStateMachineMessage(summary)
-  const rawAction = summary.action || machine.actionLabel || '观望'
-  const triggerLine = machine.available ? machine.nextWatchLine : ''
-  const triggerLabel = machine.nextWatchLabel || (machine.activeTransition ? (machine.isFreshTrigger ? '触发' : '已越过') : '等待')
-  const position = item.position
+  const path = derivePositionPathState(item, price, previousPrice)
   const t0 = t0Badge(item.t0_state)
+  const state = cardStateFromPathAndT0(path, item.t0_state)
+  const summary = item.reasoning_summary || {}
+  const t0Line = t0CardLine(item.t0_state)
+  const message = t0Line || (path.data_status === 'ready' ? (path.current_phase || path.major_task || '等待路径确认') : '暂无状态机数据')
+  const rawAction = path.draft_action === 'LOCKDOWN' ? '观望' : (summary.action || '观察')
+  const triggerLine = path.data_status === 'ready' ? path.next_focus : ''
+  const triggerLabel = item.t0_state?.signal ? 'T0' : '下一步'
+  const position = item.position
   const action = normalizeCurrentAction(rawAction, Boolean(position?.shares))
   const quoteTime = item.price_data?.quote_time || ''
   const pnlPct = Number(position?.pnl_pct ?? 0)
@@ -125,8 +142,13 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
   const pnlLabel = pnlPct >= 0 ? '盈' : '亏'
   const freshnessMeta = reasoningFreshnessMeta(item, summary)
 
-  const minL = Number(machine.range?.low || 0)
-  const maxL = Number(machine.range?.high || 0)
+  const range = path.range || (
+    item.t0_state?.pivot_zd && item.t0_state?.pivot_zg
+      ? { low: item.t0_state?.pivot_zd, high: item.t0_state?.pivot_zg }
+      : null
+  )
+  const minL = Number(range?.low || 0)
+  const maxL = Number(range?.high || 0)
   const hasRangeLevels = Boolean(minL && maxL)
   let dotPercentage = 50
   if (minL && maxL && maxL > minL) {
@@ -181,7 +203,7 @@ export default function WatchCard({ item, currentPrice, previousPrice, onClick }
       <div className="watch-card-bottom">
         {!hasRangeLevels && (
           <div className="watch-card-levels">
-            <span className="watch-card-no-level">{machine.available ? '无区间数据' : missingStateMachineMeta(summary)}</span>
+            <span className="watch-card-no-level">{path.data_status === 'ready' ? '无区间数据' : missingStateMachineMeta(summary)}</span>
           </div>
         )}
         {freshnessMeta.label && (
