@@ -778,57 +778,48 @@ def _validate_symbol(symbol: str) -> str:
 def _load_watchboard_groups(user_id: int) -> list[dict]:
     conn = get_connection()
     try:
-        _ensure_watchboard_groups(conn, user_id)
-        positions = _load_watchboard_positions(conn, user_id)
-        reasoning_by_symbol = {
-            item["symbol"]: _load_watchboard_reasoning(conn, user_id, item["symbol"])
-            for item in positions
-        }
-        watch_groups = []
-        for name, group_type in (("自选", "watchlist"), ("备选", "candidate")):
-            items = _load_watchlist_group_items(conn, user_id, name)
+        positions_by_symbol = _load_watchboard_positions_by_symbol(conn, user_id)
+        reasoning_by_symbol: dict[str, dict] = {}
+        groups = []
+        for group in _load_watchlist_groups(conn, user_id):
+            items = _load_watchlist_group_items(conn, user_id, int(group["id"]))
+            hydrated_items = []
             for item in items:
-                if item["symbol"] not in reasoning_by_symbol:
-                    reasoning_by_symbol[item["symbol"]] = _load_watchboard_reasoning(conn, user_id, item["symbol"])
-            watch_groups.append({
-                "name": name,
-                "type": group_type,
-                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"]), conn=conn) for item in items],
+                symbol = item["symbol"]
+                if symbol not in reasoning_by_symbol:
+                    reasoning_by_symbol[symbol] = _load_watchboard_reasoning(conn, user_id, symbol)
+                position_item = positions_by_symbol.get(symbol)
+                if position_item:
+                    item = {
+                        **item,
+                        "price": position_item.get("price") or item.get("price") or 0,
+                        "position": position_item.get("position"),
+                    }
+                hydrated_items.append(_attach_watchboard_reasoning(item, reasoning_by_symbol.get(symbol), conn=conn))
+            groups.append({
+                "name": group["name"],
+                "type": f"watchlist:{group['id']}",
+                "items": hydrated_items,
             })
-        return [
-            {
-                "name": "持仓",
-                "type": "position",
-                "items": [_attach_watchboard_reasoning(item, reasoning_by_symbol.get(item["symbol"]), conn=conn) for item in positions],
-            },
-            *watch_groups,
-        ]
+        return groups
     finally:
         conn.close()
 
 
-def _ensure_watchboard_groups(conn, user_id: int) -> None:
+def _load_watchlist_groups(conn, user_id: int) -> list[dict]:
     rows = conn.execute(
-        "SELECT name FROM watchlist_groups WHERE user_id = ?",
+        """
+        SELECT id, name
+          FROM watchlist_groups
+         WHERE user_id = ?
+         ORDER BY sort_order, id
+        """,
         (int(user_id),),
     ).fetchall()
-    names = {row["name"] for row in rows}
-    next_order = len(names)
-    changed = False
-    for name in ("自选", "备选"):
-        if name in names:
-            continue
-        conn.execute(
-            "INSERT OR IGNORE INTO watchlist_groups (user_id, name, sort_order) VALUES (?, ?, ?)",
-            (int(user_id), name, next_order),
-        )
-        next_order += 1
-        changed = True
-    if changed:
-        conn.commit()
+    return [dict(row) for row in rows]
 
 
-def _load_watchboard_positions(conn, user_id: int) -> list[dict]:
+def _load_watchboard_positions_by_symbol(conn, user_id: int) -> dict[str, dict]:
     rows = conn.execute(
         """
         SELECT symbol, name, quantity, avg_cost, current_price, updated_at
@@ -838,7 +829,7 @@ def _load_watchboard_positions(conn, user_id: int) -> list[dict]:
         """,
         (int(user_id),),
     ).fetchall()
-    items = []
+    items = {}
     seen = set()
     for row in rows:
         try:
@@ -855,26 +846,26 @@ def _load_watchboard_positions(conn, user_id: int) -> list[dict]:
             "cost": cost,
             "pnl_pct": round((current_price - cost) / cost * 100, 2) if current_price > 0 and cost > 0 else None,
         }
-        items.append({
+        items[symbol] = {
             "symbol": symbol,
             "name": row["name"] or "",
             "price": current_price,
             "change_pct": 0,
             "position": position,
-        })
+        }
     return items
 
 
-def _load_watchlist_group_items(conn, user_id: int, group_name: str) -> list[dict]:
+def _load_watchlist_group_items(conn, user_id: int, group_id: int) -> list[dict]:
     rows = conn.execute(
         """
         SELECT wi.symbol, wi.name, wi.sort_order
           FROM watchlist_items wi
           JOIN watchlist_groups wg ON wg.id = wi.group_id
-         WHERE wg.user_id = ? AND wg.name = ?
+         WHERE wg.user_id = ? AND wg.id = ?
          ORDER BY wi.sort_order, wi.id
         """,
-        (int(user_id), group_name),
+        (int(user_id), int(group_id)),
     ).fetchall()
     items = []
     seen = set()
