@@ -255,10 +255,11 @@ def get_daily_t0_summary(user_id: int, date: Optional[str] = None) -> dict:
     try:
         rows = conn.execute(
             """
-            SELECT symbol, daily_pnl, daily_trades, daily_stop_count
+            SELECT symbol, daily_pnl, daily_trades, daily_stop_count,
+                   state, signal, entry_price, target_price, reason, state_json, updated_at
               FROM t0_state_cache
              WHERE user_id = ?
-               AND daily_trades > 0
+               AND (daily_trades > 0 OR signal = 'REDUCE_LOCK' OR state = 'LOCKDOWN')
             """,
             (user_id,),
         ).fetchall()
@@ -277,11 +278,39 @@ def get_daily_t0_summary(user_id: int, date: Optional[str] = None) -> dict:
     best_symbol = max(rows, key=lambda r: r[1], default=None) if rows else None
     worst_symbol = min(rows, key=lambda r: r[1], default=None) if rows else None
 
-    symbols_traded = [r[0] for r in rows]
+    symbols_traded = [r[0] for r in rows if r[2] > 0]
+    reduce_lock_rows = [r for r in rows if r[5] == "REDUCE_LOCK"]
+    lockdown_rows = [r for r in rows if r[4] == "LOCKDOWN"]
+    fills_by_symbol: dict[str, list[dict]] = {}
+    for fill in fills:
+        fills_by_symbol.setdefault(fill["symbol"], []).append(fill)
+
+    per_symbol = []
+    for row in rows:
+        symbol = row[0]
+        state_json = _loads_json(row[9])
+        last_fill = fills_by_symbol.get(symbol, [])[-1] if fills_by_symbol.get(symbol) else None
+        per_symbol.append({
+            "symbol": symbol,
+            "daily_pnl": round(float(row[1] or 0), 2),
+            "daily_trades": int(row[2] or 0),
+            "daily_stop_count": int(row[3] or 0),
+            "state": row[4],
+            "signal": row[5],
+            "entry_price": row[6],
+            "target_price": row[7],
+            "reason": row[8],
+            "available_t0_qty": (state_json.get("position_constraints") or {}).get("available_t0_qty"),
+            "risk_budget_left": state_json.get("risk_budget_left"),
+            "lock_reason": state_json.get("lock_reason") or "",
+            "last_fill": last_fill,
+            "updated_at": row[10],
+        })
 
     return {
         "date": date,
         "total_trades": total_trades,
+        "fill_count": len(fills),
         "win_count": len(winning_symbols),
         "loss_count": len(losing_symbols),
         "win_rate": len(winning_symbols) / len(rows) if rows else 0.0,
@@ -298,6 +327,14 @@ def get_daily_t0_summary(user_id: int, date: Optional[str] = None) -> dict:
             "net_pnl": round(worst_symbol[1], 2),
         } if worst_symbol else None,
         "symbols_traded": symbols_traded,
+        "reduce_lock_count": len(reduce_lock_rows),
+        "reduce_lock_symbols": [r[0] for r in reduce_lock_rows],
+        "lockdown_count": len(lockdown_rows),
+        "lockdown_reasons": [
+            {"symbol": r[0], "reason": (r[9] and (_loads_json(r[9]).get("lock_reason") or "")) or r[8] or ""}
+            for r in lockdown_rows
+        ],
+        "symbols": per_symbol,
     }
 
 
@@ -313,3 +350,11 @@ def _dummy_account(user_id: int, paper_account_id: str):
         user_id=user_id,
         cash=0.0,
     )
+
+
+def _loads_json(value: str | None) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

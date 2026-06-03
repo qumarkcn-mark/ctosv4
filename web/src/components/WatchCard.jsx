@@ -76,7 +76,7 @@ function t0Badge(state = null) {
     REDUCE_LOCK: '减仓锁利',
   }
   const stateMap = {
-    IDLE: '等待',
+    IDLE: t0IdleLabel(state),
     POSITION_LONG: '正T',
     POSITION_SHORT: '待回补',
     LOCKDOWN: '锁定',
@@ -87,6 +87,13 @@ function t0Badge(state = null) {
   else if (stateValue === 'POSITION_LONG' || stateValue === 'POSITION_SHORT' || signal) tone = 'active'
   else if (state.is_grid_viable === 0 || state.is_grid_viable === false) tone = 'muted'
   return { label, tone }
+}
+
+function t0IdleLabel(state = {}) {
+  const direction = String(state.allowed_t0_direction || '')
+  if (direction === 'LONG_ONLY') return '正T等待'
+  if (direction === 'SHORT_ONLY') return '倒T等待'
+  return '观察'
 }
 
 function t0CardLine(state = null) {
