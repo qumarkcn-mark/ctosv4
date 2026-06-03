@@ -10,7 +10,6 @@ import {
 } from '../utils/watchboardState.js'
 import './WatchBoard.css'
 
-const GROUPS = ['自选', '备选']
 const QUICK_QUESTIONS = ['现在怎么看？', '跌破哪里失效？', '企稳看哪里？', '要不要减仓？']
 
 function isTradingTime(now = new Date()) {
@@ -210,7 +209,7 @@ export default function WatchBoard() {
   const [nowTick, setNowTick] = useState(Date.now())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [targetGroup, setTargetGroup] = useState('自选')
+  const [targetGroup, setTargetGroup] = useState('')
   const [adding, setAdding] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState([])
@@ -222,6 +221,7 @@ export default function WatchBoard() {
   const autoOpenedRef = useRef(false)
 
   const allItems = useMemo(() => flattenGroups(groups), [groups])
+  const groupNames = useMemo(() => groups.map((group) => group.name).filter(Boolean), [groups])
   const displayGroups = useMemo(() => (
     groups.map((group) => ({
           ...group,
@@ -292,6 +292,13 @@ export default function WatchBoard() {
       setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    if (!groupNames.length) return
+    if (!targetGroup || !groupNames.includes(targetGroup)) {
+      setTargetGroup(groupNames[0])
+    }
+  }, [groupNames, targetGroup])
 
   const loadT0States = useCallback(async () => {
     try {
@@ -456,6 +463,10 @@ export default function WatchBoard() {
   }
 
   const addStock = async (stock) => {
+    if (!targetGroup) {
+      setError('请先创建一个教练 watchlist 分组')
+      return
+    }
     setAdding(true)
     setError('')
     try {
@@ -600,7 +611,7 @@ export default function WatchBoard() {
           <div className="watchboard-add">
             <StockSearch onSelect={addStock} />
             <select aria-label="添加到分组" value={targetGroup} onChange={(event) => setTargetGroup(event.target.value)}>
-              {GROUPS.map((group) => <option key={group}>{group}</option>)}
+              {groupNames.map((group) => <option key={group}>{group}</option>)}
             </select>
             <span className={isTradingTime() ? 'watchboard-live is-open' : 'watchboard-live'}>
               <i aria-hidden="true" />
