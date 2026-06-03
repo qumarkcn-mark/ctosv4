@@ -197,25 +197,9 @@
   font-family: var(--font-body, sans-serif);
 }
 
-.base-kline__status button.is-layer-active {
-  color: var(--action-gold, #c8a832);
-  border-color: rgba(200,168,50,0.32);
-  background: rgba(200,168,50,0.10);
-}
-
 .base-kline__status button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.base-kline__layer-controls {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
-  border-radius: 4px;
-  background: var(--surface-0, #08080a);
 }
 
 .base-kline__legend {

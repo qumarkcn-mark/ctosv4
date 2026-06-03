@@ -427,12 +427,6 @@
   line-height: 1.5;
 }
 
-.ai-reasoning-brief p.is-one-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ai-reasoning-growth {
   display: grid;
   gap: 5px;

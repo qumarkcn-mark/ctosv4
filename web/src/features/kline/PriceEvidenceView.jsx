@@ -57,8 +57,8 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
   const [period, setPeriod] = useState(() => normalizeKlinePeriod(initialPrefs.period))
   const [mainIndicator, setMainIndicator] = useState(() => normalizeIndicator(initialPrefs.mainIndicator, MAIN_INDICATORS, 'MA'))
   const [subIndicator, setSubIndicator] = useState(() => normalizeIndicator(initialPrefs.subIndicator, SUB_INDICATORS, 'VOL'))
-  const [structureLayer, setStructureLayer] = useState(() => initialPrefs.structureLayer !== 'off')
-  const [momentumLayer, setMomentumLayer] = useState(() => initialPrefs.momentumLayer === 'on')
+  const [structureLayer] = useState(true)
+  const [momentumLayer] = useState(false)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState('')
@@ -535,14 +535,6 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
     setSubIndicator(normalizeIndicator(nextIndicator, SUB_INDICATORS, 'VOL'))
   }
 
-  const handleStructureLayerToggle = () => {
-    setStructureLayer((current) => !current)
-  }
-
-  const handleMomentumLayerToggle = () => {
-    setMomentumLayer((current) => !current)
-  }
-
   const handleRefresh = async () => {
     if (!symbol || syncing) return
     setSyncing(true)
@@ -640,26 +632,6 @@ export default function PriceEvidenceView({ symbol, symbolName, onAddToWatchlist
 
         <div className="base-kline__status">
           <div className="base-kline__structure-meta">
-            <div className="base-kline__layer-controls" aria-label="K线图层">
-              <button
-                type="button"
-                className={structureLayer ? 'is-layer-active' : ''}
-                onClick={handleStructureLayerToggle}
-                disabled={!supportsStructureLayers}
-                title="显示/隐藏 CZSC 笔与中枢；线段仅在 CZSC 原生提供时显示"
-              >
-                结构
-              </button>
-              <button
-                type="button"
-                className={momentumLayer ? 'is-layer-active' : ''}
-                onClick={handleMomentumLayerToggle}
-                disabled={!supportsStructureLayers}
-                title="显示/隐藏当前段与上一同向段力量对比"
-              >
-                力量
-              </button>
-            </div>
             {structureLayer && supportsStructureLayers && (
               <div className="base-kline__legend" aria-label="结构图例">
                 <span><i className="is-bi" />笔</span>

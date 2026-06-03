@@ -576,34 +576,11 @@ export default function AIStructureCoachPanel({
         </div>
       </header>
 
-      <PipelineStatus items={pipelineItems} />
-
-      <AutoActivationStrip
-        workspaceSymbolState={workspaceSymbolState}
-        status={status}
-        context={reasoningContext}
-      />
-
       <DataLineageStrip
         model={dataLineage}
       />
 
-      <StatusNotice
-        status={status}
-        pollingActive={pollingActive}
-        onRetry={regenerateReasoning}
-        retrying={regenerating}
-        hasUnifiedReasoning={Boolean(detailReasoningContext)}
-      />
-
       <ReasoningBrief context={detailReasoningContext} status={status} />
-      <WatchPlanPanel
-        context={detailReasoningContext}
-        status={status}
-        reasoningStale={dataLineage.reasoningStale}
-      />
-
-      <ReminderStatus reminders={reminders} onAck={ackReminder} />
 
       {commandActive && (
         <ThinkingStatusBar
@@ -634,7 +611,6 @@ export default function AIStructureCoachPanel({
           <Message
             key={`${item.role}-${index}`}
             item={item}
-            onReminder={createReminder}
             context={reasoningContext}
           />
         ))}
@@ -694,7 +670,7 @@ function ReasoningBrief({ context, status }) {
         <strong>当前推演</strong>
         <span>{mainLevel ? `主观察：${mainLevel}` : 'AI 推演已完成'}</span>
       </div>
-      {summary && <p className={isUnified ? 'is-one-line' : ''}>{summary}</p>}
+      {summary && <p>{summary}</p>}
       {growthText && (
         <div className="ai-reasoning-growth">
           <span>走势如何生长</span>
@@ -1163,7 +1139,7 @@ function reminderStatusLabel(status) {
   return '盯盘中'
 }
 
-function Message({ item, onReminder, context }) {
+function Message({ item, context }) {
   if (item.role === 'user') {
     return (
       <div className={`ai-msg ai-msg--user ${item.pending ? 'ai-msg--pending' : ''}`}>
@@ -1177,9 +1153,6 @@ function Message({ item, onReminder, context }) {
   const answer = item.answer || {}
   const answerText = answer.coach_answer || answer.answer || ''
   const dataFreshnessMeta = formatAnswerDataFreshness(answer.data_freshness)
-  const reminderCandidates = (answer.suggested_reminders || []).filter((candidate) => (
-    isLiveReminderCandidate(answer, candidate, context)
-  ))
   const hasDisclaimerInAnswer = String(answerText).includes(answer.risk_disclaimer || '')
   return (
     <div className="ai-msg ai-msg--assistant">
@@ -1187,19 +1160,6 @@ function Message({ item, onReminder, context }) {
       {dataFreshnessMeta && (
         <div className={`ai-msg-data-meta ai-msg-data-meta--${dataFreshnessMeta.tone}`}>
           {dataFreshnessMeta.items.map((item) => <span key={item}>{item}</span>)}
-        </div>
-      )}
-      {!!reminderCandidates.length && (
-        <div className="ai-reminder-list">
-          {reminderCandidates.map((candidate) => (
-            <button
-              key={candidate.evidence_id}
-              type="button"
-              onClick={() => onReminder(answer, candidate)}
-            >
-              {candidate.direction === 'ABOVE' ? '上破' : '跌破'} {Number(candidate.trigger_price || 0).toFixed(2)}
-            </button>
-          ))}
         </div>
       )}
       {answer.risk_disclaimer && !hasDisclaimerInAnswer && <span>{answer.risk_disclaimer}</span>}
