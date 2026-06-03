@@ -6,7 +6,6 @@ import WatchCard from '../components/WatchCard.jsx'
 import {
   buildIntradayReviewQuestion,
   computeStateMachineState,
-  derivePositionPathState,
   intradayReviewLabel,
 } from '../utils/watchboardState.js'
 import './WatchBoard.css'
@@ -89,104 +88,6 @@ function formatMetaTime(value) {
   const text = String(value).replace('T', ' ').replace(/\+\d\d:\d\d|Z$/g, '').trim()
   if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(5, 16)
   return text.slice(0, 16)
-}
-
-function formatT0Value(value, digits = 2) {
-  if (value === null || value === undefined || value === '') return '--'
-  const num = Number(value)
-  if (!Number.isFinite(num)) return '--'
-  if (num === 0) return (0).toFixed(digits)
-  return num >= 100 ? num.toFixed(2) : num.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '')
-}
-
-function formatT0Time(value) {
-  return formatMetaTime(value)
-}
-
-function t0StateLabel(value) {
-  const map = {
-    IDLE: '等待',
-    POSITION_LONG: '正T持仓',
-    POSITION_SHORT: '倒T持仓',
-    LOCKDOWN: '锁定',
-  }
-  return map[String(value || '')] || '未启用'
-}
-
-function t0SignalLabel(value) {
-  const map = {
-    BUY_LONG: '低吸',
-    SELL_LONG: '正T卖出',
-    SELL_SHORT: '高抛',
-    BUY_SHORT: '倒T买回',
-    STOP_LONG: '正T止损',
-    STOP_SHORT: '倒T止损',
-    SWEEP_LONG: '尾盘卖出',
-    SWEEP_SHORT: '尾盘买回',
-  }
-  return map[String(value || '')] || ''
-}
-
-function t0Tone(state = {}) {
-  const signal = String(state.signal || '')
-  if (String(state.state || '') === 'LOCKDOWN' || signal.includes('STOP')) return 'danger'
-  if (state.state === 'POSITION_LONG' || state.state === 'POSITION_SHORT') return 'active'
-  if (signal) return 'signal'
-  if (state.is_grid_viable === 0 || state.is_grid_viable === false) return 'muted'
-  return 'idle'
-}
-
-function pathStageLabel(value) {
-  const map = {
-    watching: '观察',
-    entry_probe: '试探',
-    entry_validation: '验证',
-    add_position_confirm: '加仓确认',
-    trend_holding: '趋势持有',
-    defense_t0: '防守做T',
-    exit_confirm: '退出确认',
-    lockdown: '锁定',
-  }
-  return map[String(value || '')] || '路径'
-}
-
-function pathTone(path = {}) {
-  if (!path || path.data_status === 'missing') return 'muted'
-  if (path.draft_action === 'LOCKDOWN' || path.ui_state === 'alert') return 'danger'
-  if (path.ui_state === 'confirmed' || path.draft_action === 'REVIEW_TRIGGER') return 'signal'
-  return 'idle'
-}
-
-function buildActionFlow(path = {}, t0 = null) {
-  const rows = []
-  if (t0?.last_fill) {
-    rows.push({
-      time: formatT0Time(t0.last_fill.filled_at),
-      label: '纸盘成交',
-      text: `${t0.last_fill.side || ''} ${t0.last_fill.quantity || '--'}股 @${formatT0Value(t0.last_fill.fill_price)}`,
-    })
-  }
-  if (t0?.signal || t0?.next_step) {
-    rows.push({
-      time: formatT0Time(t0.updated_at) || 'T0',
-      label: t0.signal ? 'T0触发' : 'T0等待',
-      text: t0.next_step || t0.reason || '等待5分钟中枢边界与1分钟分型确认',
-    })
-  }
-  if (path?.data_status === 'ready') {
-    rows.push({
-      time: '路径',
-      label: '下一步',
-      text: path.next_focus || path.current_phase || '等待下一次结构触发',
-    })
-  } else {
-    rows.push({
-      time: '路径',
-      label: '无数据',
-      text: '暂无路径状态数据',
-    })
-  }
-  return rows
 }
 
 function formatElapsed(seconds) {
@@ -358,19 +259,24 @@ export default function WatchBoard() {
   const selectedLiveItem = useMemo(() => (
     selected ? mergeT0State(mergePrice(selected, prices, previousPrices), t0States) : null
   ), [selected, prices, previousPrices, t0States])
+  const selectedContextMeta = useMemo(() => {
+    if (!selectedLiveItem) return []
+    const rows = [
+      ['数据', selectedReasoningStatus.compact || selectedReasoningStatus.detail || '待生成'],
+      ['现价', formatPrice(selectedLiveItem.price || selectedLiveItem.price_data?.price)],
+    ]
+    const position = selectedLiveItem.position || {}
+    const shares = Number(position.shares || position.quantity || selectedLiveItem.shares || 0)
+    const cost = Number(position.avg_cost || position.cost || selectedLiveItem.cost || 0)
+    if (shares > 0) rows.push(['持仓', `${shares}股${cost > 0 ? ` @${formatPrice(cost)}` : ''}`])
+    return rows
+  }, [selectedLiveItem, selectedReasoningStatus])
   const selectedIntradayReviewQuestion = useMemo(() => (
     selectedLiveItem ? buildIntradayReviewQuestion(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
   ), [selectedLiveItem])
   const selectedIntradayReviewLabel = useMemo(() => (
     selectedLiveItem ? intradayReviewLabel(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
   ), [selectedLiveItem])
-  const selectedT0State = selectedLiveItem?.t0_state || null
-  const selectedPathState = useMemo(() => (
-    selectedLiveItem ? derivePositionPathState(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : null
-  ), [selectedLiveItem])
-  const selectedActionFlow = useMemo(() => (
-    buildActionFlow(selectedPathState || {}, selectedT0State)
-  ), [selectedPathState, selectedT0State])
 
   const loadWatchboard = useCallback(async () => {
     setError('')
@@ -758,93 +664,16 @@ export default function WatchBoard() {
           </div>
 
           <div className="watchboard-drawer-body">
-            <section className={`watchboard-path-panel is-${pathTone(selectedPathState || {})}`} aria-label="持仓路径">
-              <div className="watchboard-t0-head">
-                <strong>持仓路径</strong>
-                <span>{selectedPathState ? pathStageLabel(selectedPathState.lifecycle_stage) : '无数据'}</span>
-              </div>
-              {selectedPathState?.data_status === 'ready' ? (
-                <>
-                  <div className="watchboard-path-main">
-                    <strong>{selectedPathState.current_phase || selectedPathState.major_task || '等待路径确认'}</strong>
-                    <p>{selectedPathState.next_focus || '等待下一次结构触发'}</p>
-                  </div>
-                  <div className="watchboard-path-grid">
-                    <span>
-                      <em>成功路径</em>
-                      <strong>{selectedPathState.success_path || '--'}</strong>
-                    </span>
-                    <span>
-                      <em>失败路径</em>
-                      <strong>{selectedPathState.failure_path || '--'}</strong>
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <p>暂无路径状态数据。需要统一推演提取状态机后，才显示连续动作。</p>
-              )}
-            </section>
-
-            <section className={`watchboard-t0-panel is-${t0Tone(selectedT0State || {})}`} aria-label="T0 做T状态">
-              <div className="watchboard-t0-head">
-                <strong>T0 做T</strong>
-                <span>{selectedT0State ? t0StateLabel(selectedT0State.state) : '未启用'}</span>
-              </div>
-              {selectedT0State ? (
-                <>
-                  <div className="watchboard-t0-grid">
-                    <span>
-                      <em>数量</em>
-                      <strong>{selectedT0State.t0_qty || '--'}</strong>
-                    </span>
-                    <span>
-                      <em>中枢</em>
-                      <strong>{formatT0Value(selectedT0State.pivot_zd)} / {formatT0Value(selectedT0State.pivot_zg)}</strong>
-                    </span>
-                    <span>
-                      <em>入场</em>
-                      <strong>{formatT0Value(selectedT0State.entry_price)}</strong>
-                    </span>
-                    <span>
-                      <em>日内</em>
-                      <strong className={Number(selectedT0State.daily_pnl || 0) >= 0 ? 'is-up' : 'is-down'}>
-                        {formatT0Value(selectedT0State.daily_pnl)}
-                      </strong>
-                    </span>
-                  </div>
-                  <p>
-                    {selectedT0State.signal ? `${t0SignalLabel(selectedT0State.signal)} ${formatT0Value(selectedT0State.signal_price)} · ` : ''}
-                    {selectedT0State.next_step || selectedT0State.reason || '等待 5 分钟中枢边界与 1 分钟分型确认。'}
-                  </p>
-                  <small>
-                    {selectedT0State.data_quality ? `数据 ${selectedT0State.data_quality}` : ''}
-                    {selectedT0State.action_window ? ` · 窗口 ${selectedT0State.action_window}` : ''}
-                    {' · '}
-                    {selectedT0State.is_grid_viable ? '网格可行' : '网格未满足摩擦空间'}
-                    {selectedT0State.updated_at ? ` · ${formatT0Time(selectedT0State.updated_at)}` : ''}
-                    {Number(selectedT0State.daily_stop_count || 0) > 0 ? ` · 止损 ${selectedT0State.daily_stop_count}` : ''}
-                  </small>
-                </>
-              ) : (
-                <p>这只票还没有启用 T0 做T教练，当前只展示 AI 盯盘推演。</p>
-              )}
-            </section>
-
-            <section className="watchboard-flow-panel" aria-label="动作流水">
-              <div className="watchboard-t0-head">
-                <strong>动作流水</strong>
-                <span>{selectedActionFlow.length} 条</span>
-              </div>
-              <div className="watchboard-flow-list">
-                {selectedActionFlow.map((row, index) => (
-                  <div className="watchboard-flow-row" key={`${row.label}-${index}`}>
-                    <em>{row.time || row.label}</em>
-                    <strong>{row.label}</strong>
-                    <span>{row.text}</span>
-                  </div>
+            {selectedContextMeta.length ? (
+              <div className="watchboard-context-strip" aria-label="推演背景">
+                {selectedContextMeta.map(([label, value]) => (
+                  <span key={label}>
+                    <em>{label}</em>
+                    <strong>{value}</strong>
+                  </span>
                 ))}
               </div>
-            </section>
+            ) : null}
 
             {activeDetailTab === 'reasoning' ? (
               drawerLoading ? (
