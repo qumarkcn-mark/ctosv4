@@ -73,11 +73,12 @@ function t0Badge(state = null) {
     STOP_SHORT: '止损',
     SWEEP_LONG: '扫尾',
     SWEEP_SHORT: '扫尾',
+    REDUCE_LOCK: '减仓锁利',
   }
   const stateMap = {
     IDLE: '等待',
     POSITION_LONG: '正T',
-    POSITION_SHORT: '倒T',
+    POSITION_SHORT: '待回补',
     LOCKDOWN: '锁定',
   }
   const label = signalMap[signal] || stateMap[stateValue] || 'T0'
@@ -97,6 +98,7 @@ function cardStateFromPathAndT0(path, t0) {
   const t0State = String(t0?.state || '')
   const signal = String(t0?.signal || '')
   if (t0State === 'LOCKDOWN' || signal.includes('STOP')) return 'danger'
+  if (signal === 'REDUCE_LOCK') return 'confirm'
   if (signal || t0State === 'POSITION_LONG' || t0State === 'POSITION_SHORT') return 'confirm'
   if (path?.data_status === 'missing') return 'idle'
   if (path?.ui_state === 'alert') return 'alert'

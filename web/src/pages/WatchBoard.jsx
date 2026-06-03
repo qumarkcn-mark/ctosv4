@@ -44,6 +44,7 @@ function mergePrice(item, prices, previousPrices = {}) {
 }
 
 function mergeT0State(item, t0States = {}) {
+  if (item.t0_config && !item.t0_config.enabled) return item
   const state = t0States[item.symbol] || t0States[priceKey(item.symbol)]
   if (!state) return item
   return {
@@ -63,6 +64,28 @@ function chatQuestionPayload(item, question, thinkingEnabled = false) {
     price_source: price > 0 ? 'watchboard_quote' : undefined,
     thinking_enabled: thinkingEnabled,
   }
+}
+
+function positionShares(item = {}) {
+  const position = item.position || {}
+  return Number(position.shares || position.quantity || item.shares || 0)
+}
+
+function roundLot(value) {
+  const num = Math.floor(Number(value || 0) / 100) * 100
+  return Number.isFinite(num) && num > 0 ? num : 0
+}
+
+function t0ControlLabel(item = null, engineEnabled = false) {
+  if (!item) return { tone: 'idle', label: 'T0', detail: '未选择股票' }
+  const config = item.t0_config || {}
+  const state = item.t0_state || {}
+  const shares = positionShares(item)
+  if (shares <= 0) return { tone: 'idle', label: '无底仓', detail: '不能启用 T0 教练' }
+  if (!engineEnabled) return { tone: 'stale', label: 'T0 worker 未运行', detail: '只显示纸盘配置，不触发状态机' }
+  if (!config.enabled) return { tone: 'idle', label: 'T0 未启用', detail: '可开启纸盘做T教练' }
+  if (state.data_quality === 'missing' || state.data_quality === 'partial') return { tone: 'stale', label: '数据不足', detail: state.next_step || state.reason || '等待状态机数据' }
+  return { tone: 'ready', label: 'T0 纸盘已启用', detail: `数量 ${config.qty || state.t0_qty || '--'} 股` }
 }
 
 function formatPrice(value) {
@@ -200,6 +223,7 @@ export default function WatchBoard() {
   const [prices, setPrices] = useState({})
   const [previousPrices, setPreviousPrices] = useState({})
   const [t0States, setT0States] = useState({})
+  const [t0EngineEnabled, setT0EngineEnabled] = useState(false)
   const [selected, setSelected] = useState(null)
   const [fullText, setFullText] = useState('')
   const [detailStatus, setDetailStatus] = useState('idle')
@@ -217,6 +241,8 @@ export default function WatchBoard() {
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const [thinkingEnabled, setThinkingEnabled] = useState(false)
   const [activeDetailTab, setActiveDetailTab] = useState('reasoning')
+  const [t0QtyInput, setT0QtyInput] = useState('')
+  const [t0Saving, setT0Saving] = useState(false)
   const chatLogRef = useRef(null)
   const autoOpenedRef = useRef(false)
 
@@ -277,6 +303,9 @@ export default function WatchBoard() {
   const selectedIntradayReviewLabel = useMemo(() => (
     selectedLiveItem ? intradayReviewLabel(selectedLiveItem, selectedLiveItem.price, selectedLiveItem.previous_price) : ''
   ), [selectedLiveItem])
+  const selectedT0Control = useMemo(() => (
+    t0ControlLabel(selectedLiveItem, t0EngineEnabled)
+  ), [selectedLiveItem, t0EngineEnabled])
 
   const loadWatchboard = useCallback(async () => {
     setError('')
@@ -303,10 +332,15 @@ export default function WatchBoard() {
   const loadT0States = useCallback(async () => {
     try {
       const json = await apiJson('/api/t0/states')
-      setT0States(json.states || {})
+      const nextStates = json.states || {}
+      setT0States(nextStates)
+      setT0EngineEnabled(Boolean(json.engine_enabled))
+      return nextStates
     } catch (err) {
       console.warn('T0 状态加载失败:', err)
       setT0States({})
+      setT0EngineEnabled(false)
+      return {}
     }
   }, [])
 
@@ -348,6 +382,13 @@ export default function WatchBoard() {
       node?.scrollIntoView({ block: 'end' })
     })
   }, [activeDetailTab, chatMessages, chatLoading])
+
+  useEffect(() => {
+    if (!selectedLiveItem?.symbol) return
+    const configured = Number(selectedLiveItem.t0_config?.qty || selectedLiveItem.t0_state?.t0_qty || 0)
+    const shares = positionShares(selectedLiveItem)
+    setT0QtyInput(String(configured || Math.min(100, roundLot(shares)) || ''))
+  }, [selectedLiveItem?.symbol])
 
   useEffect(() => {
     if (!reasoningRun) return undefined
@@ -489,6 +530,46 @@ export default function WatchBoard() {
       setError(err.message || '添加股票失败')
     } finally {
       setAdding(false)
+    }
+  }
+
+  const refreshSelectedAfterT0Change = async () => {
+    const [nextGroups, nextT0States] = await Promise.all([loadWatchboard(), loadT0States()])
+    if (!selected?.symbol) return
+    const updated = flattenGroups(nextGroups || []).find((item) => item.symbol === selected.symbol)
+    if (updated) setSelected(mergeT0State(mergePrice(updated, prices, previousPrices), nextT0States))
+  }
+
+  const enableT0ForSelected = async () => {
+    if (!selectedLiveItem?.symbol) return
+    const qty = Number(t0QtyInput)
+    setT0Saving(true)
+    setError('')
+    try {
+      await apiJson(`/api/t0/enable/${encodeURIComponent(selectedLiveItem.symbol)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ t0_qty: qty }),
+      })
+      await refreshSelectedAfterT0Change()
+    } catch (err) {
+      setError(err.message || '启用 T0 教练失败')
+    } finally {
+      setT0Saving(false)
+    }
+  }
+
+  const disableT0ForSelected = async () => {
+    if (!selectedLiveItem?.symbol) return
+    setT0Saving(true)
+    setError('')
+    try {
+      await apiJson(`/api/t0/disable/${encodeURIComponent(selectedLiveItem.symbol)}`, { method: 'POST' })
+      await refreshSelectedAfterT0Change()
+    } catch (err) {
+      setError(err.message || '关闭 T0 教练失败')
+    } finally {
+      setT0Saving(false)
     }
   }
 
@@ -710,6 +791,36 @@ export default function WatchBoard() {
                 ))}
               </div>
             ) : null}
+
+            <div className={`watchboard-t0-control is-${selectedT0Control.tone}`}>
+              <div>
+                <em>T0</em>
+                <strong>{selectedT0Control.label}</strong>
+                <span>{selectedT0Control.detail}</span>
+              </div>
+              {selectedLiveItem?.t0_config?.enabled ? (
+                <button type="button" onClick={disableT0ForSelected} disabled={t0Saving}>
+                  {t0Saving ? '处理中' : '关闭'}
+                </button>
+              ) : (
+                <div className="watchboard-t0-enable">
+                  <input
+                    aria-label="T0数量"
+                    inputMode="numeric"
+                    value={t0QtyInput}
+                    onChange={(event) => setT0QtyInput(event.target.value.replace(/[^\d]/g, ''))}
+                    disabled={t0Saving || !t0EngineEnabled || positionShares(selectedLiveItem) <= 0}
+                  />
+                  <button
+                    type="button"
+                    onClick={enableT0ForSelected}
+                    disabled={t0Saving || !t0EngineEnabled || positionShares(selectedLiveItem) <= 0}
+                  >
+                    {t0Saving ? '处理中' : '启用 T0 教练'}
+                  </button>
+                </div>
+              )}
+            </div>
 
             {activeDetailTab === 'reasoning' ? (
               drawerLoading ? (

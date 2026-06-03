@@ -859,7 +859,7 @@ def _load_watchboard_positions_by_symbol(conn, user_id: int) -> dict[str, dict]:
 def _load_watchlist_group_items(conn, user_id: int, group_id: int) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT wi.symbol, wi.name, wi.sort_order
+        SELECT wi.symbol, wi.name, wi.sort_order, wi.t0_enabled, wi.t0_qty
           FROM watchlist_items wi
           JOIN watchlist_groups wg ON wg.id = wi.group_id
          WHERE wg.user_id = ? AND wg.id = ?
@@ -883,6 +883,11 @@ def _load_watchlist_group_items(conn, user_id: int, group_id: int) -> list[dict]
             "price": 0,
             "change_pct": 0,
             "position": None,
+            "t0_config": {
+                "enabled": bool(row["t0_enabled"]),
+                "qty": int(_num(row["t0_qty"])),
+                "mode": "paper",
+            },
         })
     return items
 

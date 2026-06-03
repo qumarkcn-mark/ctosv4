@@ -80,6 +80,20 @@ def record_t0_signal(
     Returns:
         { intent_id, fill_id, side, quantity, fill_price, net_pnl, fees }
     """
+    if signal == "REDUCE_LOCK":
+        logger.info("[T0 Paper] REDUCE_LOCK 是状态事件，跳过纸盘成交 %s", symbol)
+        return {
+            "intent_id": None,
+            "fill_id": None,
+            "side": None,
+            "quantity": t0_qty,
+            "fill_price": signal_price,
+            "net_pnl": 0.0,
+            "fees": 0.0,
+            "skipped": True,
+            "event_only": True,
+        }
+
     # 确定买卖方向
     # BUY_LONG / BUY_SHORT / SWEEP_SHORT → "BUY"（实际买入操作）
     # SELL_LONG / SELL_SHORT / STOP_LONG / STOP_SHORT / SWEEP_LONG → "SELL"

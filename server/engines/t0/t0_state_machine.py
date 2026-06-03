@@ -26,7 +26,7 @@ class T0State(str, Enum):
 @dataclass
 class T0TickResult:
     state: str
-    signal: Optional[str]              # BUY_LONG/SELL_LONG/SELL_SHORT/BUY_SHORT/STOP_LONG/STOP_SHORT/SWEEP_LONG/SWEEP_SHORT
+    signal: Optional[str]              # BUY_LONG/SELL_LONG/SELL_SHORT/BUY_SHORT/STOP_LONG/SWEEP_LONG/REDUCE_LOCK
     signal_price: Optional[float]
     pivot_zd: Optional[float]
     pivot_zg: Optional[float]
@@ -52,8 +52,8 @@ class T0StateMachine:
       IDLE → POSITION_SHORT（高抛触发 + 1M 顶分型确认）
       POSITION_LONG → IDLE（止盈：价格触达 ZG）
       POSITION_LONG → LOCKDOWN（止损：跌破结构或灾难止损）
-      POSITION_SHORT → IDLE（买回：价格跌回 ZD）
-      POSITION_SHORT → LOCKDOWN（止损：突破 ZG 或灾难止损）
+      POSITION_SHORT → IDLE（买回：价格跌回 ZD，或低于卖出价且 1M 底分型确认）
+      POSITION_SHORT → IDLE（REDUCE_LOCK：尾盘未回接，转为减仓锁利事件，不强制买回）
       LOCKDOWN → （当日不再开仓，次日 reset_daily() 解锁）
     """
 
@@ -63,8 +63,6 @@ class T0StateMachine:
     STRUCTURAL_STOP_ATR_MULT = 1.2
     # 灾难止损比率（入场价的 97%）
     CATASTROPHIC_STOP_RATIO = 0.97
-    # 倒T止损：涨超 ZG × (1 + ATR 缓冲)
-    SHORT_STOP_ATR_MULT = 1.2
     # 笔振幅衰减阈值：当前向下笔振幅 / 上一笔振幅 < 此值才允许买入
     BI_STRENGTH_VETO_THRESHOLD = 0.7
     # 首次触碰 ZD 时的额度比例（未验证支撑，减半试探）
@@ -195,7 +193,7 @@ class T0StateMachine:
             return self._tick_position_long(current_price, pivot_zd, pivot_zg, atr_ref, fps, make_result)
 
         if self._state == T0State.POSITION_SHORT:
-            return self._tick_position_short(current_price, pivot_zd, pivot_zg, atr_ref, fps, make_result)
+            return self._tick_position_short(current_price, pivot_zd, pivot_zg, klines_1m, fps, make_result)
 
         # IDLE 态：检查是否进入触发区
         if not has_pivot or not viable:
@@ -261,6 +259,8 @@ class T0StateMachine:
         """14:55 强制平仓扫尾。"""
         signal = None
         reason = "14:55强制平仓"
+        qty = None
+        entry = None
 
         if self._state == T0State.POSITION_LONG:
             signal = "SWEEP_LONG"
@@ -274,19 +274,17 @@ class T0StateMachine:
             self._entry_price = None
             self._current_open_qty = self.t0_qty
         elif self._state == T0State.POSITION_SHORT:
-            signal = "SWEEP_SHORT"
+            # 倒T不是裸空。尾盘不再高位强制买回，未低价回接则确认成减仓锁利事件。
+            signal = "REDUCE_LOCK"
+            reason = "尾盘未出现低价回接，倒T转为减仓锁利"
             qty = self._effective_open_qty()
             entry = self._entry_price
-            pnl = (entry - current_price) * qty
-            rt = calculate_round_trip_friction(current_price, qty)
-            self._daily_pnl += pnl - rt["buy_cost"]
-            self._daily_trades += 1
             self._state = T0State.IDLE
             self._entry_price = None
+            self._target_price = None
+            self._stop_structural = None
+            self._stop_catastrophic = None
             self._current_open_qty = self.t0_qty
-        else:
-            qty = None
-            entry = None
 
         rt_friction = calculate_round_trip_friction(current_price, self.t0_qty)
         fps = rt_friction["cost_per_share"]
@@ -376,13 +374,12 @@ class T0StateMachine:
         self._entry_price = price
         self._target_price = pivot_zd
         self._current_open_qty = self.t0_qty
-        # 倒T止损：涨超 ZG + 1.2 × ATR（或 ZG × 1.005 兜底）
-        self._stop_structural = pivot_zg + self.SHORT_STOP_ATR_MULT * atr_ref if atr_ref > 0 else pivot_zg * 1.005
-        # 灾难止损：入场价 × 1.03（倒T方向，涨超 3% 强平）
-        self._stop_catastrophic = price * (2 - self.CATASTROPHIC_STOP_RATIO)  # = price * 1.03
+        # 倒T基于已有底仓，不是裸空；不设置高位强制买回止损，避免把“少赚”变成现金亏损。
+        self._stop_structural = None
+        self._stop_catastrophic = None
         self._daily_trades += 1
-        logger.info("[T0 %s] 开倒T SELL_SHORT price=%.2f target=%.2f stop_s=%.2f",
-                    self.symbol, price, self._target_price, self._stop_structural)
+        logger.info("[T0 %s] 开倒T SELL_SHORT price=%.2f target=%.2f",
+                    self.symbol, price, self._target_price)
         return make_result(signal="SELL_SHORT", signal_price=price,
                            reason=f"开倒T {reason_detail}", signal_qty=self._current_open_qty)
 
@@ -417,16 +414,8 @@ class T0StateMachine:
         # 持仓等待
         return make_result(reason=f"POSITION_LONG 持仓中 entry={self._entry_price:.2f} target={self._target_price:.2f}")
 
-    def _tick_position_short(self, price, pivot_zd, pivot_zg, atr_ref, fps, make_result):
+    def _tick_position_short(self, price, pivot_zd, pivot_zg, klines_1m, fps, make_result):
         """倒T持仓中的 tick 处理。"""
-        # 灾难止损（倒T：涨超入场价 3%）
-        if self._stop_catastrophic and price >= self._stop_catastrophic:
-            return self._trigger_stop_short(price, make_result,
-                                            f"灾难止损触发 price={price:.2f} >= {self._stop_catastrophic:.2f}")
-        # 结构止损（涨破 ZG + ATR）
-        if self._stop_structural and price >= self._stop_structural:
-            return self._trigger_stop_short(price, make_result,
-                                            f"结构止损触发 price={price:.2f} >= {self._stop_structural:.2f}")
         # 止盈：价格跌回 ZD
         if self._target_price and price <= self._target_price:
             qty = self._effective_open_qty()
@@ -445,7 +434,32 @@ class T0StateMachine:
                                reason=f"倒T止盈: price={price:.2f} <= ZD={self._target_price or pivot_zd:.2f} net_pnl={net_pnl:.2f}",
                                signal_qty=qty,
                                entry_price_for_result=entry)
-        return make_result(reason=f"POSITION_SHORT 持仓中 entry={self._entry_price:.2f} target={self._target_price:.2f}")
+
+        # 智能回接：只有价格低于卖出均价，且 1M 底分型右侧确认，才买回锁利。
+        if self._entry_price and price < self._entry_price:
+            if klines_1m and len(klines_1m) >= 3:
+                bottom = validate_1m_bottom_fractal(klines_1m)
+                if bottom["confirmed"]:
+                    qty = self._effective_open_qty()
+                    entry = self._entry_price
+                    pnl = (entry - price) * qty
+                    rt = calculate_round_trip_friction(price, qty)
+                    net_pnl = pnl - rt["buy_cost"]
+                    self._daily_pnl += net_pnl
+                    self._state = T0State.IDLE
+                    self._entry_price = None
+                    self._target_price = None
+                    self._current_open_qty = self.t0_qty
+                    logger.info("[T0 %s] 倒T智能回接 BUY_SHORT price=%.2f entry=%.2f net_pnl=%.2f",
+                                self.symbol, price, entry, net_pnl)
+                    return make_result(signal="BUY_SHORT", signal_price=price,
+                                       reason=f"倒T回接: price={price:.2f} < entry={entry:.2f} 且1M底分型确认@{bottom['fractal_low']} net_pnl={net_pnl:.2f}",
+                                       signal_qty=qty,
+                                       entry_price_for_result=entry)
+                return make_result(reason=f"POSITION_SHORT 待回补，价格低于卖出价但1M底分型未确认: {bottom['reason']}")
+            return make_result(reason=f"POSITION_SHORT 待回补 entry={self._entry_price:.2f} 当前已低于卖出价，等待1M分型数据")
+
+        return make_result(reason=f"POSITION_SHORT 待回补 entry={self._entry_price:.2f} target={self._target_price:.2f}，不做高位强制买回")
 
     def _trigger_stop_long(self, price, make_result, reason):
         """触发正T止损，进入 LOCKDOWN。"""
@@ -464,27 +478,6 @@ class T0StateMachine:
             signal="STOP_LONG",
             signal_price=price,
             reason=f"正T止损→LOCKDOWN: {reason}",
-            signal_qty=qty,
-            entry_price_for_result=entry,
-        )
-
-    def _trigger_stop_short(self, price, make_result, reason):
-        """触发倒T止损，进入 LOCKDOWN。"""
-        qty = self._effective_open_qty()
-        entry = self._entry_price
-        pnl = (entry - price) * qty
-        rt = calculate_round_trip_friction(price, qty)
-        net_pnl = pnl - rt["buy_cost"]
-        self._daily_pnl += net_pnl
-        self._daily_stop_count += 1
-        self._state = T0State.LOCKDOWN
-        self._entry_price = None
-        self._current_open_qty = self.t0_qty
-        logger.warning("[T0 %s] 倒T止损 STOP_SHORT %s net_pnl=%.2f", self.symbol, reason, net_pnl)
-        return make_result(
-            signal="STOP_SHORT",
-            signal_price=price,
-            reason=f"倒T止损→LOCKDOWN: {reason}",
             signal_qty=qty,
             entry_price_for_result=entry,
         )

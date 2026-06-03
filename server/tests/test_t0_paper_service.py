@@ -157,6 +157,31 @@ class TestRecordT0Signal:
         assert row[0] == "BUY"
         assert row[1] == 0.0
 
+    def test_reduce_lock_is_event_only_without_fill(self):
+        """REDUCE_LOCK 是减仓锁利状态事件，不应写入 paper_fills。"""
+        from server.engines.t0.t0_paper_service import record_t0_signal, get_or_create_t0_account
+        from server.db.database import get_connection
+
+        get_or_create_t0_account(user_id=1)
+        tick = _make_tick_result("REDUCE_LOCK", entry_price=107.0, daily_trades=6)
+        result = record_t0_signal(
+            user_id=1,
+            symbol="sz.300394",
+            signal="REDUCE_LOCK",
+            signal_price=105.0,
+            t0_qty=100,
+            tick_result=tick,
+        )
+
+        assert result["skipped"] is True
+        assert result["event_only"] is True
+        assert result["fill_id"] is None
+
+        conn = get_connection()
+        row = conn.execute("SELECT COUNT(*) FROM paper_fills").fetchone()
+        conn.close()
+        assert row[0] == 0
+
 
 class TestDailyT0Summary:
     @pytest.fixture(autouse=True)

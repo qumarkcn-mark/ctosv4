@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from server import config
 from server.db.database import get_connection
 from server.engines.t0.t0_paper_service import get_daily_t0_fills, get_daily_t0_summary
 
@@ -49,7 +50,12 @@ def get_all_t0_states(user_id: int = 1):
             row[1]: _enrich_t0_state(dict(zip(cols, row)), last_fills.get(row[1]))
             for row in rows
         }
-        return {"states": states, "count": len(states)}
+        return {
+            "states": states,
+            "count": len(states),
+            "engine_enabled": bool(getattr(config, "T0_ENGINE_ENABLED", False)),
+            "mode": "paper",
+        }
     finally:
         conn.close()
 
@@ -285,6 +291,8 @@ def _enrich_t0_state(state: dict, last_fill: dict | None = None) -> dict:
     state["action_window"] = _t0_action_window(state)
     state["next_step"] = _t0_next_step(state)
     state["last_fill"] = last_fill
+    state["engine_enabled"] = bool(getattr(config, "T0_ENGINE_ENABLED", False))
+    state["mode"] = "paper"
     return state
 
 
@@ -303,6 +311,8 @@ def _t0_action_window(state: dict) -> str:
     reason = str(state.get("reason") or "")
     if t0_state == "LOCKDOWN" or "STOP" in signal:
         return "locked"
+    if signal == "REDUCE_LOCK":
+        return "none"
     if t0_state == "POSITION_LONG" or signal == "BUY_LONG":
         return "long_open"
     if t0_state == "POSITION_SHORT" or signal == "SELL_SHORT":
@@ -325,6 +335,7 @@ def _t0_next_step(state: dict) -> str:
             "STOP_SHORT": "倒T止损，今日锁定",
             "SWEEP_LONG": "尾盘扫尾，纸盘卖出",
             "SWEEP_SHORT": "尾盘扫尾，纸盘买回",
+            "REDUCE_LOCK": "尾盘未回接，倒T转为减仓锁利",
         }
         return signal_map.get(str(state.get("signal")), str(state.get("reason") or "T0信号已触发"))
     reason = str(state.get("reason") or "").strip()

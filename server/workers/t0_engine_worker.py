@@ -169,8 +169,9 @@ class T0EngineWorker:
             bi_strength_ratio=bi_strength_ratio,
         )
 
-        # 有信号时写入纸盘
-        if result.signal:
+        # 有真实成交信号时写入纸盘；REDUCE_LOCK 是减仓锁利状态事件，不是新成交。
+        fill_signals = {"BUY_LONG", "SELL_LONG", "SELL_SHORT", "BUY_SHORT", "STOP_LONG", "SWEEP_LONG"}
+        if result.signal in fill_signals:
             try:
                 get_or_create_t0_account(user_id)
                 record_t0_signal(
@@ -245,35 +246,20 @@ def _safe_get_price(symbol: str) -> Optional[dict]:
 def _get_latest_pivot_with_snapshot(symbol: str) -> tuple[Optional[float], Optional[float], Optional[dict]]:
     """获取最新 5M 中枢 ZD/ZG，同时返回完整 snapshot_json 供笔动力学计算。
 
-    Returns:
-        (pivot_zd, pivot_zg, snapshot_json_dict)
+    使用 canonical_structure_service.get_latest_structure 获取符合当前 K 线数据签名的最新标准 CZSC 结构快照。
     """
-    conn = get_connection()
+    from server.engines.structure.canonical_structure_service import get_latest_structure
     try:
-        row = conn.execute(
-            """
-            SELECT json_extract(snapshot_json, '$.zd'),
-                   json_extract(snapshot_json, '$.zg'),
-                   snapshot_json
-              FROM structure_snapshots
-             WHERE symbol = ? AND level = '5' AND status = 'fresh'
-             ORDER BY updated_at DESC
-             LIMIT 1
-            """,
-            (symbol,),
-        ).fetchone()
-        if row and row[0] and row[1]:
-            snapshot = None
-            if row[2]:
-                try:
-                    import json as _json
-                    snapshot = _json.loads(row[2])
-                except Exception:
-                    pass
-            return float(row[0]), float(row[1]), snapshot
-        return None, None, None
-    finally:
-        conn.close()
+        row = get_latest_structure(symbol=symbol, level="5", min_profile="chart_standard_v1", allow_bootstrap=True)
+        if row and "snapshot" in row:
+            snapshot = row["snapshot"]
+            zd = snapshot.get("zd")
+            zg = snapshot.get("zg")
+            if zd is not None and zg is not None:
+                return float(zd), float(zg), snapshot
+    except Exception as exc:
+        logger.warning("[T0 Worker] 获取 canonical 结构异常 %s: %s", symbol, exc)
+    return None, None, None
 
 
 # 向后兼容别名（sweeper_worker 使用）
