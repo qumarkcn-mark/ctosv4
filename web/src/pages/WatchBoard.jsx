@@ -407,12 +407,37 @@ export default function WatchBoard() {
     setReasoningRunning(true)
     setReasoningRun({ symbol: selected.symbol, startedAt: new Date().toISOString(), phase: 'llm_reasoning' })
     setDetailStatus('loading')
+    setError('')
     try {
-      await apiJson('/api/ai-structure/unified-reasoning/trigger', {
+      const triggerJson = await apiJson('/api/ai-structure/unified-reasoning/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbols: [selected.symbol] }),
       })
+      const triggerItem = triggerJson.data?.items?.[0] || {}
+      if (triggerItem.status === 'error') {
+        if (triggerItem.error === 'NO_SNAPSHOT') {
+          await apiJson('/api/ai-structure/pipeline/ensure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              symbols: [selected.symbol],
+              priority: 95,
+              reason: 'watchboard_manual_reasoning_snapshot_miss',
+              allow_context_enqueue: false,
+            }),
+          })
+          setDetailStatus(fullText ? 'ready' : 'missing')
+          setError('结构快照已排队刷新，完成后再更新推演。')
+          return
+        }
+        throw new Error(triggerItem.error || '统一推演生成失败')
+      }
+      if (triggerItem.trigger?.decision && triggerItem.trigger.decision !== 'generated') {
+        setDetailStatus(fullText ? 'ready' : 'missing')
+        setError(triggerItem.trigger.skip_reason || '统一推演本次未生成')
+        return
+      }
       const json = await apiJson(`/api/ai-structure/unified-reasoning/full/${encodeURIComponent(selected.symbol)}`)
       setFullText(json.data?.full_text || '')
       setDetailStatus('ready')
@@ -420,8 +445,8 @@ export default function WatchBoard() {
       const updated = flattenGroups(nextGroups || []).find((item) => item.symbol === selected.symbol)
       if (updated) setSelected(mergePrice(updated, prices, previousPrices))
     } catch (err) {
-      setDetailStatus('missing')
-      setFullText('')
+      setDetailStatus(fullText ? 'ready' : 'missing')
+      if (!fullText) setFullText('')
       setError(err.message || '统一推演生成失败')
     } finally {
       setReasoningRunning(false)
