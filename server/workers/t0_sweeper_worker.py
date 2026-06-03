@@ -142,3 +142,8 @@ class T0SweeperWorker:
                 _save_state_cache(user_id, symbol, result, t0_qty, machine.serialize())
                 self._swept_today.add(sweep_key)
                 logger.info("[T0 Sweeper] 强平 %s price=%.2f", symbol, current_price)
+            elif result.signal == "REDUCE_LOCK":
+                # REDUCE_LOCK 是倒T转减仓锁利事件，不新增纸盘成交，只刷新状态缓存。
+                _save_state_cache(user_id, symbol, result, t0_qty, machine.serialize())
+                self._swept_today.add(sweep_key)
+                logger.info("[T0 Sweeper] 倒T减仓锁利 %s price=%.2f", symbol, current_price)

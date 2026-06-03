@@ -101,13 +101,14 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
         daily_1m.setdefault(day, []).append(k)
 
     # 3. 读取结构快照中的 ZG/ZD
-    def get_pivot(symbol: str, date: str) -> tuple[Optional[float], Optional[float]]:
+    def get_pivot(symbol: str, date: str) -> tuple[Optional[float], Optional[float], Optional[dict]]:
         conn = get_connection()
         try:
             row = conn.execute(
                 """
                 SELECT json_extract(snapshot_json, '$.zd') AS zd,
-                       json_extract(snapshot_json, '$.zg') AS zg
+                       json_extract(snapshot_json, '$.zg') AS zg,
+                       snapshot_json
                   FROM structure_snapshots
                  WHERE symbol = ? AND level = '5' AND status = 'fresh'
                    AND date(updated_at) <= ?
@@ -117,11 +118,17 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                 (symbol, date),
             ).fetchone()
             if row and row[0] and row[1]:
-                return float(row[0]), float(row[1])
-            return None, None
+                snapshot = None
+                if row[2]:
+                    try:
+                        snapshot = json.loads(row[2])
+                    except Exception:
+                        pass
+                return float(row[0]), float(row[1]), snapshot
+            return None, None, None
         except sqlite3.OperationalError as exc:
             logger.warning("[T0 Backtest] 结构快照不可用 %s %s: %s", symbol, date, exc)
-            return None, None
+            return None, None, None
         finally:
             conn.close()
 
@@ -143,8 +150,17 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
         machine.reset_daily(date)
         bars_1m = daily_1m[date]
 
-        # 当日 ZG/ZD
-        pivot_zd, pivot_zg = get_pivot(config.symbol, date)
+        # 当日 ZG/ZD 以及结构快照
+        pivot_zd, pivot_zg, snapshot_json = get_pivot(config.symbol, date)
+
+        # 计算当日向下笔振幅衰减比（回测接入 bi_strength_ratio）
+        bi_strength_ratio = None
+        if snapshot_json:
+            try:
+                from server.engines.t0.t0_fractal import calculate_bi_strength_ratio
+                bi_strength_ratio = calculate_bi_strength_ratio(snapshot_json.get("bis", []), direction="down")
+            except Exception:
+                pass
 
         # 当日 5M K线（用于 ATR）
         bars_5m_today = [k for k in klines_5m if str(k["date"])[:10] == date]
@@ -179,6 +195,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                 pivot_zg=pivot_zg,
                 klines_1m=cumulative_1m[-20:],  # 最近 20 根
                 atr_5m=atr_5m,
+                bi_strength_ratio=bi_strength_ratio,
             )
 
             if result.signal:

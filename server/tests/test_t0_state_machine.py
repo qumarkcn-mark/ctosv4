@@ -195,6 +195,25 @@ class TestStopLossLockdown:
         assert result.signal is None
         assert "锁死" in result.reason
 
+    def test_daily_loss_limit_locks_before_new_open(self):
+        """日内亏损超过阈值后进入 LOCKDOWN。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100, daily_loss_limit=100.0)
+        machine.reset_daily("2025-05-26")
+        machine._daily_pnl = -101.0
+
+        result = machine.tick(
+            current_price=100.3,
+            timestamp="2025-05-26 13:00:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_bottom_fractal(),
+        )
+
+        assert result.state == T0State.LOCKDOWN.value
+        assert result.signal is None
+        assert "日内亏损达到上限" in result.reason
+        assert result.lock_reason == result.reason
+
 
 class TestShortT0Lifecycle:
     def test_idle_to_position_short(self):
@@ -214,6 +233,117 @@ class TestShortT0Lifecycle:
         )
         assert result.state == T0State.POSITION_SHORT.value
         assert result.signal == "SELL_SHORT"
+
+    def test_short_rejects_without_t1_available_qty(self):
+        """无 T+1 可卖底仓时不得开倒T。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=200, available_t0_qty=0)
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            atr_5m=0.5,
+        )
+
+        assert result.signal is None
+        assert result.state == T0State.IDLE.value
+        assert "可卖底仓不足" in result.reason
+        assert result.available_t0_qty == 0
+
+    def test_short_qty_uses_min_constraints_and_lot_floor(self):
+        """倒T数量取用户配置、可用股数、系统上限三者最小值，并按100股下取整。"""
+        machine = T0StateMachine(
+            symbol="sz.300394",
+            t0_qty=350,
+            available_t0_qty=280,
+            max_t0_qty=260,
+        )
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            atr_5m=0.5,
+        )
+
+        assert result.signal == "SELL_SHORT"
+        assert result.signal_qty == 200
+        assert result.position_constraints["available_t0_qty"] == 200
+
+    def test_opening_surge_requires_5m_top_fractal(self):
+        """09:30-10:15 开盘冲高阶段，1M顶分型不足以直接开倒T。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 09:40:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            klines_5m=_make_klines_with_bottom_fractal(),
+            atr_5m=0.5,
+        )
+
+        assert result.signal is None
+        assert "5M顶分型" in result.reason
+
+    def test_opening_surge_allows_short_with_5m_top_fractal(self):
+        """开盘冲高阶段出现5M顶分型后，才允许开倒T。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 09:40:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            klines_5m=_make_klines_with_top_fractal(),
+            atr_5m=0.5,
+        )
+
+        assert result.signal == "SELL_SHORT"
+
+    def test_short_rejects_strong_up_gear(self):
+        """大级别强主升/三买确认时不做倒T。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            base_trend_gear="UP",
+        )
+
+        assert result.signal is None
+        assert "强主升" in result.reason
+
+    def test_short_rejects_volume_surge(self):
+        """量能持续放大时不做倒T，避免卖飞主升。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+
+        result = machine.tick(
+            current_price=107.7,
+            timestamp="2025-05-26 10:30:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_top_fractal(),
+            volume_surge_ratio=2.2,
+        )
+
+        assert result.signal is None
+        assert "量能持续放大" in result.reason
 
     def test_position_short_to_idle_profit(self):
         """POSITION_SHORT → IDLE（买回：价格跌回 ZD）。"""
@@ -236,25 +366,63 @@ class TestShortT0Lifecycle:
         assert result.signal == "BUY_SHORT"
         assert result.daily_pnl > 0
 
-    def test_position_short_structural_stop(self):
-        """POSITION_SHORT → LOCKDOWN（涨破结构止损）。"""
+    def test_position_short_does_not_force_loss_buyback_on_surge(self):
+        """POSITION_SHORT 继续冲高时不触发倒T止损，不强制高位买回。"""
         machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
         machine.reset_daily("2025-05-26")
         machine._state = T0State.POSITION_SHORT
         machine._entry_price = 107.0
         machine._target_price = 100.0
-        machine._stop_structural = 110.0
-        machine._stop_catastrophic = 110.21
 
         result = machine.tick(
-            current_price=110.5,  # >= 110.0 结构止损
+            current_price=110.5,
             timestamp="2025-05-26 11:00:00",
             pivot_zd=100.0,
             pivot_zg=108.0,
-            klines_1m=[],
+            klines_1m=_make_klines_with_bottom_fractal(),
         )
-        assert result.state == T0State.LOCKDOWN.value
-        assert result.signal == "STOP_SHORT"
+        assert result.state == T0State.POSITION_SHORT.value
+        assert result.signal is None
+        assert "不做高位强制买回" in result.reason
+
+    def test_position_short_rejects_buyback_above_entry_even_with_bottom_fractal(self):
+        """价格仍高于卖出价时，即便出现底分型也不亏损回接。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+        machine._state = T0State.POSITION_SHORT
+        machine._entry_price = 107.0
+        machine._target_price = 100.0
+
+        result = machine.tick(
+            current_price=108.0,
+            timestamp="2025-05-26 11:00:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_bottom_fractal(),
+        )
+
+        assert result.state == T0State.POSITION_SHORT.value
+        assert result.signal is None
+
+    def test_position_short_buyback_below_entry_with_bottom_fractal(self):
+        """低于卖出价且 1M 底分型确认时，倒T回接锁利。"""
+        machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
+        machine.reset_daily("2025-05-26")
+        machine._state = T0State.POSITION_SHORT
+        machine._entry_price = 107.0
+        machine._target_price = 100.0
+
+        result = machine.tick(
+            current_price=105.0,
+            timestamp="2025-05-26 13:00:00",
+            pivot_zd=100.0,
+            pivot_zg=108.0,
+            klines_1m=_make_klines_with_bottom_fractal(),
+        )
+
+        assert result.state == T0State.IDLE.value
+        assert result.signal == "BUY_SHORT"
+        assert result.daily_pnl > 0
 
 
 class TestFrictionGating:
@@ -289,16 +457,17 @@ class TestForceSweep:
         assert result.signal == "SWEEP_LONG"
         assert result.state == T0State.IDLE.value
 
-    def test_sweep_from_position_short(self):
-        """14:55 强制平仓 POSITION_SHORT → IDLE。"""
+    def test_sweep_from_position_short_reduces_lock_without_fill_signal(self):
+        """14:55 POSITION_SHORT 未回接时转为减仓锁利事件。"""
         machine = T0StateMachine(symbol="sz.300394", t0_qty=100)
         machine.reset_daily("2025-05-26")
         machine._state = T0State.POSITION_SHORT
         machine._entry_price = 107.0
 
         result = machine.force_sweep(105.0)
-        assert result.signal == "SWEEP_SHORT"
+        assert result.signal == "REDUCE_LOCK"
         assert result.state == T0State.IDLE.value
+        assert "减仓锁利" in result.reason
 
     def test_sweep_from_idle_no_signal(self):
         """IDLE 状态 force_sweep 无信号。"""

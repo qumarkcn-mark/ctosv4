@@ -23,7 +23,12 @@ def _seed_watchboard_groups():
         conn.execute("INSERT INTO watchlist_groups (id, user_id, name, sort_order) VALUES (1, 1, '观察', 0)")
         conn.execute("INSERT INTO watchlist_groups (id, user_id, name, sort_order) VALUES (2, 1, '持仓', 1)")
         conn.execute("INSERT INTO watchlist_items (group_id, symbol, name, sort_order) VALUES (1, 'sh.600519', '茅台', 0)")
-        conn.execute("INSERT INTO watchlist_items (group_id, symbol, name, sort_order) VALUES (2, 'sz.000725', '京东方A', 0)")
+        conn.execute(
+            """
+            INSERT INTO watchlist_items (group_id, symbol, name, sort_order, t0_enabled, t0_qty)
+            VALUES (2, 'sz.000725', '京东方A', 0, 1, 300)
+            """
+        )
         conn.execute(
             """
             INSERT INTO positions (user_id, symbol, name, quantity, avg_cost, current_price, updated_at)
@@ -41,24 +46,24 @@ def _seed_watchboard_groups():
         conn.close()
 
 
-def test_watchboard_groups_follow_user_watchlist_and_attach_position_overlay():
-    """WatchBoard 展示用户分类；真实持仓只附加到同名 watchlist 股票。"""
+def test_watchboard_groups_exclude_observation_and_attach_position_overlay():
+    """WatchBoard 只展示盘中盯盘分组；观察组不进入盯盘主面板。"""
     from server.api.ai_structure import _load_watchboard_groups
 
     _seed_watchboard_groups()
 
     groups = _load_watchboard_groups(1)
 
-    assert [group["name"] for group in groups] == ["观察", "持仓"]
-    assert [item["symbol"] for item in groups[0]["items"]] == ["sh.600519"]
-    assert groups[0]["items"][0]["position"] is None
+    assert [group["name"] for group in groups] == ["持仓"]
 
-    holding_item = groups[1]["items"][0]
+    holding_item = groups[0]["items"][0]
     assert holding_item["symbol"] == "sz.000725"
     assert holding_item["position"]["shares"] == 1000
     assert holding_item["position"]["cost"] == 4.10
+    assert holding_item["t0_config"] == {"enabled": True, "qty": 300, "mode": "paper"}
 
     all_symbols = [item["symbol"] for group in groups for item in group["items"]]
+    assert "sh.600519" not in all_symbols
     assert "sz.300999" not in all_symbols
 
 
@@ -71,8 +76,7 @@ def test_watchboard_universe_excludes_positions_not_in_coach_watchlist():
     universe = resolve_watchboard_universe(1)
     symbols = [item["symbol"] for item in universe]
 
-    assert symbols == ["sz.000725", "sh.600519"]
+    assert symbols == ["sz.000725"]
     assert "sz.300999" not in symbols
     assert next(item for item in universe if item["symbol"] == "sz.000725")["has_position"] is True
-    assert next(item for item in universe if item["symbol"] == "sh.600519")["has_position"] is False
     assert list_watchboard_user_ids() == [1]

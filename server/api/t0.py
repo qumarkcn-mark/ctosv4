@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from server import config
 from server.db.database import get_connection
 from server.engines.t0.t0_paper_service import get_daily_t0_fills, get_daily_t0_summary
 
@@ -49,7 +50,12 @@ def get_all_t0_states(user_id: int = 1):
             row[1]: _enrich_t0_state(dict(zip(cols, row)), last_fills.get(row[1]))
             for row in rows
         }
-        return {"states": states, "count": len(states)}
+        return {
+            "states": states,
+            "count": len(states),
+            "engine_enabled": bool(getattr(config, "T0_ENGINE_ENABLED", False)),
+            "mode": "paper",
+        }
     finally:
         conn.close()
 
@@ -280,11 +286,44 @@ def _enrich_t0_state(state: dict, last_fill: dict | None = None) -> dict:
     state_json = _loads_json(state.get("state_json") or "{}")
     if state_json:
         state["signal_qty"] = state.get("signal_qty") or state_json.get("current_open_qty")
+        state["risk_budget_left"] = state_json.get("risk_budget_left")
+        state["lock_reason"] = state_json.get("lock_reason") or ""
+        state["position_constraints"] = state_json.get("position_constraints") or {}
+        state["allowed_t0_direction"] = state_json.get("allowed_t0_direction") or "OBSERVE_ONLY"
+        state["size_multiplier"] = state_json.get("size_multiplier") or 0.0
+        state["ppe_stage"] = state_json.get("ppe_stage")
+        state["policy_reason"] = state_json.get("policy_reason") or ""
+        state["policy_source_run_id"] = state_json.get("policy_source_run_id") or ""
+        state["current_pivot_id"] = state_json.get("current_pivot_id") or ""
+        state["traded_pivot_count"] = state_json.get("traded_pivot_count") or len(state_json.get("traded_pivot_ids") or [])
+        state["reduce_lock_warning"] = state_json.get("reduce_lock_warning") or ""
+        state["available_t0_qty"] = (
+            state["position_constraints"].get("available_t0_qty")
+            if isinstance(state["position_constraints"], dict)
+            else None
+        )
+        if state["available_t0_qty"] is None:
+            state["available_t0_qty"] = state_json.get("available_t0_qty")
+    else:
+        state["available_t0_qty"] = state.get("t0_qty")
+        state["risk_budget_left"] = None
+        state["lock_reason"] = ""
+        state["position_constraints"] = {}
+        state["allowed_t0_direction"] = "OBSERVE_ONLY"
+        state["size_multiplier"] = 0.0
+        state["ppe_stage"] = None
+        state["policy_reason"] = ""
+        state["policy_source_run_id"] = ""
+        state["current_pivot_id"] = ""
+        state["traded_pivot_count"] = 0
+        state["reduce_lock_warning"] = ""
     state.pop("state_json", None)
     state["data_quality"] = _t0_data_quality(state)
     state["action_window"] = _t0_action_window(state)
     state["next_step"] = _t0_next_step(state)
     state["last_fill"] = last_fill
+    state["engine_enabled"] = bool(getattr(config, "T0_ENGINE_ENABLED", False))
+    state["mode"] = "paper"
     return state
 
 
@@ -303,6 +342,8 @@ def _t0_action_window(state: dict) -> str:
     reason = str(state.get("reason") or "")
     if t0_state == "LOCKDOWN" or "STOP" in signal:
         return "locked"
+    if signal == "REDUCE_LOCK":
+        return "none"
     if t0_state == "POSITION_LONG" or signal == "BUY_LONG":
         return "long_open"
     if t0_state == "POSITION_SHORT" or signal == "SELL_SHORT":
@@ -325,6 +366,7 @@ def _t0_next_step(state: dict) -> str:
             "STOP_SHORT": "倒T止损，今日锁定",
             "SWEEP_LONG": "尾盘扫尾，纸盘卖出",
             "SWEEP_SHORT": "尾盘扫尾，纸盘买回",
+            "REDUCE_LOCK": "尾盘未回接，倒T转为减仓锁利",
         }
         return signal_map.get(str(state.get("signal")), str(state.get("reason") or "T0信号已触发"))
     reason = str(state.get("reason") or "").strip()

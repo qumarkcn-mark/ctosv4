@@ -157,6 +157,31 @@ class TestRecordT0Signal:
         assert row[0] == "BUY"
         assert row[1] == 0.0
 
+    def test_reduce_lock_is_event_only_without_fill(self):
+        """REDUCE_LOCK 是减仓锁利状态事件，不应写入 paper_fills。"""
+        from server.engines.t0.t0_paper_service import record_t0_signal, get_or_create_t0_account
+        from server.db.database import get_connection
+
+        get_or_create_t0_account(user_id=1)
+        tick = _make_tick_result("REDUCE_LOCK", entry_price=107.0, daily_trades=6)
+        result = record_t0_signal(
+            user_id=1,
+            symbol="sz.300394",
+            signal="REDUCE_LOCK",
+            signal_price=105.0,
+            t0_qty=100,
+            tick_result=tick,
+        )
+
+        assert result["skipped"] is True
+        assert result["event_only"] is True
+        assert result["fill_id"] is None
+
+        conn = get_connection()
+        row = conn.execute("SELECT COUNT(*) FROM paper_fills").fetchone()
+        conn.close()
+        assert row[0] == 0
+
 
 class TestDailyT0Summary:
     @pytest.fixture(autouse=True)
@@ -174,3 +199,65 @@ class TestDailyT0Summary:
         summary = get_daily_t0_summary(user_id=1)
         assert summary["total_trades"] == 0
         assert summary["net_pnl"] == 0.0
+
+    def test_summary_includes_reduce_lock_and_lockdown_events(self):
+        """日报应包含未回补减仓锁利和锁定原因，而不只统计成交。"""
+        from server.engines.t0.t0_paper_service import get_daily_t0_summary
+        from server.db.database import get_connection
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO t0_state_cache (
+                    user_id, symbol, state, t0_qty, daily_pnl, daily_trades,
+                    daily_stop_count, signal, reason, state_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    1,
+                    "sh.688008",
+                    "IDLE",
+                    300,
+                    0.0,
+                    1,
+                    0,
+                    "REDUCE_LOCK",
+                    "尾盘未出现低价回接，倒T转为减仓锁利",
+                    '{"risk_budget_left": 120.0, "position_constraints": {"available_t0_qty": 300}}',
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO t0_state_cache (
+                    user_id, symbol, state, t0_qty, daily_pnl, daily_trades,
+                    daily_stop_count, signal, reason, state_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    1,
+                    "sh.603893",
+                    "LOCKDOWN",
+                    200,
+                    -180.0,
+                    2,
+                    2,
+                    "STOP_LONG",
+                    "正T止损",
+                    '{"lock_reason": "日内亏损达到上限 180.00，T0 锁定"}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        summary = get_daily_t0_summary(user_id=1)
+
+        assert summary["reduce_lock_count"] == 1
+        assert summary["reduce_lock_symbols"] == ["sh.688008"]
+        assert summary["lockdown_count"] == 1
+        assert summary["lockdown_reasons"][0]["symbol"] == "sh.603893"
+        assert "日内亏损达到上限" in summary["lockdown_reasons"][0]["reason"]
+        assert len(summary["symbols"]) == 2
