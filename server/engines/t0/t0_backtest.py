@@ -44,6 +44,9 @@ class BacktestConfig:
     ppe_summary: Optional[dict] = None
     position_path: Optional[dict] = None
     policy_source_run_id: str = ""
+    use_reasoning_ppe: bool = False
+    ppe_user_id: int = 1
+    ppe_cutoff_time: str = "23:59:59"
 
 
 @dataclass
@@ -139,9 +142,9 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
     # 4. 初始化状态机
     machine = T0StateMachine(symbol=config.symbol, t0_qty=config.t0_qty)
-    ppe_policy = None
-    if config.strict_ppe_policy:
-        ppe_policy = derive_t0_policy_from_ppe(
+    static_ppe_policy = None
+    if config.strict_ppe_policy and not config.use_reasoning_ppe:
+        static_ppe_policy = derive_t0_policy_from_ppe(
             summary=config.ppe_summary or {},
             position_path=config.position_path or {},
             source_run_id=config.policy_source_run_id,
@@ -165,6 +168,18 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
         # 当日 ZG/ZD 以及结构快照
         pivot_zd, pivot_zg, snapshot_json = get_pivot(config.symbol, date)
         pivot_id = _make_pivot_id(config.symbol, pivot_zd, pivot_zg, snapshot_json)
+        ppe_policy = static_ppe_policy
+        if config.strict_ppe_policy and config.use_reasoning_ppe:
+            summary, run_id = _load_reasoning_summary_for_policy(
+                user_id=config.ppe_user_id,
+                symbol=config.symbol,
+                as_of=f"{date} {config.ppe_cutoff_time}",
+            )
+            ppe_policy = derive_t0_policy_from_ppe(
+                summary=summary,
+                position_path={},
+                source_run_id=run_id,
+            )
 
         # 计算当日向下笔振幅衰减比（回测接入 bi_strength_ratio）
         bi_strength_ratio = None
@@ -365,6 +380,47 @@ def _make_pivot_id(symbol: str, pivot_zd: Optional[float], pivot_zg: Optional[fl
             or ""
         )
     return f"5m:{symbol}:{float(pivot_zd):.4f}:{float(pivot_zg):.4f}:{signature}"
+
+
+def _load_reasoning_summary_for_policy(*, user_id: int, symbol: str, as_of: str) -> tuple[dict, str]:
+    """按时间点读取真实统一推演摘要，作为 PPE 策略来源。
+
+    读取失败或缺失时返回空摘要，调用方会自然降级为 OBSERVE_ONLY。
+    """
+    try:
+        from server.domain.symbols import normalize_symbol
+        from server.engines.ai_native.unified_reasoning_service import ALL_UNIFIED_FULL_TEXT_VERSIONS
+
+        canonical = normalize_symbol(symbol)
+        placeholders = ",".join("?" for _ in ALL_UNIFIED_FULL_TEXT_VERSIONS)
+        params = [int(user_id), canonical, *ALL_UNIFIED_FULL_TEXT_VERSIONS, as_of]
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                f"""
+                SELECT run_id, summary_json
+                  FROM ai_structure_reasoning_runs
+                 WHERE user_id = ?
+                   AND symbol = ?
+                   AND status = 'SUCCESS'
+                   AND prompt_version IN ({placeholders})
+                   AND updated_at <= ?
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return {}, ""
+        try:
+            return json.loads(row["summary_json"] or "{}"), str(row["run_id"] or "")
+        except Exception:
+            return {}, str(row["run_id"] or "")
+    except Exception as exc:
+        logger.warning("[T0 Backtest] 读取真实 PPE 推演失败 %s %s: %s", symbol, as_of, exc)
+        return {}, ""
 
 
 def _max_drawdown(daily_pnls: list[float]) -> float:

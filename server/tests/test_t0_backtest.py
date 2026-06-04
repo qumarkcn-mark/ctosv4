@@ -227,6 +227,98 @@ class TestBacktestWithSyntheticData:
         assert all(trade["signal"] != "SELL_SHORT" for trade in result.trades)
         assert all(trade["allowed_t0_direction"] == "LONG_ONLY" for trade in result.trades)
 
+    def test_strict_ppe_can_read_real_reasoning_before_cutoff(self, monkeypatch):
+        """真实 PPE 回测只读取 cutoff 前的统一推演，不偷看未来。"""
+        calls: list[dict] = []
+        self._patch_fake_machine(monkeypatch, calls)
+        self._insert_unified_reasoning(
+            run_id="run_before",
+            symbol="sz.300394",
+            summary={"watch_state_machine": {"current_state": {"name": "压力测试，背驰高抛"}}},
+            updated_at="2025-05-26 08:30:00",
+        )
+        self._insert_unified_reasoning(
+            run_id="run_after",
+            symbol="sz.300394",
+            summary={"watch_state_machine": {"current_state": {"name": "三买确认，趋势确立"}}},
+            updated_at="2025-05-26 16:30:00",
+        )
+
+        config = BacktestConfig(
+            symbol="sz.300394",
+            start_date="2025-05-26",
+            end_date="2025-05-26",
+            t0_qty=100,
+            use_paper_db=False,
+            strict_ppe_policy=True,
+            use_reasoning_ppe=True,
+            ppe_cutoff_time="09:00:00",
+        )
+        result = run_backtest(config)
+
+        first_day_trades = [trade for trade in result.trades if trade["date"] == "2025-05-26"]
+        first_day_calls = [call for call in calls if str(call.get("timestamp", "")).startswith("2025-05-26")]
+        assert first_day_trades
+        assert all(trade["allowed_t0_direction"] == "SHORT_ONLY" for trade in first_day_trades)
+        assert all(trade["policy_source_run_id"] == "run_before" for trade in first_day_trades)
+        assert all(call.get("policy_source_run_id") == "run_before" for call in first_day_calls)
+
+    def test_strict_ppe_real_reasoning_missing_observe_only(self, monkeypatch):
+        """真实 PPE 缺失时，回测默认观察，不生成伪许可。"""
+        calls: list[dict] = []
+        self._patch_fake_machine(monkeypatch, calls)
+
+        config = BacktestConfig(
+            symbol="sz.300394",
+            start_date="2025-05-26",
+            end_date="2025-05-26",
+            t0_qty=100,
+            use_paper_db=False,
+            strict_ppe_policy=True,
+            use_reasoning_ppe=True,
+            ppe_cutoff_time="09:00:00",
+        )
+        result = run_backtest(config)
+
+        assert result.total_signals == 0
+        assert calls
+        assert all(call.get("allowed_t0_direction") == "OBSERVE_ONLY" for call in calls)
+
+    @staticmethod
+    def _insert_unified_reasoning(run_id: str, symbol: str, summary: dict, updated_at: str):
+        """插入最小统一推演记录，供真实 PPE 回测读取。"""
+        import json
+        from server.db.database import get_connection
+        from server.engines.ai_native.unified_reasoning_service import UNIFIED_FULL_TEXT_VERSION
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, openid, nickname) VALUES (1, 'test-openid', 'test')"
+            )
+            conn.execute(
+                """
+                INSERT INTO ai_structure_reasoning_runs (
+                    run_id, user_id, symbol, context_id, source_snapshot_ids_json,
+                    prompt_version, status, full_reasoning_text, summary_json,
+                    created_at, updated_at
+                )
+                VALUES (?, 1, ?, '', ?, ?, 'SUCCESS', '', ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    symbol,
+                    f'["{run_id}"]',
+                    UNIFIED_FULL_TEXT_VERSION,
+                    json.dumps(summary, ensure_ascii=False),
+                    updated_at,
+                    updated_at,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     @staticmethod
     def _patch_fake_machine(monkeypatch, calls: list[dict]):
         """替换状态机，专门验证 backtest 是否把 PPE 字段透传给 tick。"""
