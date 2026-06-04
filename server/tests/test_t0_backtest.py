@@ -164,3 +164,115 @@ class TestBacktestWithSyntheticData:
         report = print_backtest_report(result)
         assert isinstance(report, str)
         assert "sz.300394" in report
+
+    def test_strict_ppe_missing_defaults_to_observe_only(self, monkeypatch):
+        """严格 PPE 回测缺少大周期许可时，不允许状态机自行开仓。"""
+        calls: list[dict] = []
+        self._patch_fake_machine(monkeypatch, calls)
+
+        config = BacktestConfig(
+            symbol="sz.300394",
+            start_date="2025-05-26",
+            end_date="2025-05-30",
+            t0_qty=100,
+            use_paper_db=False,
+            strict_ppe_policy=True,
+        )
+        result = run_backtest(config)
+
+        assert result.total_signals == 0
+        assert calls
+        assert all(call.get("allowed_t0_direction") == "OBSERVE_ONLY" for call in calls)
+        assert all(day["allowed_t0_direction"] == "OBSERVE_ONLY" for day in result.daily_summary)
+
+    def test_strict_ppe_short_only_blocks_positive_t(self, monkeypatch):
+        """PPE 只允许倒T时，回测不得出现正T信号。"""
+        calls: list[dict] = []
+        self._patch_fake_machine(monkeypatch, calls)
+
+        config = BacktestConfig(
+            symbol="sz.300394",
+            start_date="2025-05-26",
+            end_date="2025-05-30",
+            t0_qty=100,
+            use_paper_db=False,
+            strict_ppe_policy=True,
+            position_path={"data_status": "ready", "current_phase": "压力测试"},
+            policy_source_run_id="run_short",
+        )
+        result = run_backtest(config)
+
+        assert result.trades
+        assert all(trade["signal"] != "BUY_LONG" for trade in result.trades)
+        assert all(trade["allowed_t0_direction"] == "SHORT_ONLY" for trade in result.trades)
+        assert all(call.get("policy_source_run_id") == "run_short" for call in calls)
+
+    def test_strict_ppe_long_only_blocks_short_t(self, monkeypatch):
+        """PPE 只允许正T时，回测不得出现倒T信号。"""
+        calls: list[dict] = []
+        self._patch_fake_machine(monkeypatch, calls)
+
+        config = BacktestConfig(
+            symbol="sz.300394",
+            start_date="2025-05-26",
+            end_date="2025-05-30",
+            t0_qty=100,
+            use_paper_db=False,
+            strict_ppe_policy=True,
+            position_path={"data_status": "ready", "current_phase": "三买确认"},
+        )
+        result = run_backtest(config)
+
+        assert result.trades
+        assert all(trade["signal"] != "SELL_SHORT" for trade in result.trades)
+        assert all(trade["allowed_t0_direction"] == "LONG_ONLY" for trade in result.trades)
+
+    @staticmethod
+    def _patch_fake_machine(monkeypatch, calls: list[dict]):
+        """替换状态机，专门验证 backtest 是否把 PPE 字段透传给 tick。"""
+        class FakeResult:
+            def __init__(self, signal=None, state="IDLE", reason=""):
+                self.signal = signal
+                self.signal_qty = 100 if signal else None
+                self.entry_price = None
+                self.daily_pnl = 0.0
+                self.state = state
+                self.reason = reason
+                self.current_pivot_id = "fake-pivot"
+
+        class FakeMachine:
+            def __init__(self, symbol, t0_qty=100):
+                self.symbol = symbol
+                self.t0_qty = t0_qty
+                self._daily_pnl = 0.0
+                self._daily_stop_count = 0
+                self._state = T0State.IDLE
+                self._traded_pivot_ids = set()
+                self._emitted_dates = set()
+
+            def reset_daily(self, date):
+                self._date = date
+                self._state = T0State.IDLE
+
+            def tick(self, **kwargs):
+                calls.append(kwargs)
+                direction = kwargs.get("allowed_t0_direction")
+                date = str(kwargs.get("timestamp", ""))[:10]
+                if date in self._emitted_dates:
+                    return FakeResult()
+                self._emitted_dates.add(date)
+                if direction == "LONG_ONLY":
+                    return FakeResult("BUY_LONG", reason="fake long")
+                if direction == "SHORT_ONLY":
+                    return FakeResult("SELL_SHORT", reason="fake short")
+                if direction is None:
+                    return FakeResult("BUY_LONG", reason="fake legacy")
+                return FakeResult()
+
+            def force_sweep(self, price):
+                return FakeResult()
+
+        monkeypatch.setattr(
+            "server.engines.t0.t0_state_machine.T0StateMachine",
+            FakeMachine,
+        )

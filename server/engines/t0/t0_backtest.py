@@ -40,6 +40,10 @@ class BacktestConfig:
     commission_rate: float = 0.00015
     slippage_ticks: int = 1
     use_paper_db: bool = True  # True = 写入 paper_fills，False = 纯内存
+    strict_ppe_policy: bool = False
+    ppe_summary: Optional[dict] = None
+    position_path: Optional[dict] = None
+    policy_source_run_id: str = ""
 
 
 @dataclass
@@ -73,6 +77,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
     """
     from server.engines.t0.t0_state_machine import T0StateMachine
     from server.engines.t0.t0_paper_service import record_t0_signal, get_or_create_t0_account
+    from server.engines.t0.ppe_t0_policy import derive_t0_policy_from_ppe
 
     # 1. 加载历史 K 线数据
     klines_5m = query_klines(
@@ -134,6 +139,13 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
     # 4. 初始化状态机
     machine = T0StateMachine(symbol=config.symbol, t0_qty=config.t0_qty)
+    ppe_policy = None
+    if config.strict_ppe_policy:
+        ppe_policy = derive_t0_policy_from_ppe(
+            summary=config.ppe_summary or {},
+            position_path=config.position_path or {},
+            source_run_id=config.policy_source_run_id,
+        )
 
     # 确保 paper 账户存在
     if config.use_paper_db:
@@ -152,6 +164,7 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
         # 当日 ZG/ZD 以及结构快照
         pivot_zd, pivot_zg, snapshot_json = get_pivot(config.symbol, date)
+        pivot_id = _make_pivot_id(config.symbol, pivot_zd, pivot_zg, snapshot_json)
 
         # 计算当日向下笔振幅衰减比（回测接入 bi_strength_ratio）
         bi_strength_ratio = None
@@ -188,15 +201,19 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
             if len(cumulative_1m) < 3:
                 continue
 
-            result = machine.tick(
-                current_price=bar["close"],
-                timestamp=bar_time,
-                pivot_zd=pivot_zd,
-                pivot_zg=pivot_zg,
-                klines_1m=cumulative_1m[-20:],  # 最近 20 根
-                atr_5m=atr_5m,
-                bi_strength_ratio=bi_strength_ratio,
-            )
+            tick_kwargs = {
+                "current_price": bar["close"],
+                "timestamp": bar_time,
+                "pivot_zd": pivot_zd,
+                "pivot_zg": pivot_zg,
+                "klines_1m": cumulative_1m[-20:],  # 最近 20 根
+                "atr_5m": atr_5m,
+                "bi_strength_ratio": bi_strength_ratio,
+                "pivot_id": pivot_id,
+            }
+            if ppe_policy is not None:
+                tick_kwargs.update(ppe_policy.to_dict())
+            result = machine.tick(**tick_kwargs)
 
             if result.signal:
                 day_signals += 1
@@ -212,6 +229,9 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                     "state": result.state,
                     "reason": result.reason,
                 }
+                if ppe_policy is not None:
+                    trade_record.update(ppe_policy.to_dict())
+                    trade_record["current_pivot_id"] = getattr(result, "current_pivot_id", pivot_id)
                 all_trades.append(trade_record)
 
                 if config.use_paper_db:
@@ -220,14 +240,19 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
         # 日终状态快照
         day_net_pnl = machine._daily_pnl
         daily_pnls.append(day_net_pnl)
-        daily_summary.append({
+        day_summary = {
             "date": date,
             "signals": day_signals,
             "fills": day_fills,
             "net_pnl": round(day_net_pnl, 2),
             "stop_count": machine._daily_stop_count,
             "final_state": machine._state.value,
-        })
+        }
+        if ppe_policy is not None:
+            day_summary.update(ppe_policy.to_dict())
+            day_summary["current_pivot_id"] = getattr(machine, "_current_pivot_id", pivot_id)
+            day_summary["traded_pivot_count"] = len(getattr(machine, "_traded_pivot_ids", set()))
+        daily_summary.append(day_summary)
 
     # 5. 汇总统计
     win_days = [p for p in daily_pnls if p > 0]
@@ -324,6 +349,22 @@ def _estimate_atr_5m(bars_5m: list[dict], period: int = 14) -> float:
     for tr in use_trs[period:]:
         atr = (atr * (period - 1) + tr) / period
     return round(atr, 4)
+
+
+def _make_pivot_id(symbol: str, pivot_zd: Optional[float], pivot_zg: Optional[float], snapshot: Optional[dict]) -> str:
+    """生成 5M 中枢窗口 ID，保证回测也遵守“一窗一做”。"""
+    if pivot_zd is None or pivot_zg is None:
+        return ""
+    signature = ""
+    if isinstance(snapshot, dict):
+        signature = str(
+            snapshot.get("data_signature")
+            or snapshot.get("structure_signature")
+            or snapshot.get("updated_at")
+            or snapshot.get("dt")
+            or ""
+        )
+    return f"5m:{symbol}:{float(pivot_zd):.4f}:{float(pivot_zg):.4f}:{signature}"
 
 
 def _max_drawdown(daily_pnls: list[float]) -> float:
