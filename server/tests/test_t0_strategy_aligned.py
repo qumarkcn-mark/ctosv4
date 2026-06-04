@@ -1,7 +1,7 @@
 """PPE/T0 策略对齐测试。"""
 import pytest
 
-from server.engines.t0.ppe_t0_policy import LONG_ONLY, OBSERVE_ONLY, SHORT_ONLY, derive_t0_policy_from_ppe
+from server.engines.t0.ppe_t0_policy import BOTH, LONG_ONLY, OBSERVE_ONLY, SHORT_ONLY, derive_t0_policy_from_ppe
 from server.engines.t0.t0_state_machine import T0State, T0StateMachine
 
 
@@ -46,23 +46,42 @@ def test_policy_projection_defaults_to_observe_when_missing():
     assert "缺少" in policy.policy_reason
 
 
-def test_policy_projection_maps_buy_and_sell_contexts():
+def test_policy_projection_uses_structured_t0_fields():
     long_policy = derive_t0_policy_from_ppe(
-        summary={"watch_state_machine": {"current_state": {"name": "5分钟三买确认，趋势确立"}}},
+        summary={
+            "t0_allowed_direction": "LONG_ONLY",
+            "t0_size_multiplier": 1.0,
+            "t0_reason": "三买确认，趋势确立",
+        },
         source_run_id="r1",
     )
     short_policy = derive_t0_policy_from_ppe(
-        summary={"watch_state_machine": {"current_state": {"name": "压力测试，背驰高抛"}}},
+        summary={
+            "t0_allowed_direction": "SHORT_ONLY",
+            "t0_size_multiplier": 0.5,
+            "t0_reason": "压力测试，背驰高抛",
+        },
         source_run_id="r2",
+    )
+    both_policy = derive_t0_policy_from_ppe(
+        summary={
+            "t0_allowed_direction": "BOTH",
+            "t0_size_multiplier": 0.1,
+            "t0_reason": "验证期双向纸盘观察",
+        },
+        source_run_id="r3",
     )
 
     assert long_policy.allowed_t0_direction == LONG_ONLY
     assert long_policy.size_multiplier == 1.0
+    assert long_policy.policy_reason == "三买确认，趋势确立"
     assert short_policy.allowed_t0_direction == SHORT_ONLY
     assert short_policy.size_multiplier == 0.5
+    assert both_policy.allowed_t0_direction == BOTH
+    assert both_policy.size_multiplier == 0.1
 
 
-def test_policy_projection_ignores_failure_branch_text():
+def test_policy_projection_does_not_fallback_to_legacy_keywords():
     policy = derive_t0_policy_from_ppe(
         summary={
             "watch_state_machine": {
@@ -79,13 +98,17 @@ def test_policy_projection_ignores_failure_branch_text():
         source_run_id="r3",
     )
 
-    assert policy.allowed_t0_direction == LONG_ONLY
-    assert policy.size_multiplier == 1.0
+    assert policy.allowed_t0_direction == OBSERVE_ONLY
+    assert policy.size_multiplier == 0.0
 
 
 def test_policy_projection_does_not_lock_on_normal_support_defense():
     policy = derive_t0_policy_from_ppe(
-        summary={"watch_state_machine": {"current_state": {"name": "5分钟三买尝试，中枢防守"}}},
+        summary={
+            "t0_allowed_direction": "LONG_ONLY",
+            "t0_size_multiplier": 0.1,
+            "t0_reason": "5分钟三买尝试，中枢防守",
+        },
         source_run_id="r4",
     )
 
@@ -95,12 +118,40 @@ def test_policy_projection_does_not_lock_on_normal_support_defense():
 
 def test_policy_projection_reduce_lock_is_observe_not_new_short():
     policy = derive_t0_policy_from_ppe(
-        summary={"watch_state_machine": {"current_state": {"name": "尾盘未回补，减仓锁利"}}},
+        summary={
+            "t0_allowed_direction": "OBSERVE_ONLY",
+            "t0_size_multiplier": 0.0,
+            "t0_reason": "尾盘未回补，减仓锁利",
+        },
         source_run_id="r5",
     )
 
     assert policy.allowed_t0_direction == OBSERVE_ONLY
     assert policy.size_multiplier == 0.0
+
+
+def test_policy_projection_invalid_structured_fields_fail_closed():
+    invalid_direction = derive_t0_policy_from_ppe(
+        summary={
+            "t0_allowed_direction": "INVALID_DIR",
+            "t0_size_multiplier": 0.5,
+            "t0_reason": "非法方向",
+        },
+        source_run_id="r6",
+    )
+    invalid_multiplier = derive_t0_policy_from_ppe(
+        summary={
+            "t0_allowed_direction": "SHORT_ONLY",
+            "t0_size_multiplier": 9.9,
+            "t0_reason": "非法额度",
+        },
+        source_run_id="r7",
+    )
+
+    assert invalid_direction.allowed_t0_direction == OBSERVE_ONLY
+    assert invalid_direction.size_multiplier == 0.0
+    assert invalid_multiplier.allowed_t0_direction == OBSERVE_ONLY
+    assert invalid_multiplier.size_multiplier == 0.0
 
 
 def test_direction_gating_by_ppe():

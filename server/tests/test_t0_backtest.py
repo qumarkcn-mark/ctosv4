@@ -197,7 +197,11 @@ class TestBacktestWithSyntheticData:
             t0_qty=100,
             use_paper_db=False,
             strict_ppe_policy=True,
-            position_path={"data_status": "ready", "current_phase": "压力测试"},
+            ppe_summary={
+                "t0_allowed_direction": "SHORT_ONLY",
+                "t0_size_multiplier": 0.5,
+                "t0_reason": "压力测试，背驰高抛",
+            },
             policy_source_run_id="run_short",
         )
         result = run_backtest(config)
@@ -219,7 +223,11 @@ class TestBacktestWithSyntheticData:
             t0_qty=100,
             use_paper_db=False,
             strict_ppe_policy=True,
-            position_path={"data_status": "ready", "current_phase": "三买确认"},
+            ppe_summary={
+                "t0_allowed_direction": "LONG_ONLY",
+                "t0_size_multiplier": 1.0,
+                "t0_reason": "三买确认，趋势确立",
+            },
         )
         result = run_backtest(config)
 
@@ -234,13 +242,21 @@ class TestBacktestWithSyntheticData:
         self._insert_unified_reasoning(
             run_id="run_before",
             symbol="sz.300394",
-            summary={"watch_state_machine": {"current_state": {"name": "压力测试，背驰高抛"}}},
+            summary={
+                "t0_allowed_direction": "SHORT_ONLY",
+                "t0_size_multiplier": 0.5,
+                "t0_reason": "压力测试，背驰高抛",
+            },
             updated_at="2025-05-26 08:30:00",
         )
         self._insert_unified_reasoning(
             run_id="run_after",
             symbol="sz.300394",
-            summary={"watch_state_machine": {"current_state": {"name": "三买确认，趋势确立"}}},
+            summary={
+                "t0_allowed_direction": "LONG_ONLY",
+                "t0_size_multiplier": 1.0,
+                "t0_reason": "三买确认，趋势确立",
+            },
             updated_at="2025-05-26 16:30:00",
         )
 

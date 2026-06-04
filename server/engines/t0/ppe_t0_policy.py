@@ -11,7 +11,10 @@ from typing import Any
 
 LONG_ONLY = "LONG_ONLY"
 SHORT_ONLY = "SHORT_ONLY"
+BOTH = "BOTH"
 OBSERVE_ONLY = "OBSERVE_ONLY"
+_VALID_DIRECTIONS = {LONG_ONLY, SHORT_ONLY, BOTH, OBSERVE_ONLY}
+_VALID_MULTIPLIERS = {0.0, 0.1, 0.5, 1.0}
 
 
 @dataclass(frozen=True)
@@ -40,108 +43,43 @@ def derive_t0_policy_from_ppe(
 ) -> PPET0Policy:
     """从 PPE / 统一推演摘要生成 T0 当日许可。
 
-    v1 采用保守文本规则：买点确认才允许正T，背驰高抛/压力测试才允许倒T，
-    破位/减仓/缺失数据一律观察。
+    只接受 AI Native 已抽取的结构化 T0 字段；缺失或非法时一律观察。
     """
     summary = summary or {}
-    position_path = position_path or {}
-    machine = _extract_machine(summary)
-    if not machine and position_path.get("data_status") != "ready":
+    direction = str(summary.get("t0_allowed_direction") or "").strip().upper()
+    multiplier = _normalize_multiplier(summary.get("t0_size_multiplier"))
+    reason = str(summary.get("t0_reason") or "").strip()
+    if direction not in _VALID_DIRECTIONS or multiplier not in _VALID_MULTIPLIERS:
         return PPET0Policy(policy_source_run_id=source_run_id)
-
-    text = _policy_text(summary, position_path, machine)
-    if not text:
-        return PPET0Policy(policy_source_run_id=source_run_id)
-
-    if _has_any(text, _LOCKDOWN_TERMS):
+    if direction == OBSERVE_ONLY or multiplier <= 0:
         return PPET0Policy(
             allowed_t0_direction=OBSERVE_ONLY,
             size_multiplier=0.0,
             ppe_stage=5,
-            policy_reason="PPE 判定处于减仓/破位阶段，T0 关闭",
+            policy_reason=reason or "结构化 T0 许可为观察",
             policy_source_run_id=source_run_id,
         )
-
-    if _has_any(text, _SHORT_TERMS):
-        return PPET0Policy(
-            allowed_t0_direction=SHORT_ONLY,
-            size_multiplier=0.5,
-            ppe_stage=3,
-            policy_reason="PPE 判定处于压力/背驰高抛窗口，仅允许倒T",
-            policy_source_run_id=source_run_id,
-        )
-
-    if _has_any(text, _LONG_CONFIRM_TERMS):
-        return PPET0Policy(
-            allowed_t0_direction=LONG_ONLY,
-            size_multiplier=1.0,
-            ppe_stage=2,
-            policy_reason="PPE 判定买点确认/趋势确立，允许正T",
-            policy_source_run_id=source_run_id,
-        )
-
-    if _has_any(text, _LONG_PROBE_TERMS):
-        return PPET0Policy(
-            allowed_t0_direction=LONG_ONLY,
-            size_multiplier=0.1,
-            ppe_stage=0,
-            policy_reason="PPE 判定买点验证期，仅允许轻仓正T纸盘",
-            policy_source_run_id=source_run_id,
-        )
-
     return PPET0Policy(
-        allowed_t0_direction=OBSERVE_ONLY,
-        size_multiplier=0.0,
-        ppe_stage=5,
-        policy_reason="PPE 未给出明确 T0 方向许可，保持观察",
+        allowed_t0_direction=direction,
+        size_multiplier=multiplier,
+        ppe_stage=_stage_from_multiplier(direction, multiplier),
+        policy_reason=reason or "AI Native 结构化 T0 许可",
         policy_source_run_id=source_run_id,
     )
 
 
-_LONG_CONFIRM_TERMS = (
-    "三买确认", "第三类买点确认", "二买确认", "一买确认", "买点确认",
-    "站稳", "确认增强", "趋势确立", "向上离开确认", "突破确认",
-)
-_LONG_PROBE_TERMS = (
-    "三买尝试", "类三买", "类2买", "类二买", "回踩确认", "承接",
-    "底背驰", "底分型", "支撑验证", "验证期",
-)
-_SHORT_TERMS = (
-    "背驰高抛", "利润锁定", "压力测试", "冲高衰竭", "二卖", "三卖",
-    "反抽不过", "上沿受阻", "高抛",
-)
-_LOCKDOWN_TERMS = (
-    "清仓", "减仓", "止损", "破位", "防守失效", "锁定", "崩溃",
-    "风险扩大", "下跌延续", "空头延伸", "减仓锁利",
-)
+def _normalize_multiplier(value: Any) -> float:
+    try:
+        return round(float(value), 4)
+    except Exception:
+        return -1.0
 
 
-def _extract_machine(summary: dict[str, Any]) -> dict[str, Any]:
-    direct = summary.get("watch_state_machine") if isinstance(summary.get("watch_state_machine"), dict) else {}
-    plan = summary.get("watch_plan") if isinstance(summary.get("watch_plan"), dict) else {}
-    nested = plan.get("watch_state_machine") if isinstance(plan.get("watch_state_machine"), dict) else {}
-    return direct if direct else nested
-
-
-def _policy_text(summary: dict[str, Any], position_path: dict[str, Any], machine: dict[str, Any]) -> str:
-    parts: list[str] = []
-    current = machine.get("current_state") if isinstance(machine.get("current_state"), dict) else {}
-    for source in (summary, position_path, current):
-        if not isinstance(source, dict):
-            continue
-        for key in (
-            "one_liner", "card_summary", "card_secondary", "card_action",
-            "major_task", "current_phase", "next_focus", "draft_action",
-            "name", "display",
-        ):
-            value = source.get(key)
-            if value:
-                parts.append(str(value))
-    for item in machine.get("transitions") or []:
-        if isinstance(item, dict):
-            parts.extend(str(item.get(k) or "") for k in ("next_state", "observe", "success"))
-    return " ".join(parts)
-
-
-def _has_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
+def _stage_from_multiplier(direction: str, multiplier: float) -> int:
+    if multiplier == 0.1:
+        return 0
+    if multiplier == 0.5:
+        return 3
+    if multiplier == 1.0:
+        return 2 if direction in {LONG_ONLY, BOTH} else 3
+    return 5

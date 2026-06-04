@@ -98,6 +98,9 @@ WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘状态机，返回 
   "card_summary": "优先使用完整推演最后两行卡片文案的第一行，不超过28个中文字符",
   "card_secondary": "优先使用完整推演最后两行卡片文案的第二行，不超过46个中文字符",
   "card_action": "结合持仓状态的短标签，不超过6个中文字符",
+  "t0_allowed_direction": "LONG_ONLY|SHORT_ONLY|BOTH|OBSERVE_ONLY",
+  "t0_size_multiplier": 0.0,
+  "t0_reason": "根据完整推演归纳出的 T0 方向许可理由，不超过40个中文字符",
   "watch_state_machine": {
     "version": "watch_state_machine.v1",
     "current_state": {
@@ -127,10 +130,15 @@ WATCHBOARD_EXTRACT_PROMPT = """从完整推演中提取盯盘状态机，返回 
 - card_summary 和 transitions 都要围绕“触发什么后显示什么、成功/失败后继续看什么”，不要写“关注”这种空话。
 - 如果完整推演说明某个价位属于旧支撑、当前主战场中枢、目标区、回调确认位或失败位，抽取时必须保留这个角色语义，不能改写成泛泛的“压力/支撑”。
 - 不要输出买入、卖出、加仓、减仓、清仓、止损等下单命令；可以使用观察、确认、转弱、失效、防守等描述。
+- t0_allowed_direction 必须基于大周期路径和买卖点转化归纳：只允许正T为 LONG_ONLY；只允许倒T为 SHORT_ONLY；正倒T都允许为 BOTH；缺少明确路径、破位、防守、数据不足为 OBSERVE_ONLY。
+- t0_size_multiplier 只能取 0.0、0.1、0.5、1.0：观察/破位/缺数据为0.0，买点验证初期为0.1，背驰高抛/减半风险为0.5，明确趋势/买点确认且可运行为1.0。
+- t0_reason 只写结构化背景原因，不写下单命令。
 - 只返回 JSON。"""
 
 WATCH_STATE_MACHINE_VERSION = "watch_state_machine.v1"
 WATCH_STATE_TRADING_WORDS = ("买入", "卖出", "加仓", "减仓", "清仓", "止损", "满仓", "重仓")
+T0_ALLOWED_DIRECTIONS = {"LONG_ONLY", "SHORT_ONLY", "BOTH", "OBSERVE_ONLY"}
+T0_ALLOWED_MULTIPLIERS = {0.0, 0.1, 0.5, 1.0}
 
 
 async def trigger_unified_reasoning(
@@ -354,6 +362,9 @@ def save_unified_reasoning_result(
         "card_summary": normalized_watchboard["card_summary"],
         "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "t0_allowed_direction": normalized_watchboard["t0_allowed_direction"],
+        "t0_size_multiplier": normalized_watchboard["t0_size_multiplier"],
+        "t0_reason": normalized_watchboard["t0_reason"],
         "extract_status": normalized_watchboard["extract_status"],
         "extract_error": normalized_watchboard["extract_error"],
         "watch_state_machine": normalized_watchboard["watch_state_machine"],
@@ -384,6 +395,9 @@ def save_unified_reasoning_result(
         "card_summary": normalized_watchboard["card_summary"],
         "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "t0_allowed_direction": normalized_watchboard["t0_allowed_direction"],
+        "t0_size_multiplier": normalized_watchboard["t0_size_multiplier"],
+        "t0_reason": normalized_watchboard["t0_reason"],
         "extract_status": normalized_watchboard["extract_status"],
         "extract_error": normalized_watchboard["extract_error"],
         "watch_state_machine": normalized_watchboard["watch_state_machine"],
@@ -441,6 +455,9 @@ def save_unified_reasoning_result(
         "card_summary": normalized_watchboard["card_summary"],
         "card_secondary": normalized_watchboard["card_secondary"],
         "card_action": normalized_watchboard["card_action"],
+        "t0_allowed_direction": normalized_watchboard["t0_allowed_direction"],
+        "t0_size_multiplier": normalized_watchboard["t0_size_multiplier"],
+        "t0_reason": normalized_watchboard["t0_reason"],
         "extract_status": normalized_watchboard["extract_status"],
         "extract_error": normalized_watchboard["extract_error"],
         "watch_state_machine": normalized_watchboard["watch_state_machine"],
@@ -544,15 +561,54 @@ def normalize_watchboard_payload(payload: dict[str, Any] | None, *, fallback_sum
         str(raw.get("card_action") or (watch_plan.get("card") or {}).get("action") or ""),
     ).strip()
     card_action = _normalize_watchboard_action(card_action)
+    t0_policy = _normalize_t0_extract_policy(raw)
     return {
         "card_summary": card_summary[:42],
         "card_secondary": card_secondary[:64],
         "card_action": card_action[:8],
+        "t0_allowed_direction": t0_policy["t0_allowed_direction"],
+        "t0_size_multiplier": t0_policy["t0_size_multiplier"],
+        "t0_reason": t0_policy["t0_reason"],
         "extract_status": extract_status,
         "extract_error": str(raw.get("extract_error") or "").strip()[:240],
         "watch_state_machine": watch_state_machine,
         "monitor_conditions": normalize_monitor_conditions(raw),
         "watch_plan": watch_plan,
+    }
+
+
+def _normalize_t0_extract_policy(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize AI-extracted T0 permission with fail-closed semantics."""
+    direction = re.sub(r"\s+", "", str(raw.get("t0_allowed_direction") or "")).strip().upper()
+    multiplier_raw = raw.get("t0_size_multiplier")
+    try:
+        multiplier = round(float(multiplier_raw), 4)
+    except Exception:
+        multiplier = -1.0
+    reason = re.sub(r"\s+", "", str(raw.get("t0_reason") or "")).strip()[:40]
+
+    if direction not in T0_ALLOWED_DIRECTIONS or multiplier not in T0_ALLOWED_MULTIPLIERS:
+        return {
+            "t0_allowed_direction": "OBSERVE_ONLY",
+            "t0_size_multiplier": 0.0,
+            "t0_reason": reason or "T0结构化许可无效，降级观察",
+        }
+    if direction == "OBSERVE_ONLY" and multiplier != 0.0:
+        return {
+            "t0_allowed_direction": "OBSERVE_ONLY",
+            "t0_size_multiplier": 0.0,
+            "t0_reason": reason or "观察状态不允许T0额度",
+        }
+    if direction != "OBSERVE_ONLY" and multiplier <= 0.0:
+        return {
+            "t0_allowed_direction": "OBSERVE_ONLY",
+            "t0_size_multiplier": 0.0,
+            "t0_reason": reason or "T0额度为0，降级观察",
+        }
+    return {
+        "t0_allowed_direction": direction,
+        "t0_size_multiplier": multiplier,
+        "t0_reason": reason,
     }
 
 
