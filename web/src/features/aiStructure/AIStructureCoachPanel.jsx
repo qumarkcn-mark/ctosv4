@@ -576,9 +576,6 @@ export default function AIStructureCoachPanel({
         </div>
       </header>
 
-      <DataLineageStrip
-        model={dataLineage}
-      />
 
       <ReasoningBrief context={detailReasoningContext} status={status} />
 
